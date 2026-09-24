@@ -104,8 +104,8 @@ Antes de declarar soportada una versión funcional, deben observarse como mínim
 ## Documentación relacionada
 
 - [`docs/requisitos.md`](docs/requisitos.md): contrato detallado de requisitos, no objetivos y aceptación.
-- `docs/factibilidad.md`: pendiente para fuentes y análisis técnico detallado.
-- `docs/uso.md`: pendiente para instalación y recorridos de uso.
+- [`docs/factibilidad.md`](docs/factibilidad.md): fuentes primarias, límites técnicos e hipótesis de implementación.
+- [`docs/uso.md`](docs/uso.md): recorridos previstos de instalación, emparejamiento, uso, privacidad y recuperación.
 
 ## Licencia
 

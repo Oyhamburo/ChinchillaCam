@@ -214,13 +214,14 @@ Una versión no debe declararse lista si no cumple puertas observables. Para T1,
 
 ## 8. Fuentes y factibilidad
 
-Este documento evita un análisis técnico detallado. La etapa T2 debe reunir fuentes primarias y referencias de factibilidad para Android, Windows, macOS y OBS Studio.
+El análisis técnico detallado vive en [`docs/factibilidad.md`](factibilidad.md). Ese documento reúne fuentes primarias para Android, USB, Windows, macOS, OBS Studio y distribución, y separa evidencia documental de hipótesis no validadas.
 
 Referencias breves de contexto:
 
 - OBS Studio es una dependencia aceptada para el perfil macOS.
 - Android y Samsung son perfiles de referencia, no evidencia de compatibilidad automática.
 - Windows 11 y macOS 13+ Apple Silicon son los sistemas de escritorio definidos para la primera evaluación.
+- Los recorridos previstos de instalación y uso están en [`docs/uso.md`](uso.md).
 
 ## 9. Criterio de cambio de alcance
 
