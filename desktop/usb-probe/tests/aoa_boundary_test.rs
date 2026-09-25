@@ -7,9 +7,10 @@ use usb_probe::{
     BulkFrame, BulkInterfaceClaim, BulkInterfaceClaimer, BulkTransferKind, BulkTransportBoundary,
     DeviceIdentifier, DeviceSummary, DryRunAoaPlanner, FakeAoaTransport, FrameTransferBudget,
     FramedUsbStream, HostAoaControlOptions, LiveAoaControlRunner,
-    RecordingAoaAccessoryHandleRegistry, RecordingBulkInterfaceClaimer, RecordingUsbBulkIo,
-    RecordingUsbControlIo, RecordingUsbDeviceRegistry, ReenumerationWait, RusbAoaControlTransport,
-    UsbBulkIo, UsbHostBoundary, UsbPhysicalLocation, AOA_ACCESSORY_DEVICE_IDS,
+    RecordingAoaAccessoryHandleRegistry, RecordingBulkInterfaceClaimer,
+    RecordingClaimedBulkInterface, RecordingUsbBulkIo, RecordingUsbControlIo,
+    RecordingUsbDeviceRegistry, ReenumerationWait, RusbAoaControlTransport, UsbBulkIo,
+    UsbHostBoundary, UsbPhysicalLocation, AOA_ACCESSORY_DEVICE_IDS,
 };
 
 #[test]
@@ -1200,5 +1201,82 @@ fn accessory_bulk_claim_fails_closed_when_active_configuration_is_unverified() {
     assert_eq!(
         claimer.claim_accessory_bulk_interface().unwrap_err(),
         usb_probe::UsbProbeError::ActiveConfigurationUnavailable
+    );
+}
+
+#[test]
+fn claimed_bulk_interface_selects_alt_zero_then_exchanges_fixed_frame() {
+    let claim = BulkInterfaceClaim::from_accessory_descriptors(
+        &DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap(),
+        true,
+        &[
+            BulkInterfaceClaim::candidate_descriptor(
+                0,
+                vec![
+                    BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+                ],
+            ),
+            BulkInterfaceClaim::candidate_descriptor(
+                1,
+                vec![
+                    BulkEndpointDescriptor::new(0x83, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x04, BulkTransferKind::Bulk).unwrap(),
+                ],
+            ),
+        ],
+    )
+    .unwrap();
+    let frame = BulkFrame::new(42, b"probe".to_vec()).unwrap();
+    let io = RecordingUsbBulkIo::with_read_chunks(vec![Ok(frame.encode())]);
+    let mut claimed =
+        RecordingClaimedBulkInterface::new(claim.clone(), io).with_alt_zero_result(Ok(()));
+
+    claimed.select_alt_zero().unwrap();
+    let mut stream = FramedUsbStream::new(
+        claimed.into_bulk_io().unwrap(),
+        FrameTransferBudget::new(Duration::from_millis(123), 32, 4).unwrap(),
+    );
+
+    stream.write_frame(&frame).unwrap();
+    let echoed = stream.read_frame().unwrap();
+
+    assert_eq!(echoed, frame);
+    assert_eq!(stream.io().claim_state().alt_zero_attempts(), &[0]);
+    assert_eq!(
+        stream.io().claim_state().write_timeouts(),
+        &[Duration::from_millis(123)]
+    );
+    assert_eq!(
+        stream.io().claim_state().read_timeouts(),
+        &[Duration::from_millis(123), Duration::from_millis(123)]
+    );
+    assert_eq!(stream.io().claim_state().endpoints().in_endpoint(), 0x81);
+    assert_eq!(stream.io().claim_state().endpoints().out_endpoint(), 0x02);
+}
+
+#[test]
+fn claimed_bulk_interface_releases_claim_and_fails_closed_when_alt_zero_selection_fails() {
+    let claim = BulkInterfaceClaim::from_descriptors(&[BulkInterfaceClaim::candidate_descriptor(
+        0,
+        vec![
+            BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+            BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+        ],
+    )])
+    .unwrap();
+    let io = RecordingUsbBulkIo::for_writes_with_max_chunk(64);
+    let mut claimed = RecordingClaimedBulkInterface::new(claim, io).with_alt_zero_result(Err(
+        usb_probe::UsbProbeError::BulkAlternateSettingFailed("alt boom".to_string()),
+    ));
+
+    assert_eq!(
+        claimed.select_alt_zero().unwrap_err(),
+        usb_probe::UsbProbeError::BulkAlternateSettingFailed("alt boom".to_string())
+    );
+    assert!(claimed.claim_state().released());
+    assert_eq!(
+        claimed.into_bulk_io().unwrap_err(),
+        usb_probe::UsbProbeError::BulkInterfaceNotClaimed
     );
 }

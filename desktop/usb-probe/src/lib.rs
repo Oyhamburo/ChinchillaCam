@@ -36,6 +36,8 @@ pub enum UsbProbeError {
     BulkInterfaceNotFound,
     BulkInterfaceAmbiguous,
     BulkInterfaceClaimFailed(String),
+    BulkAlternateSettingFailed(String),
+    BulkInterfaceNotClaimed,
     ActiveConfigurationUnavailable,
     InvalidBulkTransferBudget,
     EmptyBulkFrame,
@@ -331,6 +333,10 @@ impl<I> BoundAoaAccessoryHandle<I> {
 
     pub fn bulk_interface_claimed(&self) -> bool {
         self.bulk_interface_claimed
+    }
+
+    pub fn into_parts(self) -> (I, DeviceIdentifier, UsbPhysicalLocation) {
+        (self.io, self.identifier, self.physical_location)
     }
 }
 
@@ -962,6 +968,185 @@ impl BulkInterfaceClaim {
 
 pub trait BulkInterfaceClaimer {
     fn claim_bulk_interface(&mut self) -> Result<BulkInterfaceClaim, UsbProbeError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkInterfaceClaimState {
+    claim: BulkInterfaceClaim,
+    alt_zero_attempts: Vec<u8>,
+    released: bool,
+    read_timeouts: Vec<Duration>,
+    write_timeouts: Vec<Duration>,
+}
+
+impl BulkInterfaceClaimState {
+    fn new(claim: BulkInterfaceClaim) -> Self {
+        Self {
+            claim,
+            alt_zero_attempts: Vec::new(),
+            released: false,
+            read_timeouts: Vec::new(),
+            write_timeouts: Vec::new(),
+        }
+    }
+
+    pub fn endpoints(&self) -> &BulkEndpointClaim {
+        self.claim.endpoints()
+    }
+
+    pub fn alt_zero_attempts(&self) -> &[u8] {
+        &self.alt_zero_attempts
+    }
+
+    pub fn released(&self) -> bool {
+        self.released
+    }
+
+    pub fn read_timeouts(&self) -> &[Duration] {
+        &self.read_timeouts
+    }
+
+    pub fn write_timeouts(&self) -> &[Duration] {
+        &self.write_timeouts
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordingClaimedBulkInterface {
+    state: BulkInterfaceClaimState,
+    io: RecordingUsbBulkIo,
+    alt_zero_result: Result<(), UsbProbeError>,
+    alt_zero_selected: bool,
+}
+
+impl RecordingClaimedBulkInterface {
+    pub fn new(claim: BulkInterfaceClaim, io: RecordingUsbBulkIo) -> Self {
+        Self {
+            state: BulkInterfaceClaimState::new(claim),
+            io,
+            alt_zero_result: Ok(()),
+            alt_zero_selected: false,
+        }
+    }
+
+    pub fn with_alt_zero_result(mut self, result: Result<(), UsbProbeError>) -> Self {
+        self.alt_zero_result = result;
+        self
+    }
+
+    pub fn select_alt_zero(&mut self) -> Result<(), UsbProbeError> {
+        self.state
+            .alt_zero_attempts
+            .push(self.state.claim.interface_number());
+        match self.alt_zero_result.clone() {
+            Ok(()) => {
+                self.alt_zero_selected = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.state.released = true;
+                Err(error)
+            }
+        }
+    }
+
+    pub fn claim_state(&self) -> &BulkInterfaceClaimState {
+        &self.state
+    }
+
+    pub fn into_bulk_io(self) -> Result<RecordingClaimedBulkIo, UsbProbeError> {
+        if !self.alt_zero_selected || self.state.released {
+            return Err(UsbProbeError::BulkInterfaceNotClaimed);
+        }
+        Ok(RecordingClaimedBulkIo {
+            state: self.state,
+            io: self.io,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordingClaimedBulkIo {
+    state: BulkInterfaceClaimState,
+    io: RecordingUsbBulkIo,
+}
+
+impl RecordingClaimedBulkIo {
+    pub fn claim_state(&self) -> &BulkInterfaceClaimState {
+        &self.state
+    }
+}
+
+impl UsbBulkIo for RecordingClaimedBulkIo {
+    fn read_bulk(&mut self, buffer: &mut [u8], timeout: Duration) -> Result<usize, UsbProbeError> {
+        self.state.read_timeouts.push(timeout);
+        self.io.read_bulk(buffer, timeout)
+    }
+
+    fn write_bulk(&mut self, bytes: &[u8], timeout: Duration) -> Result<usize, UsbProbeError> {
+        self.state.write_timeouts.push(timeout);
+        self.io.write_bulk(bytes, timeout)
+    }
+}
+
+#[derive(Debug)]
+pub struct RusbClaimedBulkIo<C>
+where
+    C: rusb::UsbContext,
+{
+    handle: rusb::DeviceHandle<C>,
+    claim: BulkInterfaceClaim,
+}
+
+impl<C> RusbClaimedBulkIo<C>
+where
+    C: rusb::UsbContext,
+{
+    pub fn claim_accessory(
+        mut handle: rusb::DeviceHandle<C>,
+        identifier: DeviceIdentifier,
+    ) -> Result<Self, UsbProbeError> {
+        let claim = {
+            let mut claimer = RusbBulkInterfaceClaimer::for_accessory(&mut handle, identifier);
+            claimer.claim_accessory_bulk_interface()?
+        };
+        if let Err(error) = handle.set_alternate_setting(claim.interface_number(), 0) {
+            let _ = handle.release_interface(claim.interface_number());
+            return Err(UsbProbeError::BulkAlternateSettingFailed(error.to_string()));
+        }
+
+        Ok(Self { handle, claim })
+    }
+
+    pub fn claim(&self) -> &BulkInterfaceClaim {
+        &self.claim
+    }
+}
+
+impl<C> Drop for RusbClaimedBulkIo<C>
+where
+    C: rusb::UsbContext,
+{
+    fn drop(&mut self) {
+        let _ = self.handle.release_interface(self.claim.interface_number());
+    }
+}
+
+impl<C> UsbBulkIo for RusbClaimedBulkIo<C>
+where
+    C: rusb::UsbContext,
+{
+    fn read_bulk(&mut self, buffer: &mut [u8], timeout: Duration) -> Result<usize, UsbProbeError> {
+        self.handle
+            .read_bulk(self.claim.endpoints().in_endpoint(), buffer, timeout)
+            .map_err(|error| UsbProbeError::UsbBulkTransferFailed(error.to_string()))
+    }
+
+    fn write_bulk(&mut self, bytes: &[u8], timeout: Duration) -> Result<usize, UsbProbeError> {
+        self.handle
+            .write_bulk(self.claim.endpoints().out_endpoint(), bytes, timeout)
+            .map_err(|error| UsbProbeError::UsbBulkTransferFailed(error.to_string()))
+    }
 }
 
 #[derive(Debug, Clone)]

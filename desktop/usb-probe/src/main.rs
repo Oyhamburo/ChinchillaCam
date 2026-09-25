@@ -1,8 +1,10 @@
 use std::{env, process, time::Duration};
 
 use usb_probe::{
-    AccessoryIdentity, AoaAccessoryReenumerationPoller, DeviceIdentifier, DryRunAoaPlanner,
-    HostAoaControlOptions, LiveAoaControlRunner, ReenumerationWait, RusbUsbDeviceRegistry,
+    AccessoryIdentity, AoaAccessoryHandleRegistry, AoaAccessoryReenumerationPoller, BulkFrame,
+    DeviceIdentifier, DryRunAoaPlanner, FrameTransferBudget, FramedUsbStream,
+    HostAoaControlOptions, LiveAoaControlRunner, ReenumerationWait, RusbAoaAccessoryHandleRegistry,
+    RusbClaimedBulkIo, RusbUsbDeviceRegistry,
 };
 
 fn main() {
@@ -16,6 +18,7 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
     let mut selected_device = None;
     let mut dry_run = false;
     let mut live_control = false;
+    let mut live_bulk_smoke = false;
     let mut control_timeout = Duration::from_millis(250);
     let mut reenumeration_wait = Duration::from_millis(1500);
     let mut args = args.into_iter();
@@ -30,6 +33,7 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
             }
             "--dry-run" => dry_run = true,
             "--live-control" => live_control = true,
+            "--live-bulk-smoke" => live_bulk_smoke = true,
             "--control-timeout-ms" => {
                 let value = args
                     .next()
@@ -58,8 +62,14 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
         }
     }
 
-    if dry_run == live_control {
-        return Err("choose exactly one mode: --dry-run or --live-control".to_string());
+    let selected_modes = [dry_run, live_control, live_bulk_smoke]
+        .iter()
+        .filter(|selected| **selected)
+        .count();
+    if selected_modes != 1 {
+        return Err(
+            "choose exactly one mode: --dry-run, --live-control, or --live-bulk-smoke".to_string(),
+        );
     }
 
     let identity = AccessoryIdentity::new(
@@ -102,7 +112,45 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
             .map(|device| device.to_string())
             .unwrap_or_else(|| "not observed".to_string())
     );
-    println!("bulk interface claim and frame I/O remain the next bounded T5c sub-unit");
+
+    if live_control {
+        println!("bulk interface claim and frame I/O remain disabled unless --live-bulk-smoke is selected");
+        return Ok(());
+    }
+
+    let accessory_device = result
+        .accessory_device()
+        .ok_or_else(|| "AOA accessory was not observed after bounded poll".to_string())?;
+    let mut accessory_registry = RusbAoaAccessoryHandleRegistry::default();
+    let bound_handle = accessory_registry
+        .open_bound_accessory_handle(
+            accessory_device
+                .required_physical_location()
+                .map_err(|error| format!("{error:?}"))?,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    let (handle, accessory_identifier, _) = bound_handle.into_parts();
+    let bulk_io = RusbClaimedBulkIo::claim_accessory(handle, accessory_identifier)
+        .map_err(|error| format!("{error:?}"))?;
+    let claim = bulk_io.claim().clone();
+    let budget = FrameTransferBudget::new(Duration::from_millis(250), 64, 8)
+        .map_err(|error| format!("{error:?}"))?;
+    let mut stream = FramedUsbStream::new(bulk_io, budget);
+    let probe_frame = BulkFrame::new(1, b"chinchillacam-usb-probe".to_vec())
+        .map_err(|error| format!("{error:?}"))?;
+    stream
+        .write_frame(&probe_frame)
+        .map_err(|error| format!("{error:?}"))?;
+    let response = stream.read_frame().map_err(|error| format!("{error:?}"))?;
+
+    println!(
+        "bulk smoke frame attempted on interface {} endpoints {:02x}/{:02x}; response stream {} payload {} bytes; hardware compatibility still requires documented smoke evidence",
+        claim.interface_number(),
+        claim.endpoints().in_endpoint(),
+        claim.endpoints().out_endpoint(),
+        response.stream_id(),
+        response.payload().len()
+    );
 
     Ok(())
 }
@@ -110,6 +158,8 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
 fn print_usage() {
     println!("usb-probe --dry-run --device VID:PID");
     println!("usb-probe --live-control --device VID:PID [--control-timeout-ms N] [--reenumeration-wait-ms N]");
+    println!("usb-probe --live-bulk-smoke --device VID:PID [--control-timeout-ms N] [--reenumeration-wait-ms N]");
     println!("dry-run prints the bounded AOA plan without opening hardware");
     println!("live-control sends AOA control requests only to the selected VID:PID and does not claim physical success");
+    println!("live-bulk-smoke also opens the physically bound AOA device, claims validated bulk endpoints, writes one small framed probe, and reads one framed response");
 }

@@ -65,7 +65,7 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 - [x] **T5c2b1 — Hardening del frame stream antes de bulk live test-first.** Commit `150bfe4` (`fix: harden bounded USB frame stream`) conserva bytes residuales cuando una lectura fake devuelve datos coalescidos de frames adyacentes y rechaza con error tipado cualquier backend que reporte más bytes leídos/escritos que el slice entregado. Cubre dos frames coalescidos y conteos inválidos de read/write sin pánico. No cambia el alcance aprobado de T5c2b, no integra CLI live, no reclama interfaz real y no afirma hardware real. Revisión nativa RDD aprobada y reconocida: lineage `review-7d3db44c1cec19c2`.
 - [x] **T5c2c1 — Host live bulk descriptor/claim boundary test-first.** Commit `90d4438` (`feat: claim validated AOA bulk interface`) agregó la sub-unidad previa de T5c2c para descubrir/validar descriptores de interfaz con un par bulk IN/OUT explícito y reclamar exactamente esa interfaz. Incluye fake deterministic y wrapper `rusb` compilado sobre `DeviceHandle`, falla cerrado si no hay par bulk o si hay candidatos ambiguos, no integra CLI live, no ejecuta frame I/O real y no afirma hardware real. Revisión nativa RDD aprobada y reconocida: lineage `review-9f552f6854ea0a30`.
 - [x] **T5c2c1b — Corrección selector AOA PID/interfaz/alt-setting test-first.** Commit `b95fe3f` (`fix: select AOA accessory bulk interface`) corrige la selección de interfaz bulk antes de la CLI live según la documentación AOA: PID `18d1:2d00` usa interfaz `0`; PID `18d1:2d01` usa interfaz `0` para accesorio e interfaz `1` para ADB, que se ignora. Falla cerrado si la configuración activa no puede verificarse, si hay interfaz extra no esperada, si hay endpoints duplicados de la misma dirección o si el par bulk está en alternate setting distinto de `0`. No integra CLI live, no ejecuta frame I/O real, no cambia drivers/configuración y no afirma hardware real. Revisión nativa RDD aprobada y reconocida: lineage `review-6b6ba648ae04ade0`.
-- [ ] **T5c2c2 — Host live bulk CLI frame integration test-first.** Integrar la ruta live CLI después de T5c2c1b: conectar el handle AOA ya vinculado con el claim bulk validado y el `FramedUsbStream` acotado para un frame mínimo con timeout. Debe mantener selección física segura, direcciones de endpoint fuertes, límite de longitud, propagación de errores y no afirmar éxito físico sin smoke real.
+- [x] **T5c2c2 — Host live bulk CLI frame integration test-first.** Conecta la ruta CLI `--live-bulk-smoke` después de T5c2c1b: reusa el control AOA y poll físico, abre de nuevo solo el dispositivo AOA físicamente vinculado, valida/claim la interfaz bulk de accesorio, selecciona alternate setting `0`, escribe un frame de prueba pequeño y lee un frame de respuesta mediante `FramedUsbStream`. Incluye fakes para alt-setting, timeouts, endpoints y errores; no ejecuta hardware físico, no cambia drivers/configuración, no usa ADB como transporte y no afirma compatibilidad real. Revisión nativa RDD pendiente en este candidato.
 - [ ] **T5d — APK Android de prueba instalable.** Agregar un artefacto Android mínimo de prueba con UI/entrada visible del usuario para permiso/accesorio, apertura de accessory y lectura/escritura de payload framed acotado. Debe incluir pruebas, no iniciar cámara, no iniciar trabajo silencioso en segundo plano y no usar ADB como transporte de producto.
 - [ ] **T5e — Framing y guía smoke host↔phone.** Documentar comandos host↔teléfono reproducibles, salida esperada, ruta de cross-build Windows si es factible y hardware real pendiente. Debe mantener el dry-run como planificación, no como soporte de hardware.
 - [ ] **T6 — Validación plataforma/dispositivo pendiente.** Registrar qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir advertencias de WinUSB/libusb como decisión manual del usuario, nunca automatizada. Mantener no-ADB como default; cualquier fallback de depuración USB solo se documenta después de pruebas específicas.
@@ -94,9 +94,30 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 12. `fix: harden bounded USB frame stream` — preservar residual coalescido entre lecturas y rechazar conteos de I/O mayores que el slice entregado; pruebas/fakes/docs en el mismo work unit. Commit `150bfe4`; revisión nativa aprobada y reconocida en lineage `review-7d3db44c1cec19c2`.
 13. `feat: claim validated AOA bulk interface` — descriptor/interfaz/endpoints bulk reales con wrapper `rusb`, fake deterministic y claim de interfaz validado; sin CLI live ni frame I/O real. Commit `90d4438`; revisión nativa aprobada y reconocida en lineage `review-9f552f6854ea0a30`.
 14. `fix: select AOA accessory bulk interface` — corregir selector por PID/interfaz AOA, ignorar ADB interface 1 solo en `18d1:2d01`, fallar cerrado sin configuración activa verificada y mantener alt setting 0. Commit `b95fe3f`; revisión nativa aprobada y reconocida en lineage `review-6b6ba648ae04ade0`.
-15. T5c2c2 previsto: `feat: wire live AOA bulk frame CLI` — CLI live conectada al handle AOA vinculado, claim bulk validado y `FramedUsbStream` acotado para un frame mínimo; pruebas/fakes/docs en el mismo work unit.
+15. T5c2c2 previsto: `feat: wire live AOA bulk frame CLI` — CLI live conectada al handle AOA vinculado, claim bulk validado y `FramedUsbStream` acotado para un frame mínimo; pruebas/fakes/docs en el mismo work unit. Revisión nativa RDD pendiente en este candidato.
 16. T5d previsto: `feat: add Android accessory smoke APK` — APK Android de prueba instalable con permiso visible y payload framed acotado bajo TDD estricto; docs/evidencia en el mismo work unit.
 17. T5e previsto: `docs: define host phone USB smoke procedure` — comandos host↔phone, ruta Windows si es factible y validación hardware marcada pendiente.
+
+## Verificación T5c2c2
+
+La verificación local de T5c2c2 cubre la integración de código host para I/O bulk live, pero solo mediante compilación y fakes. No se ejecutó contra hardware USB físico, no se instaló ni modificó ningún driver, no se usó Zadig, no se tocó Windows, Samsung, cámara, OBS ni Wi‑Fi, y no se usó ADB como transporte.
+
+### RED observado antes del código de producción
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: falló con código 101 porque aún no existían `BulkInterfaceClaimState`, `RecordingClaimedBulkInterface`, `UsbProbeError::BulkAlternateSettingFailed` ni `UsbProbeError::BulkInterfaceNotClaimed`.
+- Después de crear el primer fake, el test `claimed_bulk_interface_selects_alt_zero_then_exchanges_fixed_frame` falló porque esperaba una sola lectura con timeout, pero el frame reader hace una lectura para header y otra para payload; se ajustó la expectativa a dos lecturas acotadas.
+
+### GREEN observado
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml`: pasó sin salida y aplicó formato Rust.
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: pasó con código 0; 44 pruebas Rust en verde, más lib/bin/doc tests sin pruebas.
+
+### Límites y decisiones T5c2c2
+
+- `RecordingClaimedBulkInterface` exige `select_alt_zero()` antes de exponer un `UsbBulkIo`; si la selección falla, marca el claim como liberado y devuelve `BulkInterfaceNotClaimed` ante intentos de usarlo.
+- `RusbClaimedBulkIo::claim_accessory` consume el `DeviceHandle` AOA ya vinculado, reclama la interfaz de accesorio validada, llama `set_alternate_setting(interface, 0)`, libera la interfaz si esa selección falla y recién entonces permite `read_bulk`/`write_bulk` por los endpoints validados.
+- La CLI agrega `--live-bulk-smoke`, que primero ejecuta el control AOA y poll físico existente, luego reabre solo el AOA observado en la misma ubicación física, valida/claim bulk, escribe un frame pequeño fijo y lee un frame de respuesta. La salida dice que la compatibilidad de hardware todavía requiere evidencia smoke documentada.
+- No se ejecutó la CLI contra hardware y no se automatiza detach de kernel driver, cambio de driver, Zadig, ADB ni cambios de configuración USB.
 
 ## Verificación T5c2c1b
 
