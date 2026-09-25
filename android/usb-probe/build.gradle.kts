@@ -1,5 +1,5 @@
 plugins {
-    id("com.android.library")
+    id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
@@ -12,6 +12,7 @@ android {
     compileSdk = 33
 
     defaultConfig {
+        applicationId = "dev.chinchillacam.usbprobe"
         minSdk = 23
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

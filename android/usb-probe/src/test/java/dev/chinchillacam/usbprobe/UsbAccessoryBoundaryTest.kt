@@ -142,7 +142,88 @@ class UsbAccessoryBoundaryTest {
         assertArrayEquals(byteArrayOf(0x55, 0x66), output.toByteArray())
         assertEquals(1, output.flushCount)
     }
+
+    @Test
+    fun decodesLittleEndianFrameAndEncodesAckWithSameStreamId() {
+        val frameBytes = littleEndianFrame(streamId = 0x01020304, payload = byteArrayOf(0x41, 0x42))
+
+        val frame = AccessoryFrameCodec.decode(frameBytes, maxPayloadBytes = 8).getOrThrow()
+        val ack = AccessoryFrameCodec.encodeAck(streamId = frame.streamId, maxPayloadBytes = 8)
+
+        assertEquals(0x01020304, frame.streamId)
+        assertArrayEquals(byteArrayOf(0x41, 0x42), frame.payload)
+        assertArrayEquals(littleEndianFrame(streamId = 0x01020304, payload = byteArrayOf(0x41, 0x43, 0x4b)), ack)
+    }
+
+    @Test
+    fun rejectsOversizeAndShortFramesDeterministically() {
+        val oversizeHeader = littleEndianHeader(streamId = 7, payloadLength = 9)
+        val shortPayload = littleEndianFrame(streamId = 7, payload = byteArrayOf(0x01)).dropLast(1).toByteArray()
+        val shortHeader = byteArrayOf(0x01, 0x00, 0x00)
+
+        assertEquals(FrameDecodeResult.OversizePayload(declaredBytes = 9, maxPayloadBytes = 8), AccessoryFrameCodec.decode(oversizeHeader, maxPayloadBytes = 8))
+        assertEquals(FrameDecodeResult.ShortPayload(expectedBytes = 1, actualBytes = 0), AccessoryFrameCodec.decode(shortPayload, maxPayloadBytes = 8))
+        assertEquals(FrameDecodeResult.ShortHeader(actualBytes = 3), AccessoryFrameCodec.decode(shortHeader, maxPayloadBytes = 8))
+    }
+
+    @Test
+    fun permissionRequestPlanUsesExplicitReceiverActionAndModernSafeFlags() {
+        val plan = AccessoryPermissionPlanner.plan(
+            packageName = "dev.chinchillacam.usbprobe",
+            receiverClassName = "dev.chinchillacam.usbprobe.UsbAccessoryPermissionReceiver",
+        )
+
+        assertEquals("dev.chinchillacam.usbprobe.action.USB_ACCESSORY_PERMISSION", plan.action)
+        assertEquals("dev.chinchillacam.usbprobe", plan.packageName)
+        assertEquals("dev.chinchillacam.usbprobe.UsbAccessoryPermissionReceiver", plan.receiverClassName)
+        assertEquals(0x0c000000, plan.pendingIntentFlags)
+    }
+
+    @Test
+    fun spanishUiStateRequiresExplicitUserActionBeforeOpeningAccessory() {
+        val noAccessory = UsbProbeScreenPlanner.plan(accessoryAvailable = false, permissionRequested = false, busy = false, lastResult = null)
+        val ready = UsbProbeScreenPlanner.plan(accessoryAvailable = true, permissionRequested = false, busy = false, lastResult = null)
+        val waiting = UsbProbeScreenPlanner.plan(accessoryAvailable = true, permissionRequested = true, busy = true, lastResult = "Esperando permiso")
+
+        assertEquals("ChinchillaCam prueba USB", ready.title)
+        assertEquals("Solicitar permiso y abrir accesorio USB", ready.primaryActionLabel)
+        assertTrue(ready.primaryActionEnabled)
+        assertFalse(noAccessory.primaryActionEnabled)
+        assertFalse(waiting.primaryActionEnabled)
+        assertEquals("No se abre nada hasta que toques el botón y Android apruebe el permiso.", ready.safetyNotice)
+        assertEquals("Esperando permiso", waiting.statusText)
+    }
+
+    @Test
+    fun approvedAccessorySmokeReadsOneBoundedFrameAndWritesAck() {
+        val output = FlushTrackingOutputStream()
+        val session = AccessoryIoSession(
+            input = ByteArrayInputStream(littleEndianFrame(streamId = 42, payload = byteArrayOf(0x10, 0x11))),
+            output = output,
+            closeable = RecordingCloseable(),
+        )
+
+        val result = AccessorySmokeRunner(maxPayloadBytes = 8).runApprovedSession(session)
+
+        assertEquals(AccessorySmokeResult.AckWritten(streamId = 42, payloadBytes = 2), result)
+        assertArrayEquals(littleEndianFrame(streamId = 42, payload = byteArrayOf(0x41, 0x43, 0x4b)), output.toByteArray())
+        assertEquals(1, output.flushCount)
+    }
 }
+
+private fun littleEndianFrame(streamId: Int, payload: ByteArray): ByteArray =
+    littleEndianHeader(streamId, payload.size) + payload
+
+private fun littleEndianHeader(streamId: Int, payloadLength: Int): ByteArray = byteArrayOf(
+    (streamId and 0xff).toByte(),
+    ((streamId ushr 8) and 0xff).toByte(),
+    ((streamId ushr 16) and 0xff).toByte(),
+    ((streamId ushr 24) and 0xff).toByte(),
+    (payloadLength and 0xff).toByte(),
+    ((payloadLength ushr 8) and 0xff).toByte(),
+    ((payloadLength ushr 16) and 0xff).toByte(),
+    ((payloadLength ushr 24) and 0xff).toByte(),
+)
 
 private data class TestAccessoryHandle(val name: String)
 
