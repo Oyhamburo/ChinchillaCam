@@ -1024,3 +1024,181 @@ fn bulk_endpoint_descriptor_rejects_endpoint_zero_and_invalid_directions() {
     assert!(BulkEndpointClaim::new(0x01, 0x02).is_err());
     assert!(BulkEndpointClaim::new(0x81, 0x82).is_err());
 }
+
+#[test]
+fn accessory_bulk_claim_selects_interface_zero_for_aoa_pids_and_ignores_adb_interface_one() {
+    let aoa_only = DeviceIdentifier::parse_vid_pid("18d1:2d00").unwrap();
+    let mut without_adb = RecordingBulkInterfaceClaimer::with_active_device_descriptors(
+        aoa_only,
+        vec![BulkInterfaceClaim::candidate_descriptor(
+            0,
+            vec![
+                BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+                BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+            ],
+        )],
+    );
+
+    assert_eq!(
+        without_adb
+            .claim_accessory_bulk_interface()
+            .unwrap()
+            .interface_number(),
+        0
+    );
+
+    let aoa_with_adb = DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap();
+    let mut with_adb = RecordingBulkInterfaceClaimer::with_active_device_descriptors(
+        aoa_with_adb,
+        vec![
+            BulkInterfaceClaim::candidate_descriptor(
+                0,
+                vec![
+                    BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+                ],
+            ),
+            BulkInterfaceClaim::candidate_descriptor(
+                1,
+                vec![
+                    BulkEndpointDescriptor::new(0x83, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x04, BulkTransferKind::Bulk).unwrap(),
+                ],
+            ),
+        ],
+    );
+
+    let claim = with_adb.claim_accessory_bulk_interface().unwrap();
+
+    assert_eq!(claim.interface_number(), 0);
+    assert_eq!(claim.endpoints().in_endpoint(), 0x81);
+    assert_eq!(claim.endpoints().out_endpoint(), 0x02);
+    assert_eq!(with_adb.claim_attempts(), &[0]);
+}
+
+#[test]
+fn accessory_bulk_claim_rejects_malicious_extra_interface_duplicate_endpoints_or_alt_mismatch() {
+    let aoa_only = DeviceIdentifier::parse_vid_pid("18d1:2d00").unwrap();
+    let mut extra_interface = RecordingBulkInterfaceClaimer::with_active_device_descriptors(
+        aoa_only,
+        vec![
+            BulkInterfaceClaim::candidate_descriptor(
+                0,
+                vec![
+                    BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+                ],
+            ),
+            BulkInterfaceClaim::candidate_descriptor(
+                1,
+                vec![
+                    BulkEndpointDescriptor::new(0x83, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x04, BulkTransferKind::Bulk).unwrap(),
+                ],
+            ),
+        ],
+    );
+    assert_eq!(
+        extra_interface
+            .claim_accessory_bulk_interface()
+            .unwrap_err(),
+        usb_probe::UsbProbeError::BulkInterfaceAmbiguous
+    );
+
+    let aoa_with_adb = DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap();
+    let mut malicious_extra = RecordingBulkInterfaceClaimer::with_active_device_descriptors(
+        aoa_with_adb,
+        vec![
+            BulkInterfaceClaim::candidate_descriptor(
+                0,
+                vec![
+                    BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+                ],
+            ),
+            BulkInterfaceClaim::candidate_descriptor(
+                1,
+                vec![
+                    BulkEndpointDescriptor::new(0x83, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x04, BulkTransferKind::Bulk).unwrap(),
+                ],
+            ),
+            BulkInterfaceClaim::candidate_descriptor(
+                2,
+                vec![
+                    BulkEndpointDescriptor::new(0x85, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x06, BulkTransferKind::Bulk).unwrap(),
+                ],
+            ),
+        ],
+    );
+    assert_eq!(
+        malicious_extra
+            .claim_accessory_bulk_interface()
+            .unwrap_err(),
+        usb_probe::UsbProbeError::BulkInterfaceAmbiguous
+    );
+
+    let mut duplicate_endpoints = RecordingBulkInterfaceClaimer::with_active_device_descriptors(
+        aoa_with_adb,
+        vec![
+            BulkInterfaceClaim::candidate_descriptor(
+                0,
+                vec![
+                    BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x82, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+                ],
+            ),
+            BulkInterfaceClaim::candidate_descriptor(
+                1,
+                vec![
+                    BulkEndpointDescriptor::new(0x83, BulkTransferKind::Bulk).unwrap(),
+                    BulkEndpointDescriptor::new(0x04, BulkTransferKind::Bulk).unwrap(),
+                ],
+            ),
+        ],
+    );
+    assert_eq!(
+        duplicate_endpoints
+            .claim_accessory_bulk_interface()
+            .unwrap_err(),
+        usb_probe::UsbProbeError::BulkInterfaceAmbiguous
+    );
+
+    let mut alt_mismatch = RecordingBulkInterfaceClaimer::with_active_device_descriptors(
+        aoa_only,
+        vec![BulkInterfaceClaim::candidate_descriptor_with_alt(
+            0,
+            1,
+            vec![
+                BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+                BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+            ],
+        )],
+    );
+    assert_eq!(
+        alt_mismatch.claim_accessory_bulk_interface().unwrap_err(),
+        usb_probe::UsbProbeError::BulkInterfaceNotFound
+    );
+}
+
+#[test]
+fn accessory_bulk_claim_fails_closed_when_active_configuration_is_unverified() {
+    let aoa_only = DeviceIdentifier::parse_vid_pid("18d1:2d00").unwrap();
+    let mut claimer = RecordingBulkInterfaceClaimer::without_active_configuration(
+        aoa_only,
+        vec![BulkInterfaceClaim::candidate_descriptor(
+            0,
+            vec![
+                BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+                BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+            ],
+        )],
+    );
+
+    assert_eq!(
+        claimer.claim_accessory_bulk_interface().unwrap_err(),
+        usb_probe::UsbProbeError::ActiveConfigurationUnavailable
+    );
+}
