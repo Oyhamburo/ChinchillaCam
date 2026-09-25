@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData};
+use std::{fmt, marker::PhantomData, time::Duration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AoaProtocolVersion(u16);
@@ -21,6 +21,7 @@ impl AoaProtocolVersion {
 pub enum UsbProbeError {
     UnsupportedProtocolVersion(u16),
     InvalidAccessoryIdentity,
+    UsbControlTransferFailed(String),
 }
 
 pub fn parse_protocol_version_response(
@@ -124,11 +125,234 @@ pub enum AoaOperation {
     StartAccessory,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AoaControlRequest {
+    pub request_type: u8,
+    pub request: u8,
+    pub value: u16,
+    pub index: u16,
+    pub data: Vec<u8>,
+    pub read_length: usize,
+    pub timeout: Duration,
+}
+
+impl AoaControlRequest {
+    pub fn read(
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        read_length: usize,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            request_type,
+            request,
+            value,
+            index,
+            data: Vec::new(),
+            read_length,
+            timeout,
+        }
+    }
+
+    pub fn write(
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        data: &[u8],
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            request_type,
+            request,
+            value,
+            index,
+            data: data.to_vec(),
+            read_length: 0,
+            timeout,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AoaStartOutcome {
+    ExpectDeviceReenumeration {
+        protocol: AoaProtocolVersion,
+        next_step: &'static str,
+    },
+}
+
 pub trait AoaControlTransport {
     fn get_protocol(&mut self) -> Result<[u8; 2], UsbProbeError>;
     fn send_identity_string(&mut self, index: u16, value: &str) -> Result<(), UsbProbeError>;
     fn start_accessory(&mut self) -> Result<(), UsbProbeError>;
     fn operation_log(&self) -> &[AoaOperation];
+}
+
+pub trait UsbControlIo {
+    fn read_control(
+        &mut self,
+        request: &AoaControlRequest,
+        buffer: &mut [u8],
+    ) -> Result<usize, UsbProbeError>;
+
+    fn write_control(&mut self, request: &AoaControlRequest) -> Result<usize, UsbProbeError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordingUsbControlIo {
+    get_protocol_response: [u8; 2],
+    control_requests: Vec<AoaControlRequest>,
+}
+
+impl RecordingUsbControlIo {
+    pub fn with_get_protocol_response(get_protocol_response: [u8; 2]) -> Self {
+        Self {
+            get_protocol_response,
+            control_requests: Vec::new(),
+        }
+    }
+
+    pub fn control_requests(&self) -> &[AoaControlRequest] {
+        &self.control_requests
+    }
+}
+
+impl UsbControlIo for RecordingUsbControlIo {
+    fn read_control(
+        &mut self,
+        request: &AoaControlRequest,
+        buffer: &mut [u8],
+    ) -> Result<usize, UsbProbeError> {
+        self.control_requests.push(request.clone());
+        buffer[..2].copy_from_slice(&self.get_protocol_response);
+        Ok(2)
+    }
+
+    fn write_control(&mut self, request: &AoaControlRequest) -> Result<usize, UsbProbeError> {
+        self.control_requests.push(request.clone());
+        Ok(request.data.len())
+    }
+}
+
+#[derive(Debug)]
+pub struct RusbDeviceControlIo<C>
+where
+    C: rusb::UsbContext,
+{
+    handle: rusb::DeviceHandle<C>,
+}
+
+impl<C> RusbDeviceControlIo<C>
+where
+    C: rusb::UsbContext,
+{
+    pub fn new(handle: rusb::DeviceHandle<C>) -> Self {
+        Self { handle }
+    }
+}
+
+impl<C> UsbControlIo for RusbDeviceControlIo<C>
+where
+    C: rusb::UsbContext,
+{
+    fn read_control(
+        &mut self,
+        request: &AoaControlRequest,
+        buffer: &mut [u8],
+    ) -> Result<usize, UsbProbeError> {
+        self.handle
+            .read_control(
+                request.request_type,
+                request.request,
+                request.value,
+                request.index,
+                buffer,
+                request.timeout,
+            )
+            .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))
+    }
+
+    fn write_control(&mut self, request: &AoaControlRequest) -> Result<usize, UsbProbeError> {
+        self.handle
+            .write_control(
+                request.request_type,
+                request.request,
+                request.value,
+                request.index,
+                &request.data,
+                request.timeout,
+            )
+            .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RusbAoaControlTransport<I> {
+    io: I,
+    timeout: Duration,
+    operations: Vec<AoaOperation>,
+}
+
+impl<I> RusbAoaControlTransport<I>
+where
+    I: UsbControlIo,
+{
+    pub fn new(io: I, timeout: Duration) -> Self {
+        Self {
+            io,
+            timeout,
+            operations: Vec::new(),
+        }
+    }
+
+    pub fn get_protocol(&mut self) -> Result<[u8; 2], UsbProbeError> {
+        <Self as AoaControlTransport>::get_protocol(self)
+    }
+}
+
+impl RusbAoaControlTransport<RecordingUsbControlIo> {
+    pub fn control_requests(&self) -> &[AoaControlRequest] {
+        self.io.control_requests()
+    }
+}
+
+impl<I> AoaControlTransport for RusbAoaControlTransport<I>
+where
+    I: UsbControlIo,
+{
+    fn get_protocol(&mut self) -> Result<[u8; 2], UsbProbeError> {
+        let request = AoaControlRequest::read(0xC0, 51, 0, 0, 2, self.timeout);
+        let mut buffer = [0; 2];
+        self.io.read_control(&request, &mut buffer)?;
+        self.operations.push(AoaOperation::GetProtocol);
+        Ok(buffer)
+    }
+
+    fn send_identity_string(&mut self, index: u16, value: &str) -> Result<(), UsbProbeError> {
+        let mut data = value.as_bytes().to_vec();
+        data.push(0);
+        let request = AoaControlRequest::write(0x40, 52, 0, index, &data, self.timeout);
+        self.io.write_control(&request)?;
+        self.operations.push(AoaOperation::SendIdentityString {
+            index,
+            value: value.to_string(),
+        });
+        Ok(())
+    }
+
+    fn start_accessory(&mut self) -> Result<(), UsbProbeError> {
+        let request = AoaControlRequest::write(0x40, 53, 0, 0, b"", self.timeout);
+        self.io.write_control(&request)?;
+        self.operations.push(AoaOperation::StartAccessory);
+        Ok(())
+    }
+
+    fn operation_log(&self) -> &[AoaOperation] {
+        &self.operations
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -200,7 +424,23 @@ where
         Ok(protocol)
     }
 
+    pub fn start_accessory_mode_expect_reenumeration(
+        &mut self,
+        identity: &AccessoryIdentity,
+    ) -> Result<AoaStartOutcome, UsbProbeError> {
+        let protocol = self.start_accessory_mode(identity)?;
+
+        Ok(AoaStartOutcome::ExpectDeviceReenumeration {
+            protocol,
+            next_step: "wait for disconnect/reconnect, then search for Google AOA VID/PID or claimed bulk endpoints",
+        })
+    }
+
     pub fn operation_log(&self) -> &[AoaOperation] {
         self.transport.operation_log()
+    }
+
+    pub fn transport(&self) -> &T {
+        &self.transport
     }
 }

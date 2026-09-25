@@ -1,6 +1,9 @@
+use std::time::Duration;
+
 use usb_probe::{
-    parse_protocol_version_response, AccessoryIdentity, AoaHostController, AoaOperation,
-    AoaProtocolVersion, DeviceSummary, FakeAoaTransport, UsbHostBoundary,
+    parse_protocol_version_response, AccessoryIdentity, AoaControlRequest, AoaHostController,
+    AoaOperation, AoaProtocolVersion, AoaStartOutcome, DeviceSummary, FakeAoaTransport,
+    RecordingUsbControlIo, RusbAoaControlTransport, UsbHostBoundary,
 };
 
 #[test]
@@ -134,4 +137,127 @@ fn host_control_handshake_rejects_incomplete_identity_before_usb_requests() {
 
     assert!(controller.start_accessory_mode(&identity).is_err());
     assert!(controller.operation_log().is_empty());
+}
+
+#[test]
+fn rusb_adapter_maps_get_protocol_to_vendor_device_in_control_request() {
+    let io = RecordingUsbControlIo::with_get_protocol_response([0x02, 0x00]);
+    let mut transport = RusbAoaControlTransport::new(io, Duration::from_millis(250));
+
+    assert_eq!(transport.get_protocol().unwrap(), [0x02, 0x00]);
+
+    assert_eq!(
+        transport.control_requests(),
+        &[AoaControlRequest::read(
+            0xC0,
+            51,
+            0,
+            0,
+            2,
+            Duration::from_millis(250)
+        )]
+    );
+}
+
+#[test]
+fn rusb_adapter_maps_identity_indexes_zero_through_five_to_send_string_requests() {
+    let identity = AccessoryIdentity::new(
+        "ChinchillaCam",
+        "USB Probe",
+        "rusb AOA adapter",
+        "0.3.0",
+        "https://example.invalid/chinchillacam",
+        "prototype-t3",
+    );
+    let io = RecordingUsbControlIo::with_get_protocol_response([0x02, 0x00]);
+    let transport = RusbAoaControlTransport::new(io, Duration::from_millis(250));
+    let mut controller = AoaHostController::new(transport);
+
+    controller.start_accessory_mode(&identity).unwrap();
+
+    let send_string_requests: Vec<_> = controller
+        .transport()
+        .control_requests()
+        .iter()
+        .filter(|request| request.request == 52)
+        .cloned()
+        .collect();
+
+    assert_eq!(
+        send_string_requests,
+        vec![
+            AoaControlRequest::write(
+                0x40,
+                52,
+                0,
+                0,
+                b"ChinchillaCam\0",
+                Duration::from_millis(250)
+            ),
+            AoaControlRequest::write(0x40, 52, 0, 1, b"USB Probe\0", Duration::from_millis(250)),
+            AoaControlRequest::write(
+                0x40,
+                52,
+                0,
+                2,
+                b"rusb AOA adapter\0",
+                Duration::from_millis(250)
+            ),
+            AoaControlRequest::write(0x40, 52, 0, 3, b"0.3.0\0", Duration::from_millis(250)),
+            AoaControlRequest::write(
+                0x40,
+                52,
+                0,
+                4,
+                b"https://example.invalid/chinchillacam\0",
+                Duration::from_millis(250)
+            ),
+            AoaControlRequest::write(
+                0x40,
+                52,
+                0,
+                5,
+                b"prototype-t3\0",
+                Duration::from_millis(250)
+            ),
+        ]
+    );
+}
+
+#[test]
+fn rusb_adapter_maps_start_accessory_and_returns_expected_reenumeration_boundary() {
+    let identity = AccessoryIdentity::new(
+        "ChinchillaCam",
+        "USB Probe",
+        "rusb AOA adapter",
+        "0.3.0",
+        "https://example.invalid/chinchillacam",
+        "prototype-t3",
+    );
+    let io = RecordingUsbControlIo::with_get_protocol_response([0x02, 0x00]);
+    let transport = RusbAoaControlTransport::new(io, Duration::from_millis(250));
+    let mut controller = AoaHostController::new(transport);
+
+    let outcome = controller
+        .start_accessory_mode_expect_reenumeration(&identity)
+        .unwrap();
+
+    assert_eq!(
+        controller.transport().control_requests().last(),
+        Some(&AoaControlRequest::write(
+            0x40,
+            53,
+            0,
+            0,
+            b"",
+            Duration::from_millis(250)
+        ))
+    );
+    assert_eq!(
+        outcome,
+        AoaStartOutcome::ExpectDeviceReenumeration {
+            protocol: AoaProtocolVersion::new(2).unwrap(),
+            next_step: "wait for disconnect/reconnect, then search for Google AOA VID/PID or claimed bulk endpoints"
+        }
+    );
 }

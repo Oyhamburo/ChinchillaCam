@@ -53,7 +53,7 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 
 - [x] **T1 — Prototipo USB mínimo buildable con handshake simulado.** Commit `394d2d1` (`feat: add strict TDD USB probe prototype`) agregó una unidad coherente de Android Kotlin y escritorio Rust que expresa límites de transporte USB, parsing AOA mínimo y validaciones sin hardware real. Incluye pruebas observables y documentación de evidencia en el mismo work unit. No afirma compatibilidad de dispositivo, Windows ni Samsung. Revisión nativa RDD aprobada y reconocida: lineage `review-3d704aca5d159a2f`.
 - [x] **T2 — Modelo AOA host control test-first.** Commit `bc4bb27` (`feat: model AOA host control handshake`) extendió el prototipo Rust con un modelo de handshake de control AOA: solicitud GET_PROTOCOL simulada, envío de identidad de accesorio en orden AOA, solicitud START_ACCESSORY simulada, validación de versión de protocolo y log ordenado de operaciones mediante `FakeAoaTransport`. Inició con RED observado y terminó con pruebas Rust en verde. No enumera hardware, no demuestra un handshake USB real y no afirma soporte real. Revisión nativa RDD aprobada y reconocida: lineage `review-2c36083eccc1a5f2`.
-- [ ] **T3 — Adapter/CLI rusb para AOA host test-first.** Agregar un adapter `rusb` y/o CLI acotado que ejecute solicitudes de control AOA, maneje re-enumeración esperada y prepare límites para bulk I/O. Debe usar pruebas con fake/mocks y documentación de límites; cualquier ejecución contra hardware queda pendiente y no debe instalar ni cambiar drivers.
+- [x] **T3 — Adapter/CLI rusb para AOA host test-first.** Se agregó un límite host `rusb` testeado con mocks/fakes para mapear solicitudes de control AOA (`GET_PROTOCOL`, seis `SEND_STRING` y `START_ACCESSORY`) y devolver un estado seguro de re-enumeración esperada. No se ejecutó contra hardware, no enumera dispositivos en pruebas, no instala ni cambia drivers y no afirma endpoints bulk reales ni compatibilidad de plataforma/dispositivo.
 - [ ] **T4 — Android UsbManager accessory open/read/write test-first.** Modelar y probar el lado Android para abrir `UsbAccessory`, obtener streams y leer/escribir payloads iniciales sin cámara/video. Debe mantener ADB fuera del transporte de producto.
 - [ ] **T5 — Framing mínimo y guía smoke end-to-end.** Definir framing mínimo de mensajes y una guía de smoke test host↔Android que pueda ejecutarse cuando haya hardware, sin afirmar que ya fue ejecutada.
 - [ ] **T6 — Validación plataforma/dispositivo pendiente.** Registrar qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir advertencias de WinUSB/libusb como decisión manual del usuario, nunca automatizada.
@@ -71,9 +71,34 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 1. `chore: track USB transport feasibility prototype` — esta tarea ODD y espejo de memoria. Commit `9066ff1`.
 2. `feat: add strict TDD USB probe prototype` — código mínimo, pruebas y evidencia del primer prototipo. Commit `394d2d1`; revisión nativa aprobada y reconocida en lineage `review-3d704aca5d159a2f`.
 3. `feat: model AOA host control handshake` — modelo host AOA bajo TDD estricto con `FakeAoaTransport` y pruebas RED/GREEN; commit `bc4bb27`; revisión nativa aprobada y reconocida en lineage `review-2c36083eccc1a5f2`.
-4. T3 previsto: `feat: add rusb AOA host adapter` — adapter/CLI host con solicitudes de control, re-enumeración y preparación de bulk I/O bajo TDD estricto; docs/evidencia en el mismo work unit.
+4. T3 previsto: `feat: add rusb AOA host adapter` — adapter host con solicitudes de control AOA sobre `rusb`, re-enumeración esperada y límites explícitos bajo TDD estricto; docs/evidencia en el mismo work unit. Commit pendiente: el parent inspeccionará y decidirá commit/revisión.
 5. T4 previsto: `feat: model Android accessory IO boundary` — contrato Android `UsbManager`/`UsbAccessory` open/read/write bajo TDD estricto; docs/evidencia en el mismo work unit.
 6. T5 previsto: `docs: define USB smoke framing and validation guide` — framing mínimo y guía smoke end-to-end marcada como pendiente hasta ejecución con hardware.
+
+## Verificación T3
+
+La verificación local de T3 cubre el mapeo de solicitudes de control AOA hacia un límite host `rusb` usando mocks/fakes. No prueba hardware USB real, re-enumeración real, Google AOA VID/PID observado, endpoints bulk reales, Windows, macOS como host real, Samsung Galaxy Note10, Samsung Galaxy S24+, cámara, OBS, Wi‑Fi, video, drivers ni configuración del sistema. ADB no se usa como transporte de producto.
+
+### RED observado antes del código de producción
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: falló con código 101 por imports inexistentes en `usb_probe`: `AoaControlRequest`, `AoaStartOutcome`, `RecordingUsbControlIo` y `RusbAoaControlTransport`.
+
+### GREEN observado
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: pasó; 11 pruebas de `aoa_boundary_test.rs` en verde, más lib/doc tests sin pruebas.
+
+### Refactor, spot check y límites explícitos
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check`: falló inicialmente con código 1 por formato pendiente en `desktop/usb-probe/tests/aoa_boundary_test.rs`.
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml`: pasó sin salida y aplicó formato Rust.
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: pasó nuevamente después del formateo; 11 pruebas Rust, lib/doc tests sin pruebas.
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check`: pasó sin salida después del formateo.
+- Spot check del parent local después del writer: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` pasó con 11 pruebas Rust, lib/doc tests sin pruebas; `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` pasó; `git diff --check` pasó sin salida.
+- El adapter modela `GET_PROTOCOL` como control read `bmRequestType=0xC0`, request `51`, value `0`, index `0`, length `2`.
+- El adapter modela `SEND_STRING` como control write `bmRequestType=0x40`, request `52`, value `0`, index `0..5`, payload UTF-8 terminado en `NUL`.
+- El adapter modela `START_ACCESSORY` como control write `bmRequestType=0x40`, request `53`, value `0`, index `0`, payload vacío.
+- Después de `START_ACCESSORY`, el resultado solo informa que el llamador debe esperar desconexión/reconexión y luego buscar Google AOA VID/PID o endpoints bulk reclamados; no afirma que esa re-enumeración haya ocurrido.
+- No se ejecutó contra hardware, no se tocó Windows, Samsung, cámara, OBS, Wi‑Fi, drivers, Zadig ni configuraciones del sistema, y no se usó ADB como transporte.
 
 ## Verificación T2
 

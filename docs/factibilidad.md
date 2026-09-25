@@ -66,6 +66,8 @@ Límites importantes:
 
 La fuente de ayuda de Google indica que USB tethering con computadoras Mac no está soportado. Esto debe leerse con precisión: impide asumir tethering USB como solución universal para macOS, pero no prueba que todo transporte USB directo sea imposible. La aceptación de ChinchillaCam debe validar su propio transporte.
 
+Límite del prototipo T3: el adapter host Rust solo mapea solicitudes de control AOA sobre un límite `rusb` con pruebas fake/mocks. El estado posterior a `START_ACCESSORY` se modela como re-enumeración esperada que debe observarse aparte buscando Google AOA VID/PID o endpoints bulk reclamados; no es evidencia de que haya ocurrido en hardware.
+
 Puertas de aceptación USB:
 
 - detectar dispositivo por cable en Windows 11;
