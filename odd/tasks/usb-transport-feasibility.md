@@ -52,9 +52,11 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 ## División incremental
 
 - [x] **T1 — Prototipo USB mínimo buildable con handshake simulado.** Commit `394d2d1` (`feat: add strict TDD USB probe prototype`) agregó una unidad coherente de Android Kotlin y escritorio Rust que expresa límites de transporte USB, parsing AOA mínimo y validaciones sin hardware real. Incluye pruebas observables y documentación de evidencia en el mismo work unit. No afirma compatibilidad de dispositivo, Windows ni Samsung. Revisión nativa RDD aprobada y reconocida: lineage `review-3d704aca5d159a2f`.
-- [x] **T2 — Handshake AOA host test-first.** Extiende el prototipo Rust con un modelo de handshake host AOA más real: solicitud GET_PROTOCOL simulada, envío de identidad de accesorio en orden AOA, solicitud START_ACCESSORY simulada, validación de versión de protocolo y log ordenado de operaciones mediante transporte fake. Inició con RED observado y terminó con pruebas Rust en verde; no enumera hardware ni afirma soporte real.
-- [ ] **T3 — Datos/lado Android accessory test-first.** Extender el lado Android con el contrato de recepción/validación de identidad o datos iniciales desde accessory, usando pruebas JVM y sin cámara/video. Debe mantener ADB fuera del transporte de producto.
-- [ ] **T4 — Evidencia y límites por plataforma.** Documentar qué prueba el Mac sin hardware y qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir cualquier advertencia de drivers WinUSB/libusb como decisión manual, nunca automatizada.
+- [x] **T2 — Modelo AOA host control test-first.** Commit `bc4bb27` (`feat: model AOA host control handshake`) extendió el prototipo Rust con un modelo de handshake de control AOA: solicitud GET_PROTOCOL simulada, envío de identidad de accesorio en orden AOA, solicitud START_ACCESSORY simulada, validación de versión de protocolo y log ordenado de operaciones mediante `FakeAoaTransport`. Inició con RED observado y terminó con pruebas Rust en verde. No enumera hardware, no demuestra un handshake USB real y no afirma soporte real. Revisión nativa RDD aprobada y reconocida: lineage `review-2c36083eccc1a5f2`.
+- [ ] **T3 — Adapter/CLI rusb para AOA host test-first.** Agregar un adapter `rusb` y/o CLI acotado que ejecute solicitudes de control AOA, maneje re-enumeración esperada y prepare límites para bulk I/O. Debe usar pruebas con fake/mocks y documentación de límites; cualquier ejecución contra hardware queda pendiente y no debe instalar ni cambiar drivers.
+- [ ] **T4 — Android UsbManager accessory open/read/write test-first.** Modelar y probar el lado Android para abrir `UsbAccessory`, obtener streams y leer/escribir payloads iniciales sin cámara/video. Debe mantener ADB fuera del transporte de producto.
+- [ ] **T5 — Framing mínimo y guía smoke end-to-end.** Definir framing mínimo de mensajes y una guía de smoke test host↔Android que pueda ejecutarse cuando haya hardware, sin afirmar que ya fue ejecutada.
+- [ ] **T6 — Validación plataforma/dispositivo pendiente.** Registrar qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir advertencias de WinUSB/libusb como decisión manual del usuario, nunca automatizada.
 
 ## Estrategia de entrega y slicing
 
@@ -68,12 +70,21 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 
 1. `chore: track USB transport feasibility prototype` — esta tarea ODD y espejo de memoria. Commit `9066ff1`.
 2. `feat: add strict TDD USB probe prototype` — código mínimo, pruebas y evidencia del primer prototipo. Commit `394d2d1`; revisión nativa aprobada y reconocida en lineage `review-3d704aca5d159a2f`.
-3. T2 previsto: `feat: model AOA host control handshake` — handshake host AOA real bajo TDD estricto con transporte fake y pruebas RED/GREEN; docs/evidencia en el mismo work unit.
-4. T3 previsto: `feat: model Android accessory payload boundary` — contrato Android de payload/identidad accessory bajo TDD estricto; docs/evidencia en el mismo work unit.
+3. `feat: model AOA host control handshake` — modelo host AOA bajo TDD estricto con `FakeAoaTransport` y pruebas RED/GREEN; commit `bc4bb27`; revisión nativa aprobada y reconocida en lineage `review-2c36083eccc1a5f2`.
+4. T3 previsto: `feat: add rusb AOA host adapter` — adapter/CLI host con solicitudes de control, re-enumeración y preparación de bulk I/O bajo TDD estricto; docs/evidencia en el mismo work unit.
+5. T4 previsto: `feat: model Android accessory IO boundary` — contrato Android `UsbManager`/`UsbAccessory` open/read/write bajo TDD estricto; docs/evidencia en el mismo work unit.
+6. T5 previsto: `docs: define USB smoke framing and validation guide` — framing mínimo y guía smoke end-to-end marcada como pendiente hasta ejecución con hardware.
 
 ## Verificación T2
 
 La verificación local de T2 modela el handshake de control AOA del lado host sin hardware real. No prueba compatibilidad con Windows, macOS como host USB real, Samsung Galaxy Note10, Samsung Galaxy S24+, cámara, OBS, Wi‑Fi, video, drivers ni configuración del sistema. ADB no se usa como transporte de producto.
+
+### Revisión nativa RDD T2
+
+- Candidato: `bc4bb27` contra base `47add6c`.
+- Lineage: `review-2c36083eccc1a5f2`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida. No volver a consultar STATUS sobre este lineage quemado.
+- Hallazgo advisory no bloqueante del reviewer: `R3-transport-error-loss` en `desktop/usb-probe/src/lib.rs:128-130`. No abre corrección para T2; se trata como trabajo futuro.
 
 ### RED observado antes del código de producción
 
@@ -88,6 +99,7 @@ La verificación local de T2 modela el handshake de control AOA del lado host si
 - Refactor: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml` formateó las pruebas Rust; luego `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` volvió a pasar con 8 pruebas.
 - `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check`: pasó sin salida después del formateo.
 - `git diff --check`: pasó sin salida.
+- Spot check del parent local después del writer/verifier: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` pasó con 8 pruebas Rust, lib/doc tests sin pruebas.
 - El modelo solo registra operaciones de control AOA sobre un transporte fake: `GetProtocol`, seis strings de identidad en orden índice 0..5 y `StartAccessory`.
 - La ruta negativa de versión de protocolo rechaza `0` después de `GetProtocol` y antes de enviar identidad.
 - La ruta negativa de identidad incompleta falla antes de cualquier solicitud USB simulada.
