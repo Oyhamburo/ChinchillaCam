@@ -51,18 +51,36 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 
 ## División incremental
 
-- [x] **T1 — Prototipo USB mínimo buildable con handshake simulado.** Agregar una unidad coherente de Android Kotlin y escritorio Rust que exprese el límite de transporte USB y un handshake AOA simulado o modelado sin hardware real. Debe incluir pruebas/chequeos observables y documentación de evidencia en este mismo work unit. No afirmar compatibilidad de dispositivo, Windows ni Samsung.
-- [ ] **T2 — Evidencia y límites posteriores.** Si T1 deja preguntas de documentación fuera del commit de código, actualizar documentación en español con lo que el Mac puede verificar y lo que queda pendiente para Windows 11 y Samsung reales.
+- [x] **T1 — Prototipo USB mínimo buildable con handshake simulado.** Commit `394d2d1` (`feat: add strict TDD USB probe prototype`) agregó una unidad coherente de Android Kotlin y escritorio Rust que expresa límites de transporte USB, parsing AOA mínimo y validaciones sin hardware real. Incluye pruebas observables y documentación de evidencia en el mismo work unit. No afirma compatibilidad de dispositivo, Windows ni Samsung. Revisión nativa RDD aprobada y reconocida: lineage `review-3d704aca5d159a2f`.
+- [ ] **T2 — Handshake AOA host test-first.** Extender el prototipo Rust con un modelo de handshake host AOA más real: solicitudes de control, orden de envío de identidad de accesorio y transición esperada a modo accessory, usando un transporte fake en pruebas. Debe iniciar con RED observado, terminar con pruebas y documentación del alcance; no debe enumerar hardware ni afirmar soporte real.
+- [ ] **T3 — Datos/lado Android accessory test-first.** Extender el lado Android con el contrato de recepción/validación de identidad o datos iniciales desde accessory, usando pruebas JVM y sin cámara/video. Debe mantener ADB fuera del transporte de producto.
+- [ ] **T4 — Evidencia y límites por plataforma.** Documentar qué prueba el Mac sin hardware y qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir cualquier advertencia de drivers WinUSB/libusb como decisión manual, nunca automatizada.
+
+## Estrategia de entrega y slicing
+
+- **Decisión del usuario:** “lo que sea más rápido”.
+- **Estrategia elegida por el orquestador:** `chain_strategy=stacked-to-main`, con work units secuenciales y autocontenidos que podrían encadenarse hacia la rama principal solo si un PR se autoriza explícitamente más adelante.
+- **Delivery strategy:** `ask-on-risk` ya resuelto para este umbral; no se agrega overhead de PR/tracker ahora.
+- **Riesgo observado:** T1 fue un work unit coherente de ~436 líneas authored, por encima del umbral orientativo de ~400. No se debe hacer code-golf ni separar tests/docs del comportamiento para bajar el número.
+- **Regla futura:** cuando existan PRs explícitamente autorizados, si un slicing honesto y cohesivo no puede mantener cada slice en <=400 líneas, reportar la necesidad de `size:exception` explícito de maintainer en vez de asumir que esta respuesta lo concede.
 
 ## Plan de commits de unidad de trabajo
 
-1. `chore: track USB transport feasibility prototype` — esta tarea ODD y espejo de memoria.
-2. `feat: add bounded USB transport prototype skeleton` — código mínimo y verificación del primer prototipo.
-3. `docs: record USB prototype evidence and hardware limits` — solo si la evidencia documental merece un cierre separado; de lo contrario se mantiene con el commit del prototipo.
+1. `chore: track USB transport feasibility prototype` — esta tarea ODD y espejo de memoria. Commit `9066ff1`.
+2. `feat: add strict TDD USB probe prototype` — código mínimo, pruebas y evidencia del primer prototipo. Commit `394d2d1`; revisión nativa aprobada y reconocida en lineage `review-3d704aca5d159a2f`.
+3. T2 previsto: `feat: model AOA host control handshake` — handshake host AOA real bajo TDD estricto con transporte fake y pruebas RED/GREEN; docs/evidencia en el mismo work unit.
+4. T3 previsto: `feat: model Android accessory payload boundary` — contrato Android de payload/identidad accessory bajo TDD estricto; docs/evidencia en el mismo work unit.
 
 ## Verificación T1
 
 La verificación local de T1 modela límites de transporte USB sin hardware real. No prueba compatibilidad con Windows, macOS como host USB real, Samsung Galaxy Note10, Samsung Galaxy S24+, cámara, OBS, Wi‑Fi ni video.
+
+### Revisión nativa RDD T1
+
+- Candidato: `394d2d1` contra base `9066ff1`.
+- Lineage: `review-3d704aca5d159a2f`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida. No volver a consultar STATUS sobre este lineage quemado.
+- Hallazgos advisory no bloqueantes del reviewer: longitud de respuesta Android, rango de IDs USB Android y handshake aún no modelado. No abren corrección para T1; se tratan como trabajo futuro, especialmente T2.
 
 ### RED observado antes del código de producción
 
