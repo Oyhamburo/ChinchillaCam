@@ -1,2 +1,16 @@
 # Local Pi runtime state
 .atl/
+
+# Build outputs
+.gradle/
+build/
+**/build/
+
+# Rust outputs
+target/
+**/target/
+
+# Local IDE files
+.idea/
+*.iml
+.DS_Store

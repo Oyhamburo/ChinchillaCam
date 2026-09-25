@@ -42,15 +42,16 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 
 ## Modo TDD efectivo
 
-- **Modo:** TDD activado para prototipos de código nuevos.
-- **Fuente:** no existe configuración TDD previa del repositorio ni runner heredado; `odd/tasks/define-product.md` solo declaró que TDD no aplicaba a la fase documental. Para esta fase, la instrucción vigente del usuario y del orquestador exige resolver runner antes de escribir código y mantener código, pruebas y documentación del comportamiento en el mismo work unit.
+- **Modo:** TDD estricto activado para prototipos de código nuevos.
+- **Fuente:** elección explícita del usuario relayed por el orquestador: “Sí TDD estricto”. No existe configuración TDD previa del repositorio ni runner heredado; `odd/tasks/define-product.md` solo declaró que TDD no aplicaba a la fase documental.
+- **Historia de recuperación:** hubo WIP no commiteado en el worktree original `/Users/jele/Desktop/codes/ChinchillaCam` escrito antes de la autorización explícita de TDD estricto y antes de un RED observado. Ese WIP queda preservado e intacto, no se considera evidencia TDD y no debe commitearse como TDD-compliant. Este worktree aislado `/Users/jele/Desktop/codes/ChinchillaCam-usb-tdd` parte del commit limpio `9066ff1` para obtener evidencia real RED→GREEN.
 - **Runner Rust T1:** `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`.
-- **Runner Android T1:** comando Gradle enfocado del módulo `:android:usb-probe` con `ANDROID_HOME=$HOME/Library/Android/sdk` y una distribución Gradle cacheada elegida después de revisar compatibilidad AGP/Kotlin. Si la compatibilidad no puede resolverse sin descargar o instalar dependencias nuevas, T1 debe detenerse o registrar ese bloqueo antes de presentar soporte Android como verificado.
-- **Regla de evidencia:** primero debe existir una prueba o chequeo observable que falle o no exista por la ausencia del comportamiento, luego el código mínimo para pasarla. Si una herramienta impide ejecutar el runner, se registra el comando exacto y el bloqueo; no se reemplaza por afirmaciones manuales.
+- **Runner Android T1:** `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`.
+- **Regla de evidencia:** observar y registrar RED antes del código de producción correspondiente, luego GREEN con el mínimo código necesario y una refactorización si procede. Si una herramienta impide ejecutar el runner, registrar el comando exacto y el bloqueo; no reemplazarlo por afirmaciones manuales.
 
 ## División incremental
 
-- [ ] **T1 — Prototipo USB mínimo buildable con handshake simulado.** Agregar una unidad coherente de Android Kotlin y escritorio Rust que exprese el límite de transporte USB y un handshake AOA simulado o modelado sin hardware real. Debe incluir pruebas/chequeos observables y documentación de evidencia en este mismo work unit. No afirmar compatibilidad de dispositivo, Windows ni Samsung.
+- [x] **T1 — Prototipo USB mínimo buildable con handshake simulado.** Agregar una unidad coherente de Android Kotlin y escritorio Rust que exprese el límite de transporte USB y un handshake AOA simulado o modelado sin hardware real. Debe incluir pruebas/chequeos observables y documentación de evidencia en este mismo work unit. No afirmar compatibilidad de dispositivo, Windows ni Samsung.
 - [ ] **T2 — Evidencia y límites posteriores.** Si T1 deja preguntas de documentación fuera del commit de código, actualizar documentación en español con lo que el Mac puede verificar y lo que queda pendiente para Windows 11 y Samsung reales.
 
 ## Plan de commits de unidad de trabajo
@@ -59,6 +60,27 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 2. `feat: add bounded USB transport prototype skeleton` — código mínimo y verificación del primer prototipo.
 3. `docs: record USB prototype evidence and hardware limits` — solo si la evidencia documental merece un cierre separado; de lo contrario se mantiene con el commit del prototipo.
 
-## Verificación inicial
+## Verificación T1
 
-Pendiente: crear los prototipos y registrar comandos exactos. La verificación local no equivale a prueba de Windows 11 ni de dispositivos Samsung.
+La verificación local de T1 modela límites de transporte USB sin hardware real. No prueba compatibilidad con Windows, macOS como host USB real, Samsung Galaxy Note10, Samsung Galaxy S24+, cámara, OBS, Wi‑Fi ni video.
+
+### RED observado antes del código de producción
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: falló inicialmente con código 101 porque `desktop/usb-probe/Cargo.toml` no existía.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló inicialmente con código 1 porque el directorio no contenía un proyecto Gradle.
+- Después de crear el harness mínimo y pruebas, `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` falló con código 101 por imports inexistentes en `usb_probe`: `parse_protocol_version_response`, `AccessoryIdentity`, `AoaProtocolVersion` y `DeviceSummary`.
+- Spot RED adicional para asegurar el límite Rust con `rusb`: tras agregar una prueba para `UsbHostBoundary`, `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` falló con código 101 por import inexistente `usb_probe::UsbHostBoundary`.
+- Después de crear el harness mínimo y pruebas, `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest` falló con código 1 por referencias Kotlin inexistentes: `AoaProtocolVersion`, `AccessoryIdentity` y `UsbDeviceSummary`. Antes de ese RED útil hubo ajustes de harness para alinear JVM 17 y agregar JUnit local.
+
+### GREEN observado
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: pasó; 5 pruebas de `aoa_boundary_test.rs` en verde, más lib/doc tests sin pruebas. La primera ejecución verde resolvió dependencias de `rusb`/`libusb1-sys` desde Cargo.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: pasó; `BUILD SUCCESSFUL` con 14 tareas, 6 ejecutadas y 8 up-to-date.
+
+### Refactor y límites explícitos
+
+- Refactor/configuración: se fijó `compileSdk = 33` para usar una combinación compatible con Android Gradle Plugin 8.0.2 disponible en caché local y evitar advertencias por SDK no probado.
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: pasó nuevamente después del ajuste.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: pasó nuevamente después del ajuste.
+- El prototipo solo cubre parsing little-endian de versión AOA, validación mínima de identidad de accesorio, un límite host Rust tipado sobre `rusb` que no enumera hardware en pruebas, y formateo de resumen de dispositivo con texto que aclara que el transporte de hardware sigue no validado.
+- No se usó ADB como transporte, no se instaló ni modificó ningún driver, no se usó Zadig, no se tocaron configuraciones del sistema y no se afirmó compatibilidad de hardware.
