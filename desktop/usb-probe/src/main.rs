@@ -96,7 +96,7 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
     println!("AOA protocol: {}", result.protocol().value());
     println!("{}", result.reenumeration_wait_description());
     println!(
-        "AOA re-enumeration observed: {}",
+        "physically matched AOA device: {}",
         result
             .accessory_device()
             .map(|device| device.to_string())

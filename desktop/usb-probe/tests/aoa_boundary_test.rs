@@ -2,11 +2,11 @@ use std::time::Duration;
 
 use usb_probe::{
     parse_protocol_version_response, AccessoryIdentity, AoaAccessoryReenumerationPoller,
-    AoaControlRequest, AoaHostController, AoaOperation, AoaProtocolVersion, AoaStartOutcome,
-    BulkEndpointClaim, BulkFrame, BulkTransportBoundary, DeviceIdentifier, DeviceSummary,
-    DryRunAoaPlanner, FakeAoaTransport, HostAoaControlOptions, LiveAoaControlRunner,
+    AoaControlRequest, AoaHostController, AoaObservedDevice, AoaOperation, AoaProtocolVersion,
+    AoaStartOutcome, BulkEndpointClaim, BulkFrame, BulkTransportBoundary, DeviceIdentifier,
+    DeviceSummary, DryRunAoaPlanner, FakeAoaTransport, HostAoaControlOptions, LiveAoaControlRunner,
     RecordingUsbControlIo, RecordingUsbDeviceRegistry, ReenumerationWait, RusbAoaControlTransport,
-    UsbHostBoundary, AOA_ACCESSORY_DEVICE_IDS,
+    UsbHostBoundary, UsbPhysicalLocation, AOA_ACCESSORY_DEVICE_IDS,
 };
 
 #[test]
@@ -344,15 +344,23 @@ fn live_host_control_runner_opens_only_the_explicit_selected_device() {
         "prototype-t5b",
     );
     let selected = DeviceIdentifier::parse_vid_pid("18d1:4ee7").unwrap();
-    let registry = RecordingUsbDeviceRegistry::with_device(selected.clone(), [0x02, 0x00]);
+    let physical_location = UsbPhysicalLocation::new(3, vec![1, 4]).unwrap();
+    let registry = RecordingUsbDeviceRegistry::with_device_at_location(
+        selected.clone(),
+        physical_location.clone(),
+        [0x02, 0x00],
+    );
     let options = HostAoaControlOptions::new(
         selected.clone(),
         Duration::from_millis(250),
         ReenumerationWait::bounded(Duration::from_millis(500)),
     );
 
-    let poller = AoaAccessoryReenumerationPoller::fake_with_snapshots(vec![vec![
-        DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap(),
+    let poller = AoaAccessoryReenumerationPoller::fake_with_observed_snapshots(vec![vec![
+        AoaObservedDevice::new(
+            DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap(),
+            Some(physical_location),
+        ),
     ]]);
 
     let result = LiveAoaControlRunner::new(registry)
@@ -363,9 +371,12 @@ fn live_host_control_runner_opens_only_the_explicit_selected_device() {
     assert_eq!(result.protocol(), AoaProtocolVersion::new(2).unwrap());
     assert_eq!(
         result.reenumeration_wait_description(),
-        "AOA re-enumeration observed as 18d1:2d01 after bounded post-START poll"
+        "AOA re-enumeration observed as 18d1:2d01 at bus 3 ports 1.4 after bounded post-START poll"
     );
-    assert_eq!(result.accessory_device().unwrap().to_string(), "18d1:2d01");
+    assert_eq!(
+        result.accessory_device().unwrap().to_string(),
+        "18d1:2d01 at bus 3 ports 1.4"
+    );
     assert_eq!(result.reenumeration_poll_attempts(), 1);
     assert_eq!(result.registry().open_attempts(), &[selected]);
     assert_eq!(result.registry().fallback_enumeration_attempts(), 0);
@@ -496,15 +507,23 @@ fn live_host_control_runner_polls_for_aoa_reenumeration_after_start_accessory() 
         "prototype-t5c1",
     );
     let selected = DeviceIdentifier::parse_vid_pid("18d1:4ee7").unwrap();
-    let registry = RecordingUsbDeviceRegistry::with_device(selected.clone(), [0x02, 0x00]);
+    let physical_location = UsbPhysicalLocation::new(3, vec![1, 4]).unwrap();
+    let registry = RecordingUsbDeviceRegistry::with_device_at_location(
+        selected.clone(),
+        physical_location.clone(),
+        [0x02, 0x00],
+    );
     let options = HostAoaControlOptions::new(
         selected.clone(),
         Duration::from_millis(250),
         ReenumerationWait::bounded(Duration::from_millis(500)),
     );
-    let poller = AoaAccessoryReenumerationPoller::fake_with_snapshots(vec![
+    let poller = AoaAccessoryReenumerationPoller::fake_with_observed_snapshots(vec![
         vec![],
-        vec![DeviceIdentifier::parse_vid_pid("18d1:2d00").unwrap()],
+        vec![AoaObservedDevice::new(
+            DeviceIdentifier::parse_vid_pid("18d1:2d00").unwrap(),
+            Some(physical_location.clone()),
+        )],
     ]);
 
     let result = LiveAoaControlRunner::new(registry)
@@ -512,7 +531,117 @@ fn live_host_control_runner_polls_for_aoa_reenumeration_after_start_accessory() 
         .unwrap();
 
     assert_eq!(result.selected_device(), &selected);
-    assert_eq!(result.accessory_device().unwrap().to_string(), "18d1:2d00");
+    assert_eq!(
+        result.accessory_device().unwrap().to_string(),
+        "18d1:2d00 at bus 3 ports 1.4"
+    );
+    assert_eq!(
+        result.accessory_device().unwrap().physical_location(),
+        &physical_location
+    );
     assert!(result.aoa_reenumeration_observed());
     assert_eq!(result.reenumeration_poll_attempts(), 2);
+}
+
+#[test]
+fn reenumeration_poller_binds_aoa_device_to_pre_start_physical_location() {
+    let physical_location = UsbPhysicalLocation::new(7, vec![2, 1]).unwrap();
+    let unrelated_location = UsbPhysicalLocation::new(7, vec![2, 3]).unwrap();
+    let mut poller = AoaAccessoryReenumerationPoller::fake_with_observed_snapshots(vec![vec![
+        AoaObservedDevice::new(
+            DeviceIdentifier::parse_vid_pid("18d1:2d00").unwrap(),
+            Some(unrelated_location),
+        ),
+        AoaObservedDevice::new(
+            DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap(),
+            Some(physical_location.clone()),
+        ),
+    ]]);
+
+    let observed = poller
+        .poll_until_bound_to_location(
+            &physical_location,
+            &ReenumerationWait::bounded(Duration::ZERO),
+        )
+        .unwrap();
+
+    assert_eq!(observed.identifier().to_string(), "18d1:2d01");
+    assert_eq!(observed.physical_location(), &physical_location);
+    assert_eq!(poller.attempts(), 1);
+}
+
+#[test]
+fn reenumeration_poller_fails_closed_when_matching_aoa_identity_is_missing_or_ambiguous() {
+    let physical_location = UsbPhysicalLocation::new(7, vec![2, 1]).unwrap();
+    let other_location = UsbPhysicalLocation::new(7, vec![2, 3]).unwrap();
+    let mut missing = AoaAccessoryReenumerationPoller::fake_with_observed_snapshots(vec![vec![
+        AoaObservedDevice::new(
+            DeviceIdentifier::parse_vid_pid("18d1:2d00").unwrap(),
+            Some(other_location),
+        ),
+    ]]);
+
+    assert_eq!(
+        missing
+            .poll_until_bound_to_location(
+                &physical_location,
+                &ReenumerationWait::bounded(Duration::ZERO)
+            )
+            .unwrap_err(),
+        usb_probe::UsbProbeError::AoaReenumerationTimedOut
+    );
+
+    let mut ambiguous = AoaAccessoryReenumerationPoller::fake_with_observed_snapshots(vec![vec![
+        AoaObservedDevice::new(
+            DeviceIdentifier::parse_vid_pid("18d1:2d00").unwrap(),
+            Some(physical_location.clone()),
+        ),
+        AoaObservedDevice::new(
+            DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap(),
+            Some(physical_location.clone()),
+        ),
+    ]]);
+
+    assert_eq!(
+        ambiguous
+            .poll_until_bound_to_location(
+                &physical_location,
+                &ReenumerationWait::bounded(Duration::ZERO)
+            )
+            .unwrap_err(),
+        usb_probe::UsbProbeError::AoaReenumerationAmbiguous
+    );
+}
+
+#[test]
+fn live_runner_fails_closed_when_pre_start_physical_identity_is_unavailable() {
+    let identity = AccessoryIdentity::new(
+        "ChinchillaCam",
+        "USB Probe",
+        "live AOA identity guard",
+        "0.5.3",
+        "https://example.invalid/chinchillacam",
+        "prototype-t5c1b",
+    );
+    let selected = DeviceIdentifier::parse_vid_pid("18d1:4ee7").unwrap();
+    let registry = RecordingUsbDeviceRegistry::with_device(selected.clone(), [0x02, 0x00]);
+    let options = HostAoaControlOptions::new(
+        selected,
+        Duration::from_millis(250),
+        ReenumerationWait::bounded(Duration::from_millis(500)),
+    );
+    let poller = AoaAccessoryReenumerationPoller::fake_with_observed_snapshots(vec![vec![]]);
+
+    let error = LiveAoaControlRunner::new(registry)
+        .start_accessory_and_poll(&identity, options, poller)
+        .unwrap_err();
+
+    assert_eq!(error, usb_probe::UsbProbeError::PhysicalIdentityUnavailable);
+}
+
+#[test]
+fn reenumeration_wait_zero_timeout_is_bounded_to_one_attempt_without_overflow() {
+    let wait = ReenumerationWait::bounded(Duration::ZERO);
+
+    assert_eq!(wait.max_attempts(), 1);
 }

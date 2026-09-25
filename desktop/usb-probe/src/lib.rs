@@ -35,6 +35,8 @@ pub enum UsbProbeError {
     EmptyBulkFrame,
     SelectedDeviceNotFound(DeviceIdentifier),
     InvalidReenumerationWait,
+    PhysicalIdentityUnavailable,
+    AoaReenumerationAmbiguous,
     AoaReenumerationTimedOut,
 }
 
@@ -187,10 +189,90 @@ pub const AOA_ACCESSORY_DEVICE_IDS: [DeviceIdentifier; 2] = [
     },
 ];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsbPhysicalLocation {
+    bus_number: u8,
+    port_path: Vec<u8>,
+}
+
+impl UsbPhysicalLocation {
+    pub fn new(bus_number: u8, port_path: Vec<u8>) -> Result<Self, UsbProbeError> {
+        if port_path.is_empty() {
+            return Err(UsbProbeError::PhysicalIdentityUnavailable);
+        }
+
+        Ok(Self {
+            bus_number,
+            port_path,
+        })
+    }
+
+    pub fn bus_number(&self) -> u8 {
+        self.bus_number
+    }
+
+    pub fn port_path(&self) -> &[u8] {
+        &self.port_path
+    }
+}
+
+impl fmt::Display for UsbPhysicalLocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ports = self
+            .port_path
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(".");
+        write!(formatter, "bus {} ports {ports}", self.bus_number)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AoaObservedDevice {
+    identifier: DeviceIdentifier,
+    physical_location: Option<UsbPhysicalLocation>,
+}
+
+impl AoaObservedDevice {
+    pub fn new(
+        identifier: DeviceIdentifier,
+        physical_location: Option<UsbPhysicalLocation>,
+    ) -> Self {
+        Self {
+            identifier,
+            physical_location,
+        }
+    }
+
+    pub fn identifier(&self) -> &DeviceIdentifier {
+        &self.identifier
+    }
+
+    pub fn physical_location(&self) -> &UsbPhysicalLocation {
+        self.physical_location
+            .as_ref()
+            .expect("bound AOA observations always carry physical location")
+    }
+}
+
+impl fmt::Display for AoaObservedDevice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.physical_location {
+            Some(location) => write!(formatter, "{} at {location}", self.identifier),
+            None => write!(
+                formatter,
+                "{} with unavailable physical location",
+                self.identifier
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum AoaAccessoryReenumerationPollerMode {
     Fake {
-        snapshots: Vec<Vec<DeviceIdentifier>>,
+        snapshots: Vec<Vec<AoaObservedDevice>>,
         attempts: usize,
         observed_timeouts: Vec<Duration>,
     },
@@ -204,6 +286,19 @@ pub struct AoaAccessoryReenumerationPoller {
 
 impl AoaAccessoryReenumerationPoller {
     pub fn fake_with_snapshots(snapshots: Vec<Vec<DeviceIdentifier>>) -> Self {
+        let snapshots = snapshots
+            .into_iter()
+            .map(|snapshot| {
+                snapshot
+                    .into_iter()
+                    .map(|identifier| AoaObservedDevice::new(identifier, None))
+                    .collect()
+            })
+            .collect();
+        Self::fake_with_observed_snapshots(snapshots)
+    }
+
+    pub fn fake_with_observed_snapshots(snapshots: Vec<Vec<AoaObservedDevice>>) -> Self {
         Self {
             mode: AoaAccessoryReenumerationPollerMode::Fake {
                 snapshots,
@@ -236,10 +331,11 @@ impl AoaAccessoryReenumerationPoller {
                         .get(attempt_index)
                         .map(Vec::as_slice)
                         .unwrap_or(&[]);
-                    if let Some(device) =
-                        snapshot.iter().copied().find(Self::is_aoa_accessory_device)
+                    if let Some(device) = snapshot
+                        .iter()
+                        .find(|device| Self::is_aoa_accessory_device(device.identifier()))
                     {
-                        return Ok(device);
+                        return Ok(*device.identifier());
                     }
                 }
                 Err(UsbProbeError::AoaReenumerationTimedOut)
@@ -249,6 +345,54 @@ impl AoaAccessoryReenumerationPoller {
                 for attempt_index in 0..wait.max_attempts() {
                     if let Some(device) = enumerate_rusb_aoa_accessory_once()? {
                         return Ok(device);
+                    }
+                    if attempt_index + 1 < wait.max_attempts() {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            break;
+                        }
+                        thread::sleep(wait.poll_interval().min(deadline - now));
+                    }
+                }
+                Err(UsbProbeError::AoaReenumerationTimedOut)
+            }
+        }
+    }
+
+    pub fn poll_until_bound_to_location(
+        &mut self,
+        physical_location: &UsbPhysicalLocation,
+        wait: &ReenumerationWait,
+    ) -> Result<AoaObservedDevice, UsbProbeError> {
+        match &mut self.mode {
+            AoaAccessoryReenumerationPollerMode::Fake {
+                snapshots,
+                attempts,
+                observed_timeouts,
+            } => {
+                observed_timeouts.push(wait.timeout());
+                for attempt_index in 0..wait.max_attempts() {
+                    *attempts += 1;
+                    let snapshot = snapshots
+                        .get(attempt_index)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    if let Some(bound) =
+                        Self::bound_snapshot_to_location(snapshot, physical_location)?
+                    {
+                        return Ok(bound);
+                    }
+                }
+                Err(UsbProbeError::AoaReenumerationTimedOut)
+            }
+            AoaAccessoryReenumerationPollerMode::Rusb => {
+                let deadline = Instant::now() + wait.timeout();
+                for attempt_index in 0..wait.max_attempts() {
+                    let snapshot = enumerate_rusb_aoa_observations_once()?;
+                    if let Some(bound) =
+                        Self::bound_snapshot_to_location(&snapshot, physical_location)?
+                    {
+                        return Ok(bound);
                     }
                     if attempt_index + 1 < wait.max_attempts() {
                         let now = Instant::now();
@@ -282,6 +426,36 @@ impl AoaAccessoryReenumerationPoller {
     fn is_aoa_accessory_device(device: &DeviceIdentifier) -> bool {
         AOA_ACCESSORY_DEVICE_IDS.contains(device)
     }
+
+    fn bound_snapshot_to_location(
+        snapshot: &[AoaObservedDevice],
+        physical_location: &UsbPhysicalLocation,
+    ) -> Result<Option<AoaObservedDevice>, UsbProbeError> {
+        let mut unavailable_identity_seen = false;
+        let mut matches = snapshot
+            .iter()
+            .filter(|device| Self::is_aoa_accessory_device(device.identifier()))
+            .filter_map(|device| match &device.physical_location {
+                Some(location) if location == physical_location => Some(Ok(device.clone())),
+                Some(_) => None,
+                None => {
+                    unavailable_identity_seen = true;
+                    None
+                }
+            })
+            .collect::<Result<Vec<_>, UsbProbeError>>()?;
+
+        if unavailable_identity_seen {
+            return Err(UsbProbeError::PhysicalIdentityUnavailable);
+        }
+        if matches.len() > 1 {
+            return Err(UsbProbeError::AoaReenumerationAmbiguous);
+        }
+        if let Some(device) = matches.pop() {
+            return Ok(Some(device));
+        }
+        Ok(None)
+    }
 }
 
 fn enumerate_rusb_aoa_accessory_once() -> Result<Option<DeviceIdentifier>, UsbProbeError> {
@@ -305,6 +479,43 @@ fn enumerate_rusb_aoa_accessory_once() -> Result<Option<DeviceIdentifier>, UsbPr
     }
 
     Ok(None)
+}
+
+fn enumerate_rusb_aoa_observations_once() -> Result<Vec<AoaObservedDevice>, UsbProbeError> {
+    let context = rusb::Context::new()
+        .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
+    let devices = context
+        .devices()
+        .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
+    let mut observations = Vec::new();
+
+    for device in devices.iter() {
+        let Ok(descriptor) = device.device_descriptor() else {
+            continue;
+        };
+        let identifier = DeviceIdentifier::VidPid {
+            vendor_id: descriptor.vendor_id(),
+            product_id: descriptor.product_id(),
+        };
+        if AOA_ACCESSORY_DEVICE_IDS.contains(&identifier) {
+            let physical_location = physical_location_for_rusb_device(&device).ok();
+            observations.push(AoaObservedDevice::new(identifier, physical_location));
+        }
+    }
+
+    Ok(observations)
+}
+
+fn physical_location_for_rusb_device<C>(
+    device: &rusb::Device<C>,
+) -> Result<UsbPhysicalLocation, UsbProbeError>
+where
+    C: rusb::UsbContext,
+{
+    let port_path = device
+        .port_numbers()
+        .map_err(|_| UsbProbeError::PhysicalIdentityUnavailable)?;
+    UsbPhysicalLocation::new(device.bus_number(), port_path)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,7 +651,12 @@ impl ReenumerationWait {
         let poll_interval = Duration::from_millis(50);
         let timeout_ms = timeout.as_millis();
         let interval_ms = poll_interval.as_millis().max(1);
-        let max_attempts = ((timeout_ms + interval_ms - 1) / interval_ms).max(1) as usize;
+        let attempts = timeout_ms
+            .saturating_add(interval_ms - 1)
+            .checked_div(interval_ms)
+            .unwrap_or(1)
+            .max(1);
+        let max_attempts = attempts.min(usize::MAX as u128) as usize;
         Self {
             timeout,
             poll_interval,
@@ -506,18 +722,38 @@ pub trait ControlRequestSnapshot {
     fn control_requests_snapshot(&self) -> Vec<AoaControlRequest>;
 }
 
+#[derive(Debug, Clone)]
+pub struct SelectedUsbDevice<I> {
+    io: I,
+    physical_location: UsbPhysicalLocation,
+}
+
+impl<I> SelectedUsbDevice<I> {
+    pub fn new(io: I, physical_location: UsbPhysicalLocation) -> Self {
+        Self {
+            io,
+            physical_location,
+        }
+    }
+
+    pub fn into_parts(self) -> (I, UsbPhysicalLocation) {
+        (self.io, self.physical_location)
+    }
+}
+
 pub trait SelectedUsbDeviceRegistry {
     type Io: UsbControlIo + ControlRequestSnapshot;
 
     fn open_selected_device(
         &mut self,
         selected_device: &DeviceIdentifier,
-    ) -> Result<Self::Io, UsbProbeError>;
+    ) -> Result<SelectedUsbDevice<Self::Io>, UsbProbeError>;
 }
 
 #[derive(Debug, Clone)]
 pub struct RecordingUsbDeviceRegistry {
     available_device: Option<DeviceIdentifier>,
+    physical_location: Option<UsbPhysicalLocation>,
     get_protocol_response: [u8; 2],
     open_attempts: Vec<DeviceIdentifier>,
     fallback_enumeration_attempts: usize,
@@ -527,6 +763,21 @@ impl RecordingUsbDeviceRegistry {
     pub fn with_device(available_device: DeviceIdentifier, get_protocol_response: [u8; 2]) -> Self {
         Self {
             available_device: Some(available_device),
+            physical_location: None,
+            get_protocol_response,
+            open_attempts: Vec::new(),
+            fallback_enumeration_attempts: 0,
+        }
+    }
+
+    pub fn with_device_at_location(
+        available_device: DeviceIdentifier,
+        physical_location: UsbPhysicalLocation,
+        get_protocol_response: [u8; 2],
+    ) -> Self {
+        Self {
+            available_device: Some(available_device),
+            physical_location: Some(physical_location),
             get_protocol_response,
             open_attempts: Vec::new(),
             fallback_enumeration_attempts: 0,
@@ -536,6 +787,7 @@ impl RecordingUsbDeviceRegistry {
     pub fn without_devices() -> Self {
         Self {
             available_device: None,
+            physical_location: None,
             get_protocol_response: [0, 0],
             open_attempts: Vec::new(),
             fallback_enumeration_attempts: 0,
@@ -557,11 +809,16 @@ impl SelectedUsbDeviceRegistry for RecordingUsbDeviceRegistry {
     fn open_selected_device(
         &mut self,
         selected_device: &DeviceIdentifier,
-    ) -> Result<Self::Io, UsbProbeError> {
-        self.open_attempts.push(selected_device.clone());
+    ) -> Result<SelectedUsbDevice<Self::Io>, UsbProbeError> {
+        self.open_attempts.push(*selected_device);
         if self.available_device.as_ref() == Some(selected_device) {
-            Ok(RecordingUsbControlIo::with_get_protocol_response(
-                self.get_protocol_response,
+            let physical_location = self
+                .physical_location
+                .clone()
+                .ok_or(UsbProbeError::PhysicalIdentityUnavailable)?;
+            Ok(SelectedUsbDevice::new(
+                RecordingUsbControlIo::with_get_protocol_response(self.get_protocol_response),
+                physical_location,
             ))
         } else {
             Err(UsbProbeError::SelectedDeviceNotFound(*selected_device))
@@ -580,7 +837,7 @@ impl SelectedUsbDeviceRegistry for RusbUsbDeviceRegistry {
     fn open_selected_device(
         &mut self,
         selected_device: &DeviceIdentifier,
-    ) -> Result<Self::Io, UsbProbeError> {
+    ) -> Result<SelectedUsbDevice<Self::Io>, UsbProbeError> {
         let context = rusb::Context::new()
             .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
         let devices = context
@@ -594,9 +851,11 @@ impl SelectedUsbDeviceRegistry for RusbUsbDeviceRegistry {
             if descriptor.vendor_id() == selected_device.vendor_id()
                 && descriptor.product_id() == selected_device.product_id()
             {
+                let physical_location = physical_location_for_rusb_device(&device)?;
                 return device
                     .open()
                     .map(RusbDeviceControlIo::new)
+                    .map(|io| SelectedUsbDevice::new(io, physical_location))
                     .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()));
             }
         }
@@ -612,7 +871,7 @@ pub struct LiveAoaControlResult<R> {
     protocol: AoaProtocolVersion,
     reenumeration_wait_description: String,
     control_requests: Vec<AoaControlRequest>,
-    accessory_device: Option<DeviceIdentifier>,
+    accessory_device: Option<AoaObservedDevice>,
     reenumeration_poll_attempts: usize,
 }
 
@@ -637,7 +896,7 @@ impl<R> LiveAoaControlResult<R> {
         &self.control_requests
     }
 
-    pub fn accessory_device(&self) -> Option<&DeviceIdentifier> {
+    pub fn accessory_device(&self) -> Option<&AoaObservedDevice> {
         self.accessory_device.as_ref()
     }
 
@@ -670,13 +929,16 @@ where
         mut reenumeration_poller: AoaAccessoryReenumerationPoller,
     ) -> Result<LiveAoaControlResult<R>, UsbProbeError> {
         let selected_device = *options.selected_device();
-        let io = self.registry.open_selected_device(&selected_device)?;
+        let selected_usb_device = self.registry.open_selected_device(&selected_device)?;
+        let (io, pre_start_physical_location) = selected_usb_device.into_parts();
         let transport = RusbAoaControlTransport::new(io, options.control_timeout());
         let mut controller = AoaHostController::new(transport);
         let protocol = controller.start_accessory_mode(identity)?;
         let control_requests = controller.transport().io.control_requests_snapshot();
-        let accessory_device =
-            reenumeration_poller.poll_until_observed(options.reenumeration_wait())?;
+        let accessory_device = reenumeration_poller.poll_until_bound_to_location(
+            &pre_start_physical_location,
+            options.reenumeration_wait(),
+        )?;
         let reenumeration_poll_attempts = reenumeration_poller.attempts();
 
         Ok(LiveAoaControlResult {
