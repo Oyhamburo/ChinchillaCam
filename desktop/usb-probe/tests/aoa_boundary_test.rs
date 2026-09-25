@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use usb_probe::{
     parse_protocol_version_response, AccessoryIdentity, AoaControlRequest, AoaHostController,
-    AoaOperation, AoaProtocolVersion, AoaStartOutcome, DeviceSummary, FakeAoaTransport,
+    AoaOperation, AoaProtocolVersion, AoaStartOutcome, BulkEndpointClaim, BulkFrame,
+    BulkTransportBoundary, DeviceIdentifier, DeviceSummary, DryRunAoaPlanner, FakeAoaTransport,
     RecordingUsbControlIo, RusbAoaControlTransport, UsbHostBoundary,
 };
 
@@ -260,4 +261,72 @@ fn rusb_adapter_maps_start_accessory_and_returns_expected_reenumeration_boundary
             next_step: "wait for disconnect/reconnect, then search for Google AOA VID/PID or claimed bulk endpoints"
         }
     );
+}
+
+#[test]
+fn parses_explicit_vid_pid_device_identifier_and_rejects_missing_or_invalid_input() {
+    assert_eq!(
+        DeviceIdentifier::parse_vid_pid("18d1:2d00").unwrap(),
+        DeviceIdentifier::VidPid {
+            vendor_id: 0x18d1,
+            product_id: 0x2d00
+        }
+    );
+    assert_eq!(
+        DeviceIdentifier::parse_vid_pid("18D1:2D01")
+            .unwrap()
+            .to_string(),
+        "18d1:2d01"
+    );
+
+    assert!(DeviceIdentifier::parse_required(None).is_err());
+    assert!(DeviceIdentifier::parse_vid_pid("18d1").is_err());
+    assert!(DeviceIdentifier::parse_vid_pid("zzzz:2d00").is_err());
+}
+
+#[test]
+fn dry_run_aoa_planner_requires_explicit_device_before_control_plan() {
+    let identity = AccessoryIdentity::new(
+        "ChinchillaCam",
+        "USB Probe",
+        "safe host CLI boundary",
+        "0.5.0",
+        "https://example.invalid/chinchillacam",
+        "prototype-t5a",
+    );
+
+    assert!(DryRunAoaPlanner::plan(None, &identity).is_err());
+
+    let plan = DryRunAoaPlanner::plan(Some("18d1:4ee7"), &identity).unwrap();
+
+    assert_eq!(plan.selected_device().to_string(), "18d1:4ee7");
+    assert_eq!(
+        plan.steps(),
+        &[
+            "select explicit USB device 18d1:4ee7; do not send AOA control requests to arbitrary devices",
+            "AOA control read GET_PROTOCOL request=51 length=2",
+            "AOA control write SEND_STRING indexes 0..5 with NUL-terminated identity",
+            "AOA control write START_ACCESSORY request=53",
+            "wait for disconnect/reconnect re-enumeration before searching for Google AOA VID/PID or claimed bulk endpoints",
+            "dry-run only: no hardware is opened and no bulk endpoint is claimed",
+        ]
+    );
+}
+
+#[test]
+fn bulk_transport_boundary_models_claimed_endpoints_and_minimal_frame_bytes() {
+    let endpoints = BulkEndpointClaim::new(0x81, 0x02).unwrap();
+    let boundary = BulkTransportBoundary::dry_run(endpoints.clone());
+    let frame = BulkFrame::new(7, vec![0xde, 0xad, 0xbe, 0xef]).unwrap();
+
+    assert_eq!(boundary.claimed_endpoints(), &endpoints);
+    assert_eq!(frame.stream_id(), 7);
+    assert_eq!(frame.payload(), &[0xde, 0xad, 0xbe, 0xef]);
+    assert_eq!(
+        frame.encode(),
+        vec![7, 0, 0, 0, 4, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef]
+    );
+
+    assert!(BulkEndpointClaim::new(0x01, 0x02).is_err());
+    assert!(BulkFrame::new(7, Vec::new()).is_err());
 }

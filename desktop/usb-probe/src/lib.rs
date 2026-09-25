@@ -22,6 +22,10 @@ pub enum UsbProbeError {
     UnsupportedProtocolVersion(u16),
     InvalidAccessoryIdentity,
     UsbControlTransferFailed(String),
+    MissingExplicitDeviceIdentifier,
+    InvalidDeviceIdentifier(String),
+    InvalidBulkEndpointClaim,
+    EmptyBulkFrame,
 }
 
 pub fn parse_protocol_version_response(
@@ -104,6 +108,170 @@ impl fmt::Display for DeviceSummary {
             self.product_id,
             self.protocol_version.value()
         )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceIdentifier {
+    VidPid { vendor_id: u16, product_id: u16 },
+}
+
+impl DeviceIdentifier {
+    pub fn parse_required(input: Option<&str>) -> Result<Self, UsbProbeError> {
+        let input = input.ok_or(UsbProbeError::MissingExplicitDeviceIdentifier)?;
+        Self::parse_vid_pid(input)
+    }
+
+    pub fn parse_vid_pid(input: &str) -> Result<Self, UsbProbeError> {
+        let (vendor, product) = input
+            .split_once(':')
+            .ok_or_else(|| UsbProbeError::InvalidDeviceIdentifier(input.to_string()))?;
+
+        if vendor.len() != 4 || product.len() != 4 {
+            return Err(UsbProbeError::InvalidDeviceIdentifier(input.to_string()));
+        }
+
+        let vendor_id = u16::from_str_radix(vendor, 16)
+            .map_err(|_| UsbProbeError::InvalidDeviceIdentifier(input.to_string()))?;
+        let product_id = u16::from_str_radix(product, 16)
+            .map_err(|_| UsbProbeError::InvalidDeviceIdentifier(input.to_string()))?;
+
+        Ok(Self::VidPid {
+            vendor_id,
+            product_id,
+        })
+    }
+}
+
+impl fmt::Display for DeviceIdentifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::VidPid {
+                vendor_id,
+                product_id,
+            } => write!(formatter, "{vendor_id:04x}:{product_id:04x}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DryRunAoaPlan {
+    selected_device: DeviceIdentifier,
+    steps: Vec<String>,
+}
+
+impl DryRunAoaPlan {
+    pub fn selected_device(&self) -> &DeviceIdentifier {
+        &self.selected_device
+    }
+
+    pub fn steps(&self) -> &[String] {
+        &self.steps
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DryRunAoaPlanner;
+
+impl DryRunAoaPlanner {
+    pub fn plan(
+        selected_device: Option<&str>,
+        identity: &AccessoryIdentity,
+    ) -> Result<DryRunAoaPlan, UsbProbeError> {
+        if !identity.is_valid_for_aoa_handshake() {
+            return Err(UsbProbeError::InvalidAccessoryIdentity);
+        }
+
+        let selected_device = DeviceIdentifier::parse_required(selected_device)?;
+        let selected_device_text = selected_device.to_string();
+
+        Ok(DryRunAoaPlan {
+            selected_device,
+            steps: vec![
+                format!(
+                    "select explicit USB device {selected_device_text}; do not send AOA control requests to arbitrary devices"
+                ),
+                "AOA control read GET_PROTOCOL request=51 length=2".to_string(),
+                "AOA control write SEND_STRING indexes 0..5 with NUL-terminated identity".to_string(),
+                "AOA control write START_ACCESSORY request=53".to_string(),
+                "wait for disconnect/reconnect re-enumeration before searching for Google AOA VID/PID or claimed bulk endpoints".to_string(),
+                "dry-run only: no hardware is opened and no bulk endpoint is claimed".to_string(),
+            ],
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkEndpointClaim {
+    in_endpoint: u8,
+    out_endpoint: u8,
+}
+
+impl BulkEndpointClaim {
+    pub fn new(in_endpoint: u8, out_endpoint: u8) -> Result<Self, UsbProbeError> {
+        if in_endpoint & 0x80 == 0 || out_endpoint & 0x80 != 0 || out_endpoint == 0 {
+            return Err(UsbProbeError::InvalidBulkEndpointClaim);
+        }
+
+        Ok(Self {
+            in_endpoint,
+            out_endpoint,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkTransportBoundary {
+    claimed_endpoints: BulkEndpointClaim,
+    opens_hardware: bool,
+}
+
+impl BulkTransportBoundary {
+    pub fn dry_run(claimed_endpoints: BulkEndpointClaim) -> Self {
+        Self {
+            claimed_endpoints,
+            opens_hardware: false,
+        }
+    }
+
+    pub fn claimed_endpoints(&self) -> &BulkEndpointClaim {
+        &self.claimed_endpoints
+    }
+
+    pub fn opens_hardware(&self) -> bool {
+        self.opens_hardware
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkFrame {
+    stream_id: u32,
+    payload: Vec<u8>,
+}
+
+impl BulkFrame {
+    pub fn new(stream_id: u32, payload: Vec<u8>) -> Result<Self, UsbProbeError> {
+        if payload.is_empty() {
+            return Err(UsbProbeError::EmptyBulkFrame);
+        }
+
+        Ok(Self { stream_id, payload })
+    }
+
+    pub fn stream_id(&self) -> u32 {
+        self.stream_id
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(8 + self.payload.len());
+        encoded.extend_from_slice(&self.stream_id.to_le_bytes());
+        encoded.extend_from_slice(&(self.payload.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(&self.payload);
+        encoded
     }
 }
 

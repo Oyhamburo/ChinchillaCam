@@ -55,7 +55,7 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 - [x] **T2 — Modelo AOA host control test-first.** Commit `bc4bb27` (`feat: model AOA host control handshake`) extendió el prototipo Rust con un modelo de handshake de control AOA: solicitud GET_PROTOCOL simulada, envío de identidad de accesorio en orden AOA, solicitud START_ACCESSORY simulada, validación de versión de protocolo y log ordenado de operaciones mediante `FakeAoaTransport`. Inició con RED observado y terminó con pruebas Rust en verde. No enumera hardware, no demuestra un handshake USB real y no afirma soporte real. Revisión nativa RDD aprobada y reconocida: lineage `review-2c36083eccc1a5f2`.
 - [x] **T3 — Adapter/CLI rusb para AOA host test-first.** Commit `dbf261c` (`feat: add rusb AOA host adapter`) agregó un límite host `rusb` testeado con mocks/fakes para mapear solicitudes de control AOA (`GET_PROTOCOL`, seis `SEND_STRING` y `START_ACCESSORY`) y devolver un estado seguro de re-enumeración esperada. No se ejecutó contra hardware, no enumera dispositivos en pruebas, no instala ni cambia drivers y no afirma endpoints bulk reales ni compatibilidad de plataforma/dispositivo. Revisión nativa RDD aprobada y reconocida: lineage `review-2eac537778fbc2c7`.
 - [x] **T4 — Android UsbManager accessory open/read/write test-first.** Commit `b6f8a85` (`feat: model Android accessory IO boundary`) agregó un límite Android pequeño alrededor de `UsbManager`/`UsbAccessory` mediante interfaces mockeables y streams inyectables. Las pruebas JVM cubren permiso denegado sin intento de apertura, apertura autorizada con sesión de lectura/escritura, lectura corta explícita, EOF explícito, cierre idempotente y escritura con `flush`. No usa hardware, no inicia cámara, no agrega Activity ni servicio, no usa ADB como transporte y no afirma compatibilidad real. Revisión nativa RDD aprobada y reconocida: lineage `review-a092b4fb9a1066ba`.
-- [ ] **T5a — Host CLI Rust seguro con selección explícita de dispositivo.** Agregar una CLI host que requiera identificadores de dispositivo provistos explícitamente por el usuario, modele enumeración/re-enumeración AOA y prepare transporte bulk con pruebas fake deterministas. No debe enviar solicitudes de control a dispositivos arbitrarios, no debe instalar ni cambiar drivers y no debe afirmar ejecución real en hardware.
+- [x] **T5a — Host CLI Rust seguro con selección explícita de dispositivo.** Se agregó una CLI host Rust dry-run que requiere `--device VID:PID` explícito antes de producir el plan AOA, modela espera de re-enumeración y agrega un límite bulk fake para endpoints reclamados y frames mínimos. No envía solicitudes de control a dispositivos arbitrarios, no abre hardware en dry-run, no instala ni cambia drivers y no afirma ejecución real en hardware.
 - [ ] **T5b — APK Android de prueba instalable.** Agregar un artefacto Android mínimo de prueba con UI/entrada visible del usuario para permiso/accesorio, apertura de accessory y lectura/escritura de payload framed acotado. Debe incluir pruebas, no iniciar cámara, no iniciar trabajo silencioso en segundo plano y no usar ADB como transporte de producto.
 - [ ] **T5c — Framing y guía smoke host↔phone.** Documentar el framing mínimo, pasos host↔teléfono reproducibles, salida esperada y ruta de cross-build Windows si es factible. La ejecución real con Windows 11, Samsung Galaxy Note10/S24+ y hardware USB queda explícitamente pendiente hasta observarla.
 - [ ] **T6 — Validación plataforma/dispositivo pendiente.** Registrar qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir advertencias de WinUSB/libusb como decisión manual del usuario, nunca automatizada. Mantener no-ADB como default; cualquier fallback de depuración USB solo se documenta después de pruebas específicas.
@@ -78,6 +78,31 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 6. T5a previsto: `feat: add safe AOA host CLI boundary` — CLI Rust con selección explícita de dispositivo, enumeración/re-enumeración AOA y límite bulk bajo TDD estricto; docs/evidencia en el mismo work unit.
 7. T5b previsto: `feat: add Android accessory smoke APK` — APK Android de prueba instalable con permiso visible y payload framed acotado bajo TDD estricto; docs/evidencia en el mismo work unit.
 8. T5c previsto: `docs: define host phone USB smoke procedure` — framing mínimo, instrucciones host↔phone, ruta Windows si es factible y validación hardware marcada pendiente.
+
+## Verificación T5a
+
+La verificación local de T5a cubre solamente el límite host Rust ejecutable en modo dry-run/offline y pruebas fake deterministas. No prueba hardware USB real, re-enumeración real, endpoints bulk reales, Windows, Samsung Galaxy Note10, Samsung Galaxy S24+, cámara, OBS, Wi‑Fi, video, drivers, Zadig ni configuraciones del sistema. ADB no se usa como transporte de producto.
+
+### RED observado antes del código de producción
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: falló con código 101 por imports inexistentes en `usb_probe`: `BulkEndpointClaim`, `BulkFrame`, `BulkTransportBoundary`, `DeviceIdentifier` y `DryRunAoaPlanner`.
+
+### GREEN observado
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: pasó; 14 pruebas Rust en `aoa_boundary_test.rs` en verde, más lib/bin/doc tests sin pruebas.
+
+### Refactor, spot check y límites explícitos
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check`: falló inicialmente con código 1 por formato pendiente en `desktop/usb-probe/src/main.rs` y `desktop/usb-probe/tests/aoa_boundary_test.rs`.
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml`: pasó sin salida y aplicó formato Rust.
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: pasó nuevamente después del formateo; 14 pruebas Rust en `aoa_boundary_test.rs`, más lib/bin/doc tests sin pruebas.
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check`: pasó sin salida después del formateo.
+- `git diff --check`: pasó sin salida.
+- La CLI host solo implementa `--dry-run --device VID:PID`; sin `--dry-run` devuelve error porque abrir hardware sigue separado y no está habilitado.
+- `DeviceIdentifier` acepta únicamente el formato explícito `VID:PID` hexadecimal de cuatro dígitos por lado; entrada ausente o inválida es error.
+- `DryRunAoaPlanner` no produce plan sin dispositivo explícito y enumera pasos deterministas: selección explícita, `GET_PROTOCOL`, `SEND_STRING` 0..5, `START_ACCESSORY`, espera de re-enumeración y no reclamo de bulk en dry-run.
+- `BulkTransportBoundary` modela endpoints bulk reclamados sin abrir hardware; `BulkFrame` serializa `stream_id` y longitud little-endian antes del payload y rechaza payload vacío.
+- No se ejecutó contra hardware, no se tocó Windows, Samsung, cámara, OBS, Wi‑Fi, drivers, Zadig ni configuraciones del sistema, y no se usó ADB como transporte.
 
 ## Verificación T4
 

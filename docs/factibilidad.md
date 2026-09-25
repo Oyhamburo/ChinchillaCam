@@ -70,6 +70,8 @@ Límite del prototipo T3: el adapter host Rust solo mapea solicitudes de control
 
 Límite del prototipo T4: el límite Android Kotlin modela permiso, apertura de `UsbAccessory`, streams y lectura/escritura con pruebas JVM e interfaces mockeables. Esto verifica comportamiento local de código, no un permiso real otorgado por Android, no una conexión con hardware, no endpoints bulk observados y no compatibilidad con Samsung o escritorio.
 
+Límite del prototipo T5a: la CLI host Rust opera en modo `--dry-run` y exige un identificador explícito `VID:PID` antes de producir cualquier plan AOA. Ese plan modela la secuencia de control, la espera de re-enumeración y un límite bulk fake para endpoints/frames, pero no abre hardware, no reclama endpoints reales, no cambia drivers y no demuestra compatibilidad con Windows, macOS, Samsung ni dispositivos USB.
+
 Puertas de aceptación USB:
 
 - detectar dispositivo por cable en Windows 11;
