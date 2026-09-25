@@ -4,7 +4,8 @@ use usb_probe::{
     parse_protocol_version_response, AccessoryIdentity, AoaControlRequest, AoaHostController,
     AoaOperation, AoaProtocolVersion, AoaStartOutcome, BulkEndpointClaim, BulkFrame,
     BulkTransportBoundary, DeviceIdentifier, DeviceSummary, DryRunAoaPlanner, FakeAoaTransport,
-    RecordingUsbControlIo, RusbAoaControlTransport, UsbHostBoundary,
+    HostAoaControlOptions, LiveAoaControlRunner, RecordingUsbControlIo, RecordingUsbDeviceRegistry,
+    ReenumerationWait, RusbAoaControlTransport, UsbHostBoundary,
 };
 
 #[test]
@@ -329,4 +330,105 @@ fn bulk_transport_boundary_models_claimed_endpoints_and_minimal_frame_bytes() {
 
     assert!(BulkEndpointClaim::new(0x01, 0x02).is_err());
     assert!(BulkFrame::new(7, Vec::new()).is_err());
+}
+
+#[test]
+fn live_host_control_runner_opens_only_the_explicit_selected_device() {
+    let identity = AccessoryIdentity::new(
+        "ChinchillaCam",
+        "USB Probe",
+        "live AOA control runner",
+        "0.5.1",
+        "https://example.invalid/chinchillacam",
+        "prototype-t5b",
+    );
+    let selected = DeviceIdentifier::parse_vid_pid("18d1:4ee7").unwrap();
+    let registry = RecordingUsbDeviceRegistry::with_device(selected.clone(), [0x02, 0x00]);
+    let options = HostAoaControlOptions::new(
+        selected.clone(),
+        Duration::from_millis(250),
+        ReenumerationWait::bounded(Duration::from_millis(500)),
+    );
+
+    let result = LiveAoaControlRunner::new(registry)
+        .start_accessory(&identity, options)
+        .unwrap();
+
+    assert_eq!(result.selected_device(), &selected);
+    assert_eq!(result.protocol(), AoaProtocolVersion::new(2).unwrap());
+    assert_eq!(
+        result.reenumeration_wait_description(),
+        "bounded post-START wait up to 500ms; physical re-enumeration not proven"
+    );
+    assert_eq!(result.registry().open_attempts(), &[selected]);
+    assert_eq!(result.registry().fallback_enumeration_attempts(), 0);
+    assert_eq!(
+        result.control_requests(),
+        &[
+            AoaControlRequest::read(0xC0, 51, 0, 0, 2, Duration::from_millis(250)),
+            AoaControlRequest::write(
+                0x40,
+                52,
+                0,
+                0,
+                b"ChinchillaCam ",
+                Duration::from_millis(250)
+            ),
+            AoaControlRequest::write(0x40, 52, 0, 1, b"USB Probe ", Duration::from_millis(250)),
+            AoaControlRequest::write(
+                0x40,
+                52,
+                0,
+                2,
+                b"live AOA control runner ",
+                Duration::from_millis(250)
+            ),
+            AoaControlRequest::write(0x40, 52, 0, 3, b"0.5.1 ", Duration::from_millis(250)),
+            AoaControlRequest::write(
+                0x40,
+                52,
+                0,
+                4,
+                b"https://example.invalid/chinchillacam ",
+                Duration::from_millis(250)
+            ),
+            AoaControlRequest::write(
+                0x40,
+                52,
+                0,
+                5,
+                b"prototype-t5b ",
+                Duration::from_millis(250)
+            ),
+            AoaControlRequest::write(0x40, 53, 0, 0, b"", Duration::from_millis(250)),
+        ]
+    );
+}
+
+#[test]
+fn live_host_control_runner_fails_without_fallback_when_selected_device_is_absent() {
+    let identity = AccessoryIdentity::new(
+        "ChinchillaCam",
+        "USB Probe",
+        "live AOA control runner",
+        "0.5.1",
+        "https://example.invalid/chinchillacam",
+        "prototype-t5b",
+    );
+    let selected = DeviceIdentifier::parse_vid_pid("18d1:4ee7").unwrap();
+    let registry = RecordingUsbDeviceRegistry::without_devices();
+    let options = HostAoaControlOptions::new(
+        selected.clone(),
+        Duration::from_millis(250),
+        ReenumerationWait::bounded(Duration::from_millis(500)),
+    );
+
+    let error = LiveAoaControlRunner::new(registry)
+        .start_accessory(&identity, options)
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        usb_probe::UsbProbeError::SelectedDeviceNotFound(selected)
+    );
 }

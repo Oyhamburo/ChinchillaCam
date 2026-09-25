@@ -56,7 +56,8 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 - [x] **T3 — Adapter/CLI rusb para AOA host test-first.** Commit `dbf261c` (`feat: add rusb AOA host adapter`) agregó un límite host `rusb` testeado con mocks/fakes para mapear solicitudes de control AOA (`GET_PROTOCOL`, seis `SEND_STRING` y `START_ACCESSORY`) y devolver un estado seguro de re-enumeración esperada. No se ejecutó contra hardware, no enumera dispositivos en pruebas, no instala ni cambia drivers y no afirma endpoints bulk reales ni compatibilidad de plataforma/dispositivo. Revisión nativa RDD aprobada y reconocida: lineage `review-2eac537778fbc2c7`.
 - [x] **T4 — Android UsbManager accessory open/read/write test-first.** Commit `b6f8a85` (`feat: model Android accessory IO boundary`) agregó un límite Android pequeño alrededor de `UsbManager`/`UsbAccessory` mediante interfaces mockeables y streams inyectables. Las pruebas JVM cubren permiso denegado sin intento de apertura, apertura autorizada con sesión de lectura/escritura, lectura corta explícita, EOF explícito, cierre idempotente y escritura con `flush`. No usa hardware, no inicia cámara, no agrega Activity ni servicio, no usa ADB como transporte y no afirma compatibilidad real. Revisión nativa RDD aprobada y reconocida: lineage `review-a092b4fb9a1066ba`.
 - [x] **T5a — Host CLI Rust seguro con selección explícita de dispositivo.** Commit `6c55126` (`feat: add safe AOA host CLI boundary`) agregó una CLI host Rust dry-run que requiere `--device VID:PID` explícito antes de producir el plan AOA, modela espera de re-enumeración y agrega un límite bulk fake para endpoints reclamados y frames mínimos. No envía solicitudes de control a dispositivos arbitrarios, no abre hardware en dry-run, no instala ni cambia drivers y no afirma ejecución real en hardware. Revisión nativa RDD aprobada y reconocida: lineage `review-0413e095afba842b`.
-- [ ] **T5b — Host live AOA control path test-first.** Agregar ruta no-dry-run de host para ejecutar `GET_PROTOCOL`, `SEND_STRING` y `START_ACCESSORY` sobre `rusb` únicamente contra un `VID:PID` explícito elegido por el usuario, con timeouts, errores propagados y estado de re-enumeración acotado. Debe usar fake device/control boundaries en pruebas y una CLI runnable; no debe modificar drivers, usar Zadig ni afirmar éxito con dispositivo real.
+- [x] **T5b — Host live AOA control path test-first.** Agregar ruta no-dry-run de host para ejecutar `GET_PROTOCOL`, `SEND_STRING` y `START_ACCESSORY` sobre `rusb` únicamente contra un `VID:PID` explícito elegido por el usuario, con timeouts, errores propagados y estado de re-enumeración acotado. Debe usar fake device/control boundaries en pruebas y una CLI runnable; no debe modificar drivers, usar Zadig ni afirmar éxito con dispositivo real.
+  - RED observado T5b: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml .` falló con código 101 por imports inexistentes en `usb_probe`: `HostAoaControlOptions`, `LiveAoaControlRunner`, `RecordingUsbDeviceRegistry`, `ReenumerationWait` y variante `UsbProbeError::SelectedDeviceNotFound`.
 - [ ] **T5c — Host live bulk frame path test-first.** Agregar ruta host para reclamar interfaz/endpoints AOA y leer/escribir frames mínimos por bulk con timeouts, validación fuerte de endpoints y propagación de short transfers/errores. Debe cubrir los advisories de truncation/endpoint cuando correspondan, con fakes en pruebas y sin afirmar hardware real.
 - [ ] **T5d — APK Android de prueba instalable.** Agregar un artefacto Android mínimo de prueba con UI/entrada visible del usuario para permiso/accesorio, apertura de accessory y lectura/escritura de payload framed acotado. Debe incluir pruebas, no iniciar cámara, no iniciar trabajo silencioso en segundo plano y no usar ADB como transporte de producto.
 - [ ] **T5e — Framing y guía smoke host↔phone.** Documentar comandos host↔teléfono reproducibles, salida esperada, ruta de cross-build Windows si es factible y hardware real pendiente. Debe mantener el dry-run como planificación, no como soporte de hardware.
@@ -82,6 +83,33 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 8. T5c previsto: `feat: add live AOA bulk frame path` — ruta host para interfaz/endpoints bulk y frames mínimos, con validación de endpoints y short transfers; pruebas con fakes y docs/evidencia en el mismo work unit.
 9. T5d previsto: `feat: add Android accessory smoke APK` — APK Android de prueba instalable con permiso visible y payload framed acotado bajo TDD estricto; docs/evidencia en el mismo work unit.
 10. T5e previsto: `docs: define host phone USB smoke procedure` — comandos host↔phone, ruta Windows si es factible y validación hardware marcada pendiente.
+
+## Verificación T5b
+
+La verificación local de T5b cubre una ruta host AOA de control en Rust con límites fake para pruebas y una CLI runnable para modo real. No se ejecutó contra hardware USB físico, no se observó re-enumeración real, no se reclamaron endpoints bulk, no se instaló ni modificó ningún driver, no se usó Zadig, no se tocó Windows, Samsung, cámara, OBS ni Wi‑Fi, y no se usó ADB como transporte.
+
+### RED observado antes del código de producción
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml .`: falló con código 101 por imports inexistentes en `usb_probe`: `HostAoaControlOptions`, `LiveAoaControlRunner`, `RecordingUsbDeviceRegistry`, `ReenumerationWait` y variante `UsbProbeError::SelectedDeviceNotFound`.
+
+### GREEN observado
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml .`: pasó con código 0. La invocación exacta compila lib/bin/integration test y, por el filtro `.`, reporta 16 pruebas filtradas en `aoa_boundary_test.rs` y 0 ejecutadas.
+- Spot check adicional sin filtro para confirmar ejecución de pruebas: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` pasó con 16 pruebas Rust en verde.
+
+### Refactor, formato y límites explícitos
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check`: falló inicialmente con código 1 por formato pendiente en `desktop/usb-probe/src/lib.rs` y `desktop/usb-probe/tests/aoa_boundary_test.rs`.
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml`: pasó sin salida y aplicó formato Rust.
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml .`: pasó nuevamente después del formato con el mismo filtro `.` y 16 pruebas filtradas.
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check`: pasó sin salida después del formato.
+- `git diff --check`: pasó sin salida.
+- Spot check del parent local después del writer/verifier: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` pasó con 16 pruebas Rust; `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` pasó; `git diff --check` pasó sin salida.
+- Verificación independiente read-only: `gentle-ai-verify` reportó PASS, ejecutó `git diff --check`, el runner Rust completo y `cargo fmt --check`, y no encontró bloqueantes.
+- `LiveAoaControlRunner` abre únicamente el `VID:PID` explícito recibido en `HostAoaControlOptions`; el fake registra un solo intento de apertura y cero intentos de enumeración fallback.
+- La ruta de control reutiliza `AoaHostController` y `RusbAoaControlTransport`: `GET_PROTOCOL`, seis `SEND_STRING` con strings NUL-terminated y `START_ACCESSORY`.
+- La CLI mantiene `--dry-run --device VID:PID` y agrega `--live-control --device VID:PID [--control-timeout-ms N] [--reenumeration-wait-ms N]`; elegir modo real sin `--device` devuelve error antes de abrir hardware.
+- El resultado de re-enumeración es acotado y descriptivo: registra una espera post-START limitada, pero no afirma que el dispositivo físico se haya desconectado, reconectado ni aparecido como Google AOA.
 
 ## Verificación T5a
 

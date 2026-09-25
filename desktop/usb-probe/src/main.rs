@@ -1,6 +1,9 @@
-use std::{env, process};
+use std::{env, process, time::Duration};
 
-use usb_probe::{AccessoryIdentity, DryRunAoaPlanner};
+use usb_probe::{
+    AccessoryIdentity, DeviceIdentifier, DryRunAoaPlanner, HostAoaControlOptions,
+    LiveAoaControlRunner, ReenumerationWait, RusbUsbDeviceRegistry,
+};
 
 fn main() {
     if let Err(error) = run(env::args().skip(1)) {
@@ -12,6 +15,9 @@ fn main() {
 fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
     let mut selected_device = None;
     let mut dry_run = false;
+    let mut live_control = false;
+    let mut control_timeout = Duration::from_millis(250);
+    let mut reenumeration_wait = Duration::from_millis(1500);
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
@@ -23,6 +29,27 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
                     })?);
             }
             "--dry-run" => dry_run = true,
+            "--live-control" => live_control = true,
+            "--control-timeout-ms" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--control-timeout-ms requires a value".to_string())?;
+                control_timeout = Duration::from_millis(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| "--control-timeout-ms must be an integer".to_string())?,
+                );
+            }
+            "--reenumeration-wait-ms" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--reenumeration-wait-ms requires a value".to_string())?;
+                reenumeration_wait = Duration::from_millis(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| "--reenumeration-wait-ms must be an integer".to_string())?,
+                );
+            }
             "--help" | "-h" => {
                 print_usage();
                 return Ok(());
@@ -31,10 +58,8 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
         }
     }
 
-    if !dry_run {
-        return Err(
-            "only --dry-run is implemented; hardware opening remains separately gated".to_string(),
-        );
+    if dry_run == live_control {
+        return Err("choose exactly one mode: --dry-run or --live-control".to_string());
     }
 
     let identity = AccessoryIdentity::new(
@@ -45,18 +70,39 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
         "https://example.invalid/chinchillacam",
         "prototype-t5a",
     );
-    let plan = DryRunAoaPlanner::plan(selected_device.as_deref(), &identity)
+    if dry_run {
+        let plan = DryRunAoaPlanner::plan(selected_device.as_deref(), &identity)
+            .map_err(|error| format!("{error:?}"))?;
+
+        println!("selected device: {}", plan.selected_device());
+        for (index, step) in plan.steps().iter().enumerate() {
+            println!("{}. {step}", index + 1);
+        }
+        return Ok(());
+    }
+
+    let selected_device = DeviceIdentifier::parse_required(selected_device.as_deref())
+        .map_err(|error| format!("{error:?}"))?;
+    let options = HostAoaControlOptions::new(
+        selected_device,
+        control_timeout,
+        ReenumerationWait::bounded(reenumeration_wait),
+    );
+    let result = LiveAoaControlRunner::new(RusbUsbDeviceRegistry::default())
+        .start_accessory(&identity, options)
         .map_err(|error| format!("{error:?}"))?;
 
-    println!("selected device: {}", plan.selected_device());
-    for (index, step) in plan.steps().iter().enumerate() {
-        println!("{}. {step}", index + 1);
-    }
+    println!("selected device: {}", result.selected_device());
+    println!("AOA protocol: {}", result.protocol().value());
+    println!("{}", result.reenumeration_wait_description());
+    println!("START_ACCESSORY sent; physical USB success is not claimed by this command");
 
     Ok(())
 }
 
 fn print_usage() {
     println!("usb-probe --dry-run --device VID:PID");
+    println!("usb-probe --live-control --device VID:PID [--control-timeout-ms N] [--reenumeration-wait-ms N]");
     println!("dry-run prints the bounded AOA plan without opening hardware");
+    println!("live-control sends AOA control requests only to the selected VID:PID and does not claim physical success");
 }

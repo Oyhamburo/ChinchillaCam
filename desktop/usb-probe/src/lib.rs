@@ -1,5 +1,7 @@
 use std::{fmt, marker::PhantomData, time::Duration};
 
+use rusb::UsbContext;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AoaProtocolVersion(u16);
 
@@ -26,6 +28,8 @@ pub enum UsbProbeError {
     InvalidDeviceIdentifier(String),
     InvalidBulkEndpointClaim,
     EmptyBulkFrame,
+    SelectedDeviceNotFound(DeviceIdentifier),
+    InvalidReenumerationWait,
 }
 
 pub fn parse_protocol_version_response(
@@ -117,6 +121,18 @@ pub enum DeviceIdentifier {
 }
 
 impl DeviceIdentifier {
+    pub fn vendor_id(&self) -> u16 {
+        match self {
+            Self::VidPid { vendor_id, .. } => *vendor_id,
+        }
+    }
+
+    pub fn product_id(&self) -> u16 {
+        match self {
+            Self::VidPid { product_id, .. } => *product_id,
+        }
+    }
+
     pub fn parse_required(input: Option<&str>) -> Result<Self, UsbProbeError> {
         let input = input.ok_or(UsbProbeError::MissingExplicitDeviceIdentifier)?;
         Self::parse_vid_pid(input)
@@ -275,6 +291,234 @@ impl BulkFrame {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReenumerationWait {
+    timeout: Duration,
+}
+
+impl ReenumerationWait {
+    pub fn bounded(timeout: Duration) -> Self {
+        Self { timeout }
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    pub fn description(&self) -> String {
+        format!(
+            "bounded post-START wait up to {}ms; physical re-enumeration not proven",
+            self.timeout.as_millis()
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostAoaControlOptions {
+    selected_device: DeviceIdentifier,
+    control_timeout: Duration,
+    reenumeration_wait: ReenumerationWait,
+}
+
+impl HostAoaControlOptions {
+    pub fn new(
+        selected_device: DeviceIdentifier,
+        control_timeout: Duration,
+        reenumeration_wait: ReenumerationWait,
+    ) -> Self {
+        Self {
+            selected_device,
+            control_timeout,
+            reenumeration_wait,
+        }
+    }
+
+    pub fn selected_device(&self) -> &DeviceIdentifier {
+        &self.selected_device
+    }
+
+    pub fn control_timeout(&self) -> Duration {
+        self.control_timeout
+    }
+
+    pub fn reenumeration_wait(&self) -> &ReenumerationWait {
+        &self.reenumeration_wait
+    }
+}
+
+pub trait ControlRequestSnapshot {
+    fn control_requests_snapshot(&self) -> Vec<AoaControlRequest>;
+}
+
+pub trait SelectedUsbDeviceRegistry {
+    type Io: UsbControlIo + ControlRequestSnapshot;
+
+    fn open_selected_device(
+        &mut self,
+        selected_device: &DeviceIdentifier,
+    ) -> Result<Self::Io, UsbProbeError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordingUsbDeviceRegistry {
+    available_device: Option<DeviceIdentifier>,
+    get_protocol_response: [u8; 2],
+    open_attempts: Vec<DeviceIdentifier>,
+    fallback_enumeration_attempts: usize,
+}
+
+impl RecordingUsbDeviceRegistry {
+    pub fn with_device(available_device: DeviceIdentifier, get_protocol_response: [u8; 2]) -> Self {
+        Self {
+            available_device: Some(available_device),
+            get_protocol_response,
+            open_attempts: Vec::new(),
+            fallback_enumeration_attempts: 0,
+        }
+    }
+
+    pub fn without_devices() -> Self {
+        Self {
+            available_device: None,
+            get_protocol_response: [0, 0],
+            open_attempts: Vec::new(),
+            fallback_enumeration_attempts: 0,
+        }
+    }
+
+    pub fn open_attempts(&self) -> &[DeviceIdentifier] {
+        &self.open_attempts
+    }
+
+    pub fn fallback_enumeration_attempts(&self) -> usize {
+        self.fallback_enumeration_attempts
+    }
+}
+
+impl SelectedUsbDeviceRegistry for RecordingUsbDeviceRegistry {
+    type Io = RecordingUsbControlIo;
+
+    fn open_selected_device(
+        &mut self,
+        selected_device: &DeviceIdentifier,
+    ) -> Result<Self::Io, UsbProbeError> {
+        self.open_attempts.push(selected_device.clone());
+        if self.available_device.as_ref() == Some(selected_device) {
+            Ok(RecordingUsbControlIo::with_get_protocol_response(
+                self.get_protocol_response,
+            ))
+        } else {
+            Err(UsbProbeError::SelectedDeviceNotFound(
+                selected_device.clone(),
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct RusbUsbDeviceRegistry {
+    _context_type: PhantomData<rusb::Context>,
+}
+
+impl SelectedUsbDeviceRegistry for RusbUsbDeviceRegistry {
+    type Io = RusbDeviceControlIo<rusb::Context>;
+
+    fn open_selected_device(
+        &mut self,
+        selected_device: &DeviceIdentifier,
+    ) -> Result<Self::Io, UsbProbeError> {
+        let context = rusb::Context::new()
+            .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
+        let devices = context
+            .devices()
+            .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
+
+        for device in devices.iter() {
+            let descriptor = device
+                .device_descriptor()
+                .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
+            if descriptor.vendor_id() == selected_device.vendor_id()
+                && descriptor.product_id() == selected_device.product_id()
+            {
+                return device
+                    .open()
+                    .map(RusbDeviceControlIo::new)
+                    .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()));
+            }
+        }
+
+        Err(UsbProbeError::SelectedDeviceNotFound(
+            selected_device.clone(),
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveAoaControlResult<R> {
+    registry: R,
+    selected_device: DeviceIdentifier,
+    protocol: AoaProtocolVersion,
+    reenumeration_wait_description: String,
+    control_requests: Vec<AoaControlRequest>,
+}
+
+impl<R> LiveAoaControlResult<R> {
+    pub fn registry(&self) -> &R {
+        &self.registry
+    }
+
+    pub fn selected_device(&self) -> &DeviceIdentifier {
+        &self.selected_device
+    }
+
+    pub fn protocol(&self) -> AoaProtocolVersion {
+        self.protocol
+    }
+
+    pub fn reenumeration_wait_description(&self) -> &str {
+        &self.reenumeration_wait_description
+    }
+
+    pub fn control_requests(&self) -> &[AoaControlRequest] {
+        &self.control_requests
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveAoaControlRunner<R> {
+    registry: R,
+}
+
+impl<R> LiveAoaControlRunner<R>
+where
+    R: SelectedUsbDeviceRegistry,
+{
+    pub fn new(registry: R) -> Self {
+        Self { registry }
+    }
+
+    pub fn start_accessory(
+        mut self,
+        identity: &AccessoryIdentity,
+        options: HostAoaControlOptions,
+    ) -> Result<LiveAoaControlResult<R>, UsbProbeError> {
+        let selected_device = options.selected_device().clone();
+        let io = self.registry.open_selected_device(&selected_device)?;
+        let transport = RusbAoaControlTransport::new(io, options.control_timeout());
+        let mut controller = AoaHostController::new(transport);
+        let protocol = controller.start_accessory_mode(identity)?;
+        let control_requests = controller.transport().io.control_requests_snapshot();
+
+        Ok(LiveAoaControlResult {
+            registry: self.registry,
+            selected_device,
+            protocol,
+            reenumeration_wait_description: options.reenumeration_wait().description(),
+            control_requests,
+        })
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct UsbHostBoundary {
     _rusb_context_type: PhantomData<rusb::Context>,
@@ -388,6 +632,12 @@ impl RecordingUsbControlIo {
     }
 }
 
+impl ControlRequestSnapshot for RecordingUsbControlIo {
+    fn control_requests_snapshot(&self) -> Vec<AoaControlRequest> {
+        self.control_requests.clone()
+    }
+}
+
 impl UsbControlIo for RecordingUsbControlIo {
     fn read_control(
         &mut self,
@@ -419,6 +669,15 @@ where
 {
     pub fn new(handle: rusb::DeviceHandle<C>) -> Self {
         Self { handle }
+    }
+}
+
+impl<C> ControlRequestSnapshot for RusbDeviceControlIo<C>
+where
+    C: rusb::UsbContext,
+{
+    fn control_requests_snapshot(&self) -> Vec<AoaControlRequest> {
+        Vec::new()
     }
 }
 
