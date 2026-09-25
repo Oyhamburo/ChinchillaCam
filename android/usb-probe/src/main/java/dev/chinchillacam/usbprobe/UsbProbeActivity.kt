@@ -98,21 +98,29 @@ class UsbProbeActivity : Activity() {
 
     private fun runApprovedAccessory(accessory: UsbAccessory) {
         busy = true
+        lastResult = "Permiso aprobado. Ejecutando prueba USB fuera del hilo principal."
         render()
-        lastResult = when (val opened = AndroidUsbAccessoryBoundary(usbManager).open(accessory)) {
-            is AccessoryOpenResult.Opened -> opened.session.use { session ->
-                when (val result = AccessorySmokeRunner(maxPayloadBytes = MAX_PAYLOAD_BYTES).runApprovedSession(session)) {
-                    is AccessorySmokeResult.AckWritten -> "ACK enviado para stream ${result.streamId} (${result.payloadBytes} bytes)."
-                    is AccessorySmokeResult.DecodeFailed -> "Frame USB inválido: ${result.reason.javaClass.simpleName}."
-                    is AccessorySmokeResult.ReadFailed -> "Lectura USB incompleta: ${result.reason.javaClass.simpleName}."
-                }
+        Thread {
+            val message = runApprovedAccessoryOffMainThread(accessory)
+            runOnUiThread {
+                lastResult = message
+                busy = false
+                permissionRequested = false
+                render()
             }
-            is AccessoryOpenResult.OpenFailed -> "Android aprobó el permiso, pero no se pudo abrir el accesorio."
-            is AccessoryOpenResult.PermissionDenied -> "Android no aprobó el permiso del accesorio."
+        }.start()
+    }
+
+    private fun runApprovedAccessoryOffMainThread(accessory: UsbAccessory): String = when (val opened = AndroidUsbAccessoryBoundary(usbManager).open(accessory)) {
+        is AccessoryOpenResult.Opened -> opened.session.use { session ->
+            when (val result = AccessorySmokeRunner(maxPayloadBytes = MAX_PAYLOAD_BYTES).runApprovedSession(session)) {
+                is AccessorySmokeResult.AckWritten -> "ACK enviado para stream ${result.streamId} (${result.payloadBytes} bytes)."
+                is AccessorySmokeResult.DecodeFailed -> "Frame USB inválido: ${result.reason.javaClass.simpleName}."
+                is AccessorySmokeResult.ReadFailed -> "Lectura USB incompleta: ${result.reason.javaClass.simpleName}."
+            }
         }
-        busy = false
-        permissionRequested = false
-        render()
+        is AccessoryOpenResult.OpenFailed -> "Android aprobó el permiso, pero no se pudo abrir el accesorio."
+        is AccessoryOpenResult.PermissionDenied -> "Android no aprobó el permiso del accesorio."
     }
 
     private fun currentAccessory(): UsbAccessory? = usbManager.accessoryList?.firstOrNull()

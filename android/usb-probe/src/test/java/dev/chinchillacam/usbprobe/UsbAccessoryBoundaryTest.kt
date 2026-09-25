@@ -195,6 +195,14 @@ class UsbAccessoryBoundaryTest {
     }
 
     @Test
+    fun approvedAccessoryIoIsPlannedAwayFromAndroidMainThreadCallbacks() {
+        val plan = AccessoryExecutionPlanner.planApprovedSmokeIo()
+
+        assertFalse(plan.runsOnAndroidMainThread)
+        assertTrue(plan.finishesBroadcastAfterBackgroundIo)
+    }
+
+    @Test
     fun approvedAccessorySmokeReadsOneBoundedFrameAndWritesAck() {
         val output = FlushTrackingOutputStream()
         val session = AccessoryIoSession(

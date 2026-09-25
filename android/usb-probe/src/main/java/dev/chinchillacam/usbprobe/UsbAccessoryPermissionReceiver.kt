@@ -17,13 +17,20 @@ class UsbAccessoryPermissionReceiver : BroadcastReceiver() {
         if (!intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) return
 
         val accessory = intent.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY) ?: return
-        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-        val opened = AndroidUsbAccessoryBoundary(usbManager).open(accessory)
-        if (opened is AccessoryOpenResult.Opened) {
-            opened.session.use { session ->
-                AccessorySmokeRunner(maxPayloadBytes = MAX_PAYLOAD_BYTES).runApprovedSession(session)
+        val pendingResult = goAsync()
+        Thread {
+            try {
+                val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+                val opened = AndroidUsbAccessoryBoundary(usbManager).open(accessory)
+                if (opened is AccessoryOpenResult.Opened) {
+                    opened.session.use { session ->
+                        AccessorySmokeRunner(maxPayloadBytes = MAX_PAYLOAD_BYTES).runApprovedSession(session)
+                    }
+                }
+            } finally {
+                pendingResult.finish()
             }
-        }
+        }.start()
     }
 
     companion object {

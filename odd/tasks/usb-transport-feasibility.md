@@ -120,6 +120,7 @@ La verificación local de T5d cubre compilación, pruebas JVM y producción de A
 - El framing Android usa header fijo de 8 bytes little-endian (`stream_id`, `payload_len`), rechaza payload declarado mayor al máximo antes de leerlo y escribe ACK `ACK` con el mismo `stream_id`.
 - No se instaló el APK, no se abrió hardware real, no se validó Samsung/AOA real y no se hacen afirmaciones de compatibilidad por usar `compileSdk`.
 - Verificación independiente read-only: PASS; repitió `:android:usb-probe:testDebugUnitTest`, `:android:usb-probe:assembleDebug`, comprobación del APK y `git diff --check` sin bloqueantes.
+- Corrección RDD en curso: el reviewer nativo abrió `R3-blocking-main-thread`; se agregó RED específico para planificar I/O fuera de callbacks Android, y la Activity/receiver ahora despachan la lectura/escritura USB a un `Thread` separado. En el receiver se usa `goAsync()` y `finish()` después del trabajo para no bloquear `onReceive`.
 
 ## Verificación T5c2c2
 

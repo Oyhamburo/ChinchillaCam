@@ -236,6 +236,18 @@ data class UsbProbeUiState(
     val safetyNotice: String,
 )
 
+data class AccessorySmokeExecutionPlan(
+    val runsOnAndroidMainThread: Boolean,
+    val finishesBroadcastAfterBackgroundIo: Boolean,
+)
+
+object AccessoryExecutionPlanner {
+    fun planApprovedSmokeIo(): AccessorySmokeExecutionPlan = AccessorySmokeExecutionPlan(
+        runsOnAndroidMainThread = false,
+        finishesBroadcastAfterBackgroundIo = true,
+    )
+}
+
 object UsbProbeScreenPlanner {
     fun plan(
         accessoryAvailable: Boolean,
