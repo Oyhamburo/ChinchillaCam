@@ -58,7 +58,7 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 - [x] **T5a — Host CLI Rust seguro con selección explícita de dispositivo.** Commit `6c55126` (`feat: add safe AOA host CLI boundary`) agregó una CLI host Rust dry-run que requiere `--device VID:PID` explícito antes de producir el plan AOA, modela espera de re-enumeración y agrega un límite bulk fake para endpoints reclamados y frames mínimos. No envía solicitudes de control a dispositivos arbitrarios, no abre hardware en dry-run, no instala ni cambia drivers y no afirma ejecución real en hardware. Revisión nativa RDD aprobada y reconocida: lineage `review-0413e095afba842b`.
 - [x] **T5b — Host live AOA control path test-first.** Commit `d1485a1` (`feat: add live AOA host control path`) agregó una ruta no-dry-run de host para ejecutar `GET_PROTOCOL`, seis `SEND_STRING` y `START_ACCESSORY` sobre `rusb` únicamente contra un `VID:PID` explícito, con timeout configurable, resultado acotado de re-enumeración y CLI `--live-control`. Usa fake device/control boundaries en pruebas, no modifica drivers, no usa Zadig y no afirma éxito con dispositivo real. Revisión nativa RDD aprobada y reconocida: lineage `review-0355a50420ca2b05`.
   - RED observado T5b: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml .` falló con código 101 por imports inexistentes en `usb_probe`: `HostAoaControlOptions`, `LiveAoaControlRunner`, `RecordingUsbDeviceRegistry`, `ReenumerationWait` y variante `UsbProbeError::SelectedDeviceNotFound`.
-- [x] **T5c1 — Host live AOA re-enumeration poll test-first.** Sub-unidad separada para corregir el límite de T5b: después de `START_ACCESSORY`, la ruta live-control ahora hace un poll acotado buscando re-enumeración a Google AOA `18d1:2d00` o `18d1:2d01`, con error distinto si no aparece. Usa fakes en pruebas, no reclama interfaces bulk, no lee/escribe frames, no ejecuta hardware físico y no afirma compatibilidad real. Sin commit todavía en este worktree por instrucción explícita del usuario.
+- [x] **T5c1 — Host live AOA re-enumeration poll test-first.** Commit `25cacc4` (`feat: poll for AOA re-enumeration`) agregó una sub-unidad separada para corregir el límite de T5b: después de `START_ACCESSORY`, la ruta live-control ahora hace un poll acotado buscando re-enumeración a Google AOA `18d1:2d00` o `18d1:2d01`, con error distinto si no aparece. Usa fakes en pruebas, no reclama interfaces bulk, no lee/escribe frames, no ejecuta hardware físico y no afirma compatibilidad real. Revisión nativa RDD aprobada y reconocida: lineage `review-3b74a320767c5602`.
 - [ ] **T5c2 — Host live bulk frame path test-first.** Agregar ruta host para reclamar interfaz/endpoints AOA y leer/escribir frames mínimos por bulk con timeouts, validación fuerte de endpoints y propagación de short transfers/errores. Debe cubrir los advisories de truncation/endpoint cuando correspondan, con fakes en pruebas y sin afirmar hardware real.
 - [ ] **T5d — APK Android de prueba instalable.** Agregar un artefacto Android mínimo de prueba con UI/entrada visible del usuario para permiso/accesorio, apertura de accessory y lectura/escritura de payload framed acotado. Debe incluir pruebas, no iniciar cámara, no iniciar trabajo silencioso en segundo plano y no usar ADB como transporte de producto.
 - [ ] **T5e — Framing y guía smoke host↔phone.** Documentar comandos host↔teléfono reproducibles, salida esperada, ruta de cross-build Windows si es factible y hardware real pendiente. Debe mantener el dry-run como planificación, no como soporte de hardware.
@@ -81,7 +81,7 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 5. `feat: model Android accessory IO boundary` — contrato Android `UsbManager`/`UsbAccessory` open/read/write bajo TDD estricto; commit `b6f8a85`; revisión nativa aprobada y reconocida en lineage `review-a092b4fb9a1066ba`.
 6. `feat: add safe AOA host CLI boundary` — CLI Rust con selección explícita de dispositivo, dry-run AOA y límite bulk bajo TDD estricto; commit `6c55126`; revisión nativa aprobada y reconocida en lineage `review-0413e095afba842b`.
 7. T5b previsto: `feat: add live AOA host control path` — ruta host no-dry-run para control AOA con `rusb` contra `VID:PID` explícito, timeouts y re-enumeración acotada; pruebas con fakes y docs/evidencia en el mismo work unit.
-8. T5c1 sin commit por instrucción explícita: `feat: poll for AOA re-enumeration after START` — poll acotado post-START hacia `18d1:2d00`/`18d1:2d01`, error distinto de timeout y pruebas fake.
+8. `feat: poll for AOA re-enumeration` — poll acotado post-START hacia `18d1:2d00`/`18d1:2d01`, error distinto de timeout y pruebas fake. Commit `25cacc4`; revisión nativa aprobada y reconocida en lineage `review-3b74a320767c5602`.
 9. T5c2 previsto: `feat: add live AOA bulk frame path` — ruta host para interfaz/endpoints bulk y frames mínimos, con validación de endpoints y short transfers; pruebas con fakes y docs/evidencia en el mismo work unit.
 10. T5d previsto: `feat: add Android accessory smoke APK` — APK Android de prueba instalable con permiso visible y payload framed acotado bajo TDD estricto; docs/evidencia en el mismo work unit.
 11. T5e previsto: `docs: define host phone USB smoke procedure` — comandos host↔phone, ruta Windows si es factible y validación hardware marcada pendiente.
@@ -98,6 +98,13 @@ La verificación local de T5c1 cubre solamente el poll acotado de re-enumeració
 
 - `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml .`: pasó con código 0. La invocación exacta compila lib/bin/integration test y, por el filtro `.`, reporta 20 pruebas filtradas en `aoa_boundary_test.rs` y 0 ejecutadas.
 - `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: pasó con código 0; 20 pruebas Rust en verde, más lib/bin/doc tests sin pruebas.
+
+### Revisión nativa RDD T5c1
+
+- Candidato: `25cacc4` contra base `fea053d`.
+- Lineage: `review-3b74a320767c5602`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-001`, `R3-002` y `R3-003` en `desktop/usb-probe/src/lib.rs`. No abren corrección para T5c1; se tratan como trabajo futuro junto con T5c2 si aplican.
 
 ### Formato y límites explícitos
 
