@@ -1,8 +1,8 @@
 use std::{env, process, time::Duration};
 
 use usb_probe::{
-    AccessoryIdentity, DeviceIdentifier, DryRunAoaPlanner, HostAoaControlOptions,
-    LiveAoaControlRunner, ReenumerationWait, RusbUsbDeviceRegistry,
+    AccessoryIdentity, AoaAccessoryReenumerationPoller, DeviceIdentifier, DryRunAoaPlanner,
+    HostAoaControlOptions, LiveAoaControlRunner, ReenumerationWait, RusbUsbDeviceRegistry,
 };
 
 fn main() {
@@ -89,13 +89,20 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
         ReenumerationWait::bounded(reenumeration_wait),
     );
     let result = LiveAoaControlRunner::new(RusbUsbDeviceRegistry::default())
-        .start_accessory(&identity, options)
+        .start_accessory_and_poll(&identity, options, AoaAccessoryReenumerationPoller::rusb())
         .map_err(|error| format!("{error:?}"))?;
 
     println!("selected device: {}", result.selected_device());
     println!("AOA protocol: {}", result.protocol().value());
     println!("{}", result.reenumeration_wait_description());
-    println!("START_ACCESSORY sent; physical USB success is not claimed by this command");
+    println!(
+        "AOA re-enumeration observed: {}",
+        result
+            .accessory_device()
+            .map(|device| device.to_string())
+            .unwrap_or_else(|| "not observed".to_string())
+    );
+    println!("bulk interface claim and frame I/O remain the next bounded T5c sub-unit");
 
     Ok(())
 }

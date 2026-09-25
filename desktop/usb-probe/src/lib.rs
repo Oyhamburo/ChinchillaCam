@@ -1,4 +1,9 @@
-use std::{fmt, marker::PhantomData, time::Duration};
+use std::{
+    fmt,
+    marker::PhantomData,
+    thread,
+    time::{Duration, Instant},
+};
 
 use rusb::UsbContext;
 
@@ -30,6 +35,7 @@ pub enum UsbProbeError {
     EmptyBulkFrame,
     SelectedDeviceNotFound(DeviceIdentifier),
     InvalidReenumerationWait,
+    AoaReenumerationTimedOut,
 }
 
 pub fn parse_protocol_version_response(
@@ -115,7 +121,7 @@ impl fmt::Display for DeviceSummary {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceIdentifier {
     VidPid { vendor_id: u16, product_id: u16 },
 }
@@ -168,6 +174,137 @@ impl fmt::Display for DeviceIdentifier {
             } => write!(formatter, "{vendor_id:04x}:{product_id:04x}"),
         }
     }
+}
+
+pub const AOA_ACCESSORY_DEVICE_IDS: [DeviceIdentifier; 2] = [
+    DeviceIdentifier::VidPid {
+        vendor_id: 0x18d1,
+        product_id: 0x2d00,
+    },
+    DeviceIdentifier::VidPid {
+        vendor_id: 0x18d1,
+        product_id: 0x2d01,
+    },
+];
+
+#[derive(Debug, Clone)]
+enum AoaAccessoryReenumerationPollerMode {
+    Fake {
+        snapshots: Vec<Vec<DeviceIdentifier>>,
+        attempts: usize,
+        observed_timeouts: Vec<Duration>,
+    },
+    Rusb,
+}
+
+#[derive(Debug, Clone)]
+pub struct AoaAccessoryReenumerationPoller {
+    mode: AoaAccessoryReenumerationPollerMode,
+}
+
+impl AoaAccessoryReenumerationPoller {
+    pub fn fake_with_snapshots(snapshots: Vec<Vec<DeviceIdentifier>>) -> Self {
+        Self {
+            mode: AoaAccessoryReenumerationPollerMode::Fake {
+                snapshots,
+                attempts: 0,
+                observed_timeouts: Vec::new(),
+            },
+        }
+    }
+
+    pub fn rusb() -> Self {
+        Self {
+            mode: AoaAccessoryReenumerationPollerMode::Rusb,
+        }
+    }
+
+    pub fn poll_until_observed(
+        &mut self,
+        wait: &ReenumerationWait,
+    ) -> Result<DeviceIdentifier, UsbProbeError> {
+        match &mut self.mode {
+            AoaAccessoryReenumerationPollerMode::Fake {
+                snapshots,
+                attempts,
+                observed_timeouts,
+            } => {
+                observed_timeouts.push(wait.timeout());
+                for attempt_index in 0..wait.max_attempts() {
+                    *attempts += 1;
+                    let snapshot = snapshots
+                        .get(attempt_index)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    if let Some(device) =
+                        snapshot.iter().copied().find(Self::is_aoa_accessory_device)
+                    {
+                        return Ok(device);
+                    }
+                }
+                Err(UsbProbeError::AoaReenumerationTimedOut)
+            }
+            AoaAccessoryReenumerationPollerMode::Rusb => {
+                let deadline = Instant::now() + wait.timeout();
+                for attempt_index in 0..wait.max_attempts() {
+                    if let Some(device) = enumerate_rusb_aoa_accessory_once()? {
+                        return Ok(device);
+                    }
+                    if attempt_index + 1 < wait.max_attempts() {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            break;
+                        }
+                        thread::sleep(wait.poll_interval().min(deadline - now));
+                    }
+                }
+                Err(UsbProbeError::AoaReenumerationTimedOut)
+            }
+        }
+    }
+
+    pub fn attempts(&self) -> usize {
+        match &self.mode {
+            AoaAccessoryReenumerationPollerMode::Fake { attempts, .. } => *attempts,
+            AoaAccessoryReenumerationPollerMode::Rusb => 0,
+        }
+    }
+
+    pub fn observed_timeouts(&self) -> &[Duration] {
+        match &self.mode {
+            AoaAccessoryReenumerationPollerMode::Fake {
+                observed_timeouts, ..
+            } => observed_timeouts,
+            AoaAccessoryReenumerationPollerMode::Rusb => &[],
+        }
+    }
+
+    fn is_aoa_accessory_device(device: &DeviceIdentifier) -> bool {
+        AOA_ACCESSORY_DEVICE_IDS.contains(device)
+    }
+}
+
+fn enumerate_rusb_aoa_accessory_once() -> Result<Option<DeviceIdentifier>, UsbProbeError> {
+    let context = rusb::Context::new()
+        .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
+    let devices = context
+        .devices()
+        .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
+
+    for device in devices.iter() {
+        let descriptor = device
+            .device_descriptor()
+            .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
+        let identifier = DeviceIdentifier::VidPid {
+            vendor_id: descriptor.vendor_id(),
+            product_id: descriptor.product_id(),
+        };
+        if AOA_ACCESSORY_DEVICE_IDS.contains(&identifier) {
+            return Ok(Some(identifier));
+        }
+    }
+
+    Ok(None)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,21 +431,40 @@ impl BulkFrame {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReenumerationWait {
     timeout: Duration,
+    poll_interval: Duration,
+    max_attempts: usize,
 }
 
 impl ReenumerationWait {
     pub fn bounded(timeout: Duration) -> Self {
-        Self { timeout }
+        let poll_interval = Duration::from_millis(50);
+        let timeout_ms = timeout.as_millis();
+        let interval_ms = poll_interval.as_millis().max(1);
+        let max_attempts = ((timeout_ms + interval_ms - 1) / interval_ms).max(1) as usize;
+        Self {
+            timeout,
+            poll_interval,
+            max_attempts,
+        }
     }
 
     pub fn timeout(&self) -> Duration {
         self.timeout
     }
 
+    pub fn poll_interval(&self) -> Duration {
+        self.poll_interval
+    }
+
+    pub fn max_attempts(&self) -> usize {
+        self.max_attempts
+    }
+
     pub fn description(&self) -> String {
         format!(
-            "bounded post-START wait up to {}ms; physical re-enumeration not proven",
-            self.timeout.as_millis()
+            "bounded post-START poll up to {}ms across at most {} attempts; bulk I/O remains unclaimed",
+            self.timeout.as_millis(),
+            self.max_attempts
         )
     }
 }
@@ -408,9 +564,7 @@ impl SelectedUsbDeviceRegistry for RecordingUsbDeviceRegistry {
                 self.get_protocol_response,
             ))
         } else {
-            Err(UsbProbeError::SelectedDeviceNotFound(
-                selected_device.clone(),
-            ))
+            Err(UsbProbeError::SelectedDeviceNotFound(*selected_device))
         }
     }
 }
@@ -447,9 +601,7 @@ impl SelectedUsbDeviceRegistry for RusbUsbDeviceRegistry {
             }
         }
 
-        Err(UsbProbeError::SelectedDeviceNotFound(
-            selected_device.clone(),
-        ))
+        Err(UsbProbeError::SelectedDeviceNotFound(*selected_device))
     }
 }
 
@@ -460,6 +612,8 @@ pub struct LiveAoaControlResult<R> {
     protocol: AoaProtocolVersion,
     reenumeration_wait_description: String,
     control_requests: Vec<AoaControlRequest>,
+    accessory_device: Option<DeviceIdentifier>,
+    reenumeration_poll_attempts: usize,
 }
 
 impl<R> LiveAoaControlResult<R> {
@@ -482,6 +636,18 @@ impl<R> LiveAoaControlResult<R> {
     pub fn control_requests(&self) -> &[AoaControlRequest] {
         &self.control_requests
     }
+
+    pub fn accessory_device(&self) -> Option<&DeviceIdentifier> {
+        self.accessory_device.as_ref()
+    }
+
+    pub fn aoa_reenumeration_observed(&self) -> bool {
+        self.accessory_device.is_some()
+    }
+
+    pub fn reenumeration_poll_attempts(&self) -> usize {
+        self.reenumeration_poll_attempts
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -497,24 +663,32 @@ where
         Self { registry }
     }
 
-    pub fn start_accessory(
+    pub fn start_accessory_and_poll(
         mut self,
         identity: &AccessoryIdentity,
         options: HostAoaControlOptions,
+        mut reenumeration_poller: AoaAccessoryReenumerationPoller,
     ) -> Result<LiveAoaControlResult<R>, UsbProbeError> {
-        let selected_device = options.selected_device().clone();
+        let selected_device = *options.selected_device();
         let io = self.registry.open_selected_device(&selected_device)?;
         let transport = RusbAoaControlTransport::new(io, options.control_timeout());
         let mut controller = AoaHostController::new(transport);
         let protocol = controller.start_accessory_mode(identity)?;
         let control_requests = controller.transport().io.control_requests_snapshot();
+        let accessory_device =
+            reenumeration_poller.poll_until_observed(options.reenumeration_wait())?;
+        let reenumeration_poll_attempts = reenumeration_poller.attempts();
 
         Ok(LiveAoaControlResult {
             registry: self.registry,
             selected_device,
             protocol,
-            reenumeration_wait_description: options.reenumeration_wait().description(),
+            reenumeration_wait_description: format!(
+                "AOA re-enumeration observed as {accessory_device} after bounded post-START poll"
+            ),
             control_requests,
+            accessory_device: Some(accessory_device),
+            reenumeration_poll_attempts,
         })
     }
 }
