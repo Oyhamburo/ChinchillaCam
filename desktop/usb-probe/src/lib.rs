@@ -20,6 +20,7 @@ impl AoaProtocolVersion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsbProbeError {
     UnsupportedProtocolVersion(u16),
+    InvalidAccessoryIdentity,
 }
 
 pub fn parse_protocol_version_response(
@@ -63,6 +64,17 @@ impl AccessoryIdentity {
             && !self.description.trim().is_empty()
             && !self.version.trim().is_empty()
     }
+
+    fn aoa_identity_strings(&self) -> [(&str, u16); 6] {
+        [
+            (&self.manufacturer, 0),
+            (&self.model, 1),
+            (&self.description, 2),
+            (&self.version, 3),
+            (&self.uri, 4),
+            (&self.serial, 5),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,5 +114,93 @@ pub struct UsbHostBoundary {
 impl UsbHostBoundary {
     pub fn backend_notice(&self) -> &'static str {
         "rusb/libusb host boundary; unit tests do not enumerate USB hardware"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AoaOperation {
+    GetProtocol,
+    SendIdentityString { index: u16, value: String },
+    StartAccessory,
+}
+
+pub trait AoaControlTransport {
+    fn get_protocol(&mut self) -> Result<[u8; 2], UsbProbeError>;
+    fn send_identity_string(&mut self, index: u16, value: &str) -> Result<(), UsbProbeError>;
+    fn start_accessory(&mut self) -> Result<(), UsbProbeError>;
+    fn operation_log(&self) -> &[AoaOperation];
+}
+
+#[derive(Debug, Clone)]
+pub struct FakeAoaTransport {
+    protocol_response: [u8; 2],
+    operations: Vec<AoaOperation>,
+}
+
+impl FakeAoaTransport {
+    pub fn with_protocol_response(protocol_response: [u8; 2]) -> Self {
+        Self {
+            protocol_response,
+            operations: Vec::new(),
+        }
+    }
+}
+
+impl AoaControlTransport for FakeAoaTransport {
+    fn get_protocol(&mut self) -> Result<[u8; 2], UsbProbeError> {
+        self.operations.push(AoaOperation::GetProtocol);
+        Ok(self.protocol_response)
+    }
+
+    fn send_identity_string(&mut self, index: u16, value: &str) -> Result<(), UsbProbeError> {
+        self.operations.push(AoaOperation::SendIdentityString {
+            index,
+            value: value.to_string(),
+        });
+        Ok(())
+    }
+
+    fn start_accessory(&mut self) -> Result<(), UsbProbeError> {
+        self.operations.push(AoaOperation::StartAccessory);
+        Ok(())
+    }
+
+    fn operation_log(&self) -> &[AoaOperation] {
+        &self.operations
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AoaHostController<T> {
+    transport: T,
+}
+
+impl<T> AoaHostController<T>
+where
+    T: AoaControlTransport,
+{
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+
+    pub fn start_accessory_mode(
+        &mut self,
+        identity: &AccessoryIdentity,
+    ) -> Result<AoaProtocolVersion, UsbProbeError> {
+        if !identity.is_valid_for_aoa_handshake() {
+            return Err(UsbProbeError::InvalidAccessoryIdentity);
+        }
+
+        let protocol = parse_protocol_version_response(self.transport.get_protocol()?)?;
+        for (value, index) in identity.aoa_identity_strings() {
+            self.transport.send_identity_string(index, value)?;
+        }
+        self.transport.start_accessory()?;
+
+        Ok(protocol)
+    }
+
+    pub fn operation_log(&self) -> &[AoaOperation] {
+        self.transport.operation_log()
     }
 }

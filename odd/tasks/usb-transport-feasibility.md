@@ -52,7 +52,7 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 ## División incremental
 
 - [x] **T1 — Prototipo USB mínimo buildable con handshake simulado.** Commit `394d2d1` (`feat: add strict TDD USB probe prototype`) agregó una unidad coherente de Android Kotlin y escritorio Rust que expresa límites de transporte USB, parsing AOA mínimo y validaciones sin hardware real. Incluye pruebas observables y documentación de evidencia en el mismo work unit. No afirma compatibilidad de dispositivo, Windows ni Samsung. Revisión nativa RDD aprobada y reconocida: lineage `review-3d704aca5d159a2f`.
-- [ ] **T2 — Handshake AOA host test-first.** Extender el prototipo Rust con un modelo de handshake host AOA más real: solicitudes de control, orden de envío de identidad de accesorio y transición esperada a modo accessory, usando un transporte fake en pruebas. Debe iniciar con RED observado, terminar con pruebas y documentación del alcance; no debe enumerar hardware ni afirmar soporte real.
+- [x] **T2 — Handshake AOA host test-first.** Extiende el prototipo Rust con un modelo de handshake host AOA más real: solicitud GET_PROTOCOL simulada, envío de identidad de accesorio en orden AOA, solicitud START_ACCESSORY simulada, validación de versión de protocolo y log ordenado de operaciones mediante transporte fake. Inició con RED observado y terminó con pruebas Rust en verde; no enumera hardware ni afirma soporte real.
 - [ ] **T3 — Datos/lado Android accessory test-first.** Extender el lado Android con el contrato de recepción/validación de identidad o datos iniciales desde accessory, usando pruebas JVM y sin cámara/video. Debe mantener ADB fuera del transporte de producto.
 - [ ] **T4 — Evidencia y límites por plataforma.** Documentar qué prueba el Mac sin hardware y qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir cualquier advertencia de drivers WinUSB/libusb como decisión manual, nunca automatizada.
 
@@ -70,6 +70,28 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 2. `feat: add strict TDD USB probe prototype` — código mínimo, pruebas y evidencia del primer prototipo. Commit `394d2d1`; revisión nativa aprobada y reconocida en lineage `review-3d704aca5d159a2f`.
 3. T2 previsto: `feat: model AOA host control handshake` — handshake host AOA real bajo TDD estricto con transporte fake y pruebas RED/GREEN; docs/evidencia en el mismo work unit.
 4. T3 previsto: `feat: model Android accessory payload boundary` — contrato Android de payload/identidad accessory bajo TDD estricto; docs/evidencia en el mismo work unit.
+
+## Verificación T2
+
+La verificación local de T2 modela el handshake de control AOA del lado host sin hardware real. No prueba compatibilidad con Windows, macOS como host USB real, Samsung Galaxy Note10, Samsung Galaxy S24+, cámara, OBS, Wi‑Fi, video, drivers ni configuración del sistema. ADB no se usa como transporte de producto.
+
+### RED observado antes del código de producción
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: falló con código 101 por imports inexistentes en `usb_probe`: `AoaHostController`, `AoaOperation` y `FakeAoaTransport`.
+
+### GREEN observado
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: pasó; 8 pruebas de `aoa_boundary_test.rs` en verde, más lib/doc tests sin pruebas.
+
+### Refactor, spot check y límites explícitos
+
+- Refactor: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml` formateó las pruebas Rust; luego `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` volvió a pasar con 8 pruebas.
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check`: pasó sin salida después del formateo.
+- `git diff --check`: pasó sin salida.
+- El modelo solo registra operaciones de control AOA sobre un transporte fake: `GetProtocol`, seis strings de identidad en orden índice 0..5 y `StartAccessory`.
+- La ruta negativa de versión de protocolo rechaza `0` después de `GetProtocol` y antes de enviar identidad.
+- La ruta negativa de identidad incompleta falla antes de cualquier solicitud USB simulada.
+- No se enumeró hardware USB en pruebas, no se tocó Android, no se usó ADB como transporte, no se instaló ni modificó ningún driver, no se usó Zadig, no se tocaron configuraciones del sistema y no se afirmó compatibilidad de hardware, Windows, Samsung, cámara, OBS ni Wi‑Fi.
 
 ## Verificación T1
 
