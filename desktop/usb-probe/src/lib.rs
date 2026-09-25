@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     fmt,
     marker::PhantomData,
     thread,
@@ -38,6 +39,7 @@ pub enum UsbProbeError {
     BulkFrameHeaderTruncated,
     BulkFramePayloadTruncated { expected: usize, actual: usize },
     BulkShortWrite,
+    BulkTransferCountExceeded { count: usize, limit: usize },
     UsbBulkTransferFailed(String),
     SelectedDeviceNotFound(DeviceIdentifier),
     InvalidReenumerationWait,
@@ -879,7 +881,9 @@ pub trait UsbBulkIo {
 #[derive(Debug, Clone)]
 pub struct RecordingUsbBulkIo {
     read_chunks: Vec<Result<Vec<u8>, UsbProbeError>>,
+    read_residual: VecDeque<u8>,
     read_attempts: usize,
+    source_read_attempts: usize,
     max_write_chunk: usize,
     write_attempts: usize,
     written_bytes: Vec<u8>,
@@ -889,7 +893,9 @@ impl RecordingUsbBulkIo {
     pub fn with_read_chunks(read_chunks: Vec<Result<Vec<u8>, UsbProbeError>>) -> Self {
         Self {
             read_chunks,
+            read_residual: VecDeque::new(),
             read_attempts: 0,
+            source_read_attempts: 0,
             max_write_chunk: usize::MAX,
             write_attempts: 0,
             written_bytes: Vec::new(),
@@ -899,7 +905,9 @@ impl RecordingUsbBulkIo {
     pub fn for_writes_with_max_chunk(max_write_chunk: usize) -> Self {
         Self {
             read_chunks: Vec::new(),
+            read_residual: VecDeque::new(),
             read_attempts: 0,
+            source_read_attempts: 0,
             max_write_chunk,
             write_attempts: 0,
             written_bytes: Vec::new(),
@@ -908,6 +916,10 @@ impl RecordingUsbBulkIo {
 
     pub fn read_attempts(&self) -> usize {
         self.read_attempts
+    }
+
+    pub fn source_read_attempts(&self) -> usize {
+        self.source_read_attempts
     }
 
     pub fn write_attempts(&self) -> usize {
@@ -922,14 +934,29 @@ impl RecordingUsbBulkIo {
 impl UsbBulkIo for RecordingUsbBulkIo {
     fn read_bulk(&mut self, buffer: &mut [u8], _timeout: Duration) -> Result<usize, UsbProbeError> {
         self.read_attempts += 1;
+        let mut copied = 0;
+
+        while copied < buffer.len() {
+            let Some(byte) = self.read_residual.pop_front() else {
+                break;
+            };
+            buffer[copied] = byte;
+            copied += 1;
+        }
+        if copied > 0 || buffer.is_empty() {
+            return Ok(copied);
+        }
+
         if self.read_chunks.is_empty() {
             return Ok(0);
         }
 
+        self.source_read_attempts += 1;
         let chunk = self.read_chunks.remove(0)?;
-        let copied = chunk.len().min(buffer.len());
-        buffer[..copied].copy_from_slice(&chunk[..copied]);
-        Ok(copied)
+        let to_copy = chunk.len().min(buffer.len());
+        buffer[..to_copy].copy_from_slice(&chunk[..to_copy]);
+        self.read_residual.extend(chunk[to_copy..].iter().copied());
+        Ok(to_copy)
     }
 
     fn write_bulk(&mut self, bytes: &[u8], _timeout: Duration) -> Result<usize, UsbProbeError> {
@@ -1003,13 +1030,20 @@ where
             if written == encoded.len() {
                 return Ok(());
             }
+            let remaining = encoded.len() - written;
             let count = self
                 .io
                 .write_bulk(&encoded[written..], self.budget.timeout())?;
+            if count > remaining {
+                return Err(UsbProbeError::BulkTransferCountExceeded {
+                    count,
+                    limit: remaining,
+                });
+            }
             if count == 0 {
                 return Err(UsbProbeError::BulkShortWrite);
             }
-            written = written.saturating_add(count);
+            written += count;
         }
 
         if written == encoded.len() {
@@ -1029,13 +1063,20 @@ where
             if read == buffer.len() {
                 return Ok(read);
             }
+            let remaining = buffer.len() - read;
             let count = self
                 .io
                 .read_bulk(&mut buffer[read..], self.budget.timeout())?;
+            if count > remaining {
+                return Err(UsbProbeError::BulkTransferCountExceeded {
+                    count,
+                    limit: remaining,
+                });
+            }
             if count == 0 {
                 return Ok(read);
             }
-            read = read.saturating_add(count);
+            read += count;
         }
         Ok(read)
     }
