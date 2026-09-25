@@ -14,7 +14,7 @@ Permitir que una persona use un Samsung Galaxy compatible como webcam de buena c
 2. instala el componente de escritorio en Windows 11 o macOS 13+ Apple Silicon;
 3. empareja el teléfono con la computadora una vez mediante QR;
 4. elige conexión por USB o por Wi‑Fi local;
-5. selecciona ChinchillaCam como cámara en la aplicación de destino.
+5. selecciona la cámara publicada por la plataforma: en Windows se espera `ChinchillaCam`; en macOS se espera `OBS Virtual Camera` mediante OBS Studio, salvo que una validación futura demuestre otro nombre.
 
 ## Alcance de primera versión
 
@@ -91,7 +91,7 @@ El proyecto transmite video solamente. No captura ni transmite audio.
 
 Antes de declarar soportada una versión funcional, deben observarse como mínimo estas puertas:
 
-- una aplicación de videollamada o captura permite seleccionar ChinchillaCam como cámara;
+- una aplicación de videollamada o captura permite seleccionar la salida esperada: `ChinchillaCam` en Windows y `OBS Virtual Camera` en macOS con OBS Studio, sin prometer un nombre propio de dispositivo en macOS hasta validarlo;
 - el video llega en vivo por USB;
 - el video llega en vivo por Wi‑Fi local;
 - el emparejamiento QR funciona una vez y persiste para reconexiones;

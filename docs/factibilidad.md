@@ -12,7 +12,7 @@ Este documento reúne fuentes primarias y marca las hipótesis que deben validar
 | USB accessory en Android | [Android Developers: USB accessory overview](https://developer.android.com/develop/connectivity/usb/accessory) | Describe el modelo de accesorio USB Android y su uso por apps. |
 | Android Open Accessory Protocol | [Android Open Source Project: Android Open Accessory protocol](https://source.android.com/docs/core/interaction/accessories/aoa) | Describe handshake, endpoints bulk y que USB debugging no es requerido para conexiones de accesorio. |
 | USB tethering en Android y Mac | [Google Help: Share a mobile connection by hotspot or tethering on Android](https://support.google.com/android/answer/9059108) | Indica que USB tethering con computadoras Mac no está soportado; esto no equivale a imposibilidad de otro protocolo USB, pero sí bloquea asumir tethering USB cross-platform. |
-| OBS virtual camera en macOS 13+ | [OBS Project: Virtual Camera Troubleshooting](https://obsproject.com/kb/virtual-camera-troubleshooting) | Relevante para la dependencia OBS Studio y problemas de cámara virtual en macOS moderno. |
+| OBS virtual camera en macOS 13+ | [OBS Project: Virtual Camera Troubleshooting](https://obsproject.com/kb/virtual-camera-troubleshooting) y [OBS Project: Virtual Camera Guide](https://obsproject.com/kb/virtual-camera-guide) | Relevante para la dependencia OBS Studio, problemas de cámara virtual en macOS moderno y el nombre esperado `OBS Virtual Camera`. |
 | Cámara virtual en Windows | [Microsoft Learn: MfCreateVirtualCamera function](https://learn.microsoft.com/en-us/windows/win32/api/mfvirtualcamera/nf-mfvirtualcamera-mfcreatevirtualcamera) | API de Media Foundation para crear cámara virtual; la documentación marca requisito de Windows build 22000. |
 | Distribución fuera de Mac App Store | [Apple Developer: Developer ID](https://developer.apple.com/developer-id/) | Relevante para firma, notarización y distribución de apps macOS fuera de la tienda. |
 
@@ -118,7 +118,7 @@ El perfil macOS acepta OBS Studio como dependencia gratuita. La fuente de OBS so
 Hipótesis de implementación:
 
 - ChinchillaCam podría entregar video a OBS Studio como fuente, o automatizar parte del flujo;
-- OBS Studio podría exponer la cámara virtual a aplicaciones externas;
+- OBS Studio podría exponer `OBS Virtual Camera` a aplicaciones externas; no se debe prometer un dispositivo macOS llamado `ChinchillaCam` sin validación;
 - la automatización completa puede no ser viable sin pasos manuales;
 - la experiencia de permisos de macOS debe documentarse con precisión.
 

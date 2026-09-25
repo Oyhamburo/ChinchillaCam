@@ -119,7 +119,7 @@ El recorrido esperado es:
 3. abre la app de escritorio;
 4. escanea un QR desde Android;
 5. elige USB o Wi‑Fi local;
-6. selecciona ChinchillaCam como cámara en la aplicación de destino.
+6. selecciona la salida de cámara correspondiente en la aplicación de destino: `ChinchillaCam` en Windows y `OBS Virtual Camera` en macOS con OBS Studio, salvo validación posterior de otro nombre.
 
 En macOS, el recorrido puede incluir instalación y habilitación de OBS Studio. La documentación debe advertirlo con claridad, sin ocultar pasos de seguridad o permisos.
 
@@ -200,9 +200,9 @@ Una versión no debe declararse lista si no cumple puertas observables. Para T1,
 
 ### 7.4 Cámara externa
 
-- En Windows 11, una aplicación externa puede seleccionar la salida de ChinchillaCam como cámara o fuente equivalente definida.
-- En macOS, OBS Studio permite usar la salida como parte del flujo de cámara virtual previsto.
-- Cualquier dependencia manual se documenta.
+- En Windows 11, una aplicación externa puede seleccionar la salida `ChinchillaCam` como cámara o fuente equivalente definida.
+- En macOS, OBS Studio permite usar la salida mediante `OBS Virtual Camera` como parte del flujo previsto.
+- Cualquier dependencia manual se documenta y no se promete un nombre propio de dispositivo macOS sin validación.
 
 ### 7.5 Uso y recuperación
 

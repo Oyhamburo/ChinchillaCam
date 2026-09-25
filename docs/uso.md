@@ -43,7 +43,7 @@ Flujo previsto:
 3. instalar la app de escritorio;
 4. abrir ChinchillaCam Desktop;
 5. emparejar el teléfono por QR;
-6. seleccionar ChinchillaCam como cámara en la aplicación de videollamada, streaming o captura.
+6. seleccionar `ChinchillaCam` como cámara en la aplicación de videollamada, streaming o captura.
 
 Puertas pendientes:
 
@@ -62,7 +62,7 @@ Flujo previsto:
 5. aceptar los permisos de macOS que correspondan;
 6. configurar o habilitar el flujo con OBS Studio y su cámara virtual;
 7. emparejar el teléfono por QR;
-8. seleccionar la cámara virtual o fuente definida en la aplicación de destino.
+8. seleccionar `OBS Virtual Camera` o la fuente OBS documentada en la aplicación de destino; no se promete un dispositivo llamado `ChinchillaCam` en macOS sin validación futura.
 
 Restricciones importantes:
 
@@ -97,7 +97,7 @@ Objetivo de uso:
 2. conectar el teléfono por cable USB;
 3. elegir USB como transporte activo;
 4. iniciar video;
-5. seleccionar ChinchillaCam como cámara o fuente en la aplicación externa.
+5. seleccionar la salida de cámara correspondiente en la aplicación externa: `ChinchillaCam` en Windows o `OBS Virtual Camera` en macOS con OBS Studio.
 
 Condiciones de aceptación de primera versión:
 
@@ -120,7 +120,7 @@ Objetivo de uso:
 2. abrir ambas apps;
 3. elegir Wi‑Fi como transporte activo;
 4. iniciar video;
-5. seleccionar ChinchillaCam en la aplicación externa.
+5. seleccionar la salida de cámara correspondiente en la aplicación externa: `ChinchillaCam` en Windows o `OBS Virtual Camera` en macOS con OBS Studio.
 
 Condiciones de aceptación:
 

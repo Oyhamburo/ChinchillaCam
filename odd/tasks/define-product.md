@@ -27,5 +27,5 @@ Publicar en `Oyhamburo/ChinchillaCam` (repositorio público) una definición com
 - Chequeos por tarea: leer el resultado, `git diff --check`, verificar rutas/enlaces locales y confirmar ausencia de archivos de código; comando y resultado exactos en el cierre. No afirmar verificaciones de dispositivos ni virtual cameras sin ejecutarlas.
 - RDD global: activo según `gentle-ai review mode status` en este repositorio; inspeccionar y respetar las rutas nativas por candidato/commit si corresponden. La evaluación puede exigir bootstrap por ser repositorio vacío; no saltarse stops ni inventar recibos.
 - Presupuesto estimado: ~350–450 líneas documentales escritas, más este seguimiento. Estrategia de entrega: `ask-on-risk` si el acumulado supera ~400 líneas; no se solicitó PR. Fuente del primer límite de rama: repositorio recién creado sin commits.
-- Espejo Engram: guardado antes de redactar documentación en `ChinchillaCam` con topic `odd/define-product/tasks` (observación `7580`) y actualizado tras T1/T2.
-- Siguiente paso: publicar la rama `docs/define-product` en `origin` bajo la autorización explícita recibida y reportar estado remoto real al padre.
+- Espejo Engram: guardado antes de redactar documentación en `ChinchillaCam` con topic `odd/define-product/tasks` (observación `7580`), actualizado tras T1/T2 y refrescado después de la publicación remota.
+- Entrega remota confirmada: `origin/docs/define-product` quedó publicado en `9bb985705332954b6f93a3d37874a6e9b458e537` con árbol de trabajo limpio antes del ajuste acotado de nombres de cámara macOS/Windows.
