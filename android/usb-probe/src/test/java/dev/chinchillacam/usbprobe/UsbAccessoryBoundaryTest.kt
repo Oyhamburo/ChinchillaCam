@@ -199,7 +199,9 @@ class UsbAccessoryBoundaryTest {
         val plan = AccessoryExecutionPlanner.planApprovedSmokeIo()
 
         assertFalse(plan.runsOnAndroidMainThread)
-        assertTrue(plan.finishesBroadcastAfterBackgroundIo)
+        assertFalse(plan.holdsBroadcastPendingResultForUsbIo)
+        assertEquals(10_000L, plan.appLevelTimeoutMillis)
+        assertFalse(plan.readCancellationGuaranteed)
     }
 
     @Test
@@ -216,6 +218,98 @@ class UsbAccessoryBoundaryTest {
         assertEquals(AccessorySmokeResult.AckWritten(streamId = 42, payloadBytes = 2), result)
         assertArrayEquals(littleEndianFrame(streamId = 42, payload = byteArrayOf(0x41, 0x43, 0x4b)), output.toByteArray())
         assertEquals(1, output.flushCount)
+    }
+
+    @Test
+    fun permissionLifecycleReducerResolvesGrantDenyMissingAndMissingCallback() {
+        val requested = AccessoryPermissionLifecycleReducer.reduce(
+            AccessoryPermissionUiModel.Idle,
+            AccessoryPermissionEvent.Requested,
+        )
+        val granted = AccessoryPermissionLifecycleReducer.reduce(
+            requested,
+            AccessoryPermissionEvent.Callback(AccessoryPermissionCallback.Granted),
+        )
+        val denied = AccessoryPermissionLifecycleReducer.reduce(
+            requested,
+            AccessoryPermissionEvent.Callback(AccessoryPermissionCallback.Denied),
+        )
+        val missingAccessory = AccessoryPermissionLifecycleReducer.reduce(
+            requested,
+            AccessoryPermissionEvent.Callback(AccessoryPermissionCallback.MissingAccessory),
+        )
+        val missingCallback = AccessoryPermissionLifecycleReducer.reduce(
+            requested,
+            AccessoryPermissionEvent.CallbackTimedOut,
+        )
+
+        assertEquals(AccessoryPermissionUiModel.WaitingForCallback, requested)
+        assertEquals(AccessoryPermissionUiModel.Granted, granted)
+        assertEquals(AccessoryPermissionUiModel.Denied, denied)
+        assertEquals(AccessoryPermissionUiModel.MissingAccessory, missingAccessory)
+        assertEquals(AccessoryPermissionUiModel.CallbackMissingOrCanceled, missingCallback)
+    }
+
+    @Test
+    fun permissionUiDoesNotWaitForeverAfterMissingCallback() {
+        val ui = UsbProbeScreenPlanner.plan(
+            accessoryAvailable = true,
+            permissionState = AccessoryPermissionUiModel.CallbackMissingOrCanceled,
+            busy = false,
+            lastResult = null,
+        )
+
+        assertTrue(ui.primaryActionEnabled)
+        assertEquals("Android no devolvió el resultado de permiso; podés intentar de nuevo.", ui.statusText)
+    }
+
+    @Test
+    fun permissionReceiverPlannerReturnsImmediatelyAfterLightweightCallbackClassification() {
+        val granted = AccessoryPermissionCallbackPlanner.plan(
+            actionMatches = true,
+            hasGrantExtra = true,
+            permissionGranted = true,
+            hasAccessory = true,
+        )
+        val denied = AccessoryPermissionCallbackPlanner.plan(
+            actionMatches = true,
+            hasGrantExtra = true,
+            permissionGranted = false,
+            hasAccessory = true,
+        )
+        val missing = AccessoryPermissionCallbackPlanner.plan(
+            actionMatches = true,
+            hasGrantExtra = false,
+            permissionGranted = false,
+            hasAccessory = false,
+        )
+
+        assertEquals(AccessoryPermissionReceiverPlan.RecordAndLaunchActivity(AccessoryPermissionCallback.Granted), granted)
+        assertEquals(AccessoryPermissionReceiverPlan.RecordAndLaunchActivity(AccessoryPermissionCallback.Denied), denied)
+        assertEquals(AccessoryPermissionReceiverPlan.RecordAndLaunchActivity(AccessoryPermissionCallback.MissingPermissionResult), missing)
+        assertFalse(granted.holdsBroadcastPendingResultForUsbIo)
+    }
+
+    @Test
+    fun boundedSmokeSessionTimesOutClosesSessionAndReportsCancellationLimit() {
+        val closeable = RecordingCloseable()
+        val session = AccessoryIoSession(
+            input = ByteArrayInputStream(byteArrayOf()),
+            output = ByteArrayOutputStream(),
+            closeable = closeable,
+        )
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val result = BoundedAccessorySmokeSession(timeoutMillis = 25, executor = executor).run(session) {
+                Thread.sleep(5_000)
+                AccessorySmokeResult.AckWritten(streamId = 1, payloadBytes = 0)
+            }
+
+            assertEquals(BoundedAccessorySmokeResult.TimedOut(readCancellationGuaranteed = false), result)
+            assertEquals(1, closeable.closeCount)
+        } finally {
+            executor.shutdownNow()
+        }
     }
 }
 

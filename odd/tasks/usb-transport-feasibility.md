@@ -67,6 +67,7 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 - [x] **T5c2c1b — Corrección selector AOA PID/interfaz/alt-setting test-first.** Commit `b95fe3f` (`fix: select AOA accessory bulk interface`) corrige la selección de interfaz bulk antes de la CLI live según la documentación AOA: PID `18d1:2d00` usa interfaz `0`; PID `18d1:2d01` usa interfaz `0` para accesorio e interfaz `1` para ADB, que se ignora. Falla cerrado si la configuración activa no puede verificarse, si hay interfaz extra no esperada, si hay endpoints duplicados de la misma dirección o si el par bulk está en alternate setting distinto de `0`. No integra CLI live, no ejecuta frame I/O real, no cambia drivers/configuración y no afirma hardware real. Revisión nativa RDD aprobada y reconocida: lineage `review-6b6ba648ae04ade0`.
 - [x] **T5c2c2 — Host live bulk CLI frame integration test-first.** Commit `143445f` (`feat: wire live AOA bulk frame CLI`) conecta la ruta CLI `--live-bulk-smoke` después de T5c2c1b: reusa el control AOA y poll físico, abre de nuevo solo el dispositivo AOA físicamente vinculado, valida/claim la interfaz bulk de accesorio, selecciona alternate setting `0`, escribe un frame de prueba pequeño y lee un frame de respuesta mediante `FramedUsbStream`. Incluye fakes para alt-setting, timeouts, endpoints y errores; no ejecuta hardware físico, no cambia drivers/configuración, no usa ADB como transporte y no afirma compatibilidad real. Revisión nativa RDD aprobada y reconocida: lineage `review-0c15605242c3fdcb`.
 - [x] **T5d — APK Android de prueba instalable.** Agregó un APK Android mínimo instalable con UI visible en español y acción explícita para solicitar permiso sobre `UsbAccessory`; después de permiso aprobado abre vía `UsbManager`, lee un frame acotado compatible con Rust (`u32` little-endian `stream_id`, `u32` little-endian `payload_len`, payload acotado) y responde un ACK framed con el mismo `stream_id`. Incluye pruebas JVM automatizadas RED→GREEN para framing, oversize/short read, plan de permiso/flags y estado UI. No inicia cámara, no crea servicio, no instala/ejecuta en dispositivo físico, no usa ADB como transporte de producto y no afirma compatibilidad hardware. Revisión nativa RDD aprobada y reconocida: lineage `review-e7808067fd67c3b1`.
+- [x] **T5d1 — Endurecer APK smoke antes de uso físico.** Resolvió test-first los advisories aprobados de T5d: `R3-permission-state-never-resolved` con reducer/estado explícito para grant, deny, accesorio faltante, resultado de permiso faltante y callback cancelado/ausente; y `R3-unbounded-accessory-read` con sesión smoke Activity-owned fuera del main thread, timeout app-level de 10s, cierre de sesión al vencer y sin `goAsync()` retenido para I/O USB. La limitación queda explícita: el timeout/cierre acota la espera de la app, pero no garantiza que el SO interrumpa todo `stream.read` bloqueado. No se instaló ni ejecutó en dispositivo físico, no se usó ADB como transporte de producto y no se afirma compatibilidad hardware.
 - [ ] **T5e — Framing y guía smoke host↔phone.** Documentar comandos host↔teléfono reproducibles, salida esperada, ruta de cross-build Windows si es factible y hardware real pendiente. Debe mantener el dry-run como planificación, no como soporte de hardware.
 - [ ] **T6 — Validación plataforma/dispositivo pendiente.** Registrar qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir advertencias de WinUSB/libusb como decisión manual del usuario, nunca automatizada. Mantener no-ADB como default; cualquier fallback de depuración USB solo se documenta después de pruebas específicas.
 
@@ -96,7 +97,30 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 14. `fix: select AOA accessory bulk interface` — corregir selector por PID/interfaz AOA, ignorar ADB interface 1 solo en `18d1:2d01`, fallar cerrado sin configuración activa verificada y mantener alt setting 0. Commit `b95fe3f`; revisión nativa aprobada y reconocida en lineage `review-6b6ba648ae04ade0`.
 15. `feat: wire live AOA bulk frame CLI` — CLI live conectada al handle AOA vinculado, claim bulk validado y `FramedUsbStream` acotado para un frame mínimo; pruebas/fakes/docs en el mismo work unit. Commit `143445f`; revisión nativa aprobada y reconocida en lineage `review-0c15605242c3fdcb`.
 16. `feat: add Android accessory smoke APK` — APK Android mínimo instalable con UI visible en español, permiso de accesorio aprobado por el sistema, lectura de frame `u32 LE stream_id + u32 LE payload_len + payload`, respuesta ACK framed con el mismo protocolo y pruebas JVM automatizadas; commits `62795ea`, `9857589`, `dd736db`; revisión nativa aprobada y reconocida en lineage `review-e7808067fd67c3b1`.
-17. T5e previsto: `docs: define host phone USB smoke procedure` — comandos host↔phone, ruta Windows si es factible y validación hardware marcada pendiente.
+17. `fix: bound Android accessory smoke readiness` — resolver los advisories `R3-permission-state-never-resolved` y `R3-unbounded-accessory-read` con reducer/receiver liviano y sesión smoke acotada por timeout antes de uso físico; sin instalación/dispositivo. Commit pendiente por instrucción explícita del usuario de no commitear.
+18. T5e previsto: `docs: define host phone USB smoke procedure` — comandos host↔phone, ruta Windows si es factible y validación hardware marcada pendiente.
+
+
+## Verificación T5d1
+
+La verificación local de T5d1 endurece el APK smoke antes de uso físico. No se instaló el APK, no se ejecutó en dispositivo físico, no se usó ADB, no se hicieron pruebas USB reales y no se afirma compatibilidad Samsung/hardware.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` por símbolos/parámetros inexistentes: `AccessoryPermissionLifecycleReducer`, `AccessoryPermissionUiModel`, `AccessoryPermissionEvent`, `AccessoryPermissionCallback`, parámetro `permissionState`, `AccessoryPermissionCallbackPlanner`, `AccessoryPermissionReceiverPlan`, `BoundedAccessorySmokeSession` y `BoundedAccessorySmokeResult`.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: pasó con `BUILD SUCCESSFUL`; 19 tareas accionables, 19 up-to-date.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 31 up-to-date.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó APK en `android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`; tamaño observado por `ls -l` durante la verificación: 836692 bytes.
+
+### Límites y decisiones T5d1
+
+- El `BroadcastReceiver` ahora solo clasifica el callback de permiso (`granted`, `denied`, permiso faltante o accesorio faltante), lanza la Activity con ese estado y retorna; no usa `goAsync()` ni hace I/O USB.
+- La Activity mantiene estado de permiso explícito, programa timeout de callback de permiso y vuelve a habilitar reintento si Android no devuelve resultado.
+- La lectura/escritura smoke queda en una sesión propiedad de la Activity, fuera del hilo principal, con timeout app-level de 10s, `session.close()` al vencer y mensaje honesto: no se garantiza que el SO interrumpa todo `stream.read` bloqueado.
+- La corrección está lista para commit/revisión nativa después de verificación independiente.
 
 ## Verificación T5d
 
@@ -115,12 +139,12 @@ La verificación local de T5d cubre compilación, pruebas JVM y producción de A
 ### Límites y decisiones T5d
 
 - `android/usb-probe` cambió a `com.android.application`; la raíz declara explícitamente `com.android.application` y `com.android.library` con AGP `8.0.2`, `compileSdk = 33`, `minSdk = 23` y `applicationId = "dev.chinchillacam.usbprobe"`.
-- La Activity launcher muestra UI en español, no abre nada hasta una acción explícita del usuario y solicita permiso mediante `UsbManager.requestPermission` con `PendingIntent.FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE` y `Intent` dirigido al receiver de la app.
+- La Activity launcher muestra UI en español, no abre nada hasta una acción explícita del usuario y solicita permiso mediante `UsbManager.requestPermission`; T5d1 corrigió el `PendingIntent` final a `FLAG_UPDATE_CURRENT | FLAG_MUTABLE` con `Intent` dirigido al receiver de la app para que Android pueda adjuntar los extras del resultado.
 - El manifest incluye launcher, filtro `android.hardware.usb.action.USB_ACCESSORY_ATTACHED`, metadata `@xml/accessory_filter` y receiver no exportado para el callback de permiso.
 - El framing Android usa header fijo de 8 bytes little-endian (`stream_id`, `payload_len`), rechaza payload declarado mayor al máximo antes de leerlo y escribe ACK `ACK` con el mismo `stream_id`.
 - No se instaló el APK, no se abrió hardware real, no se validó Samsung/AOA real y no se hacen afirmaciones de compatibilidad por usar `compileSdk`.
 - Verificación independiente read-only: PASS; repitió `:android:usb-probe:testDebugUnitTest`, `:android:usb-probe:assembleDebug`, comprobación del APK y `git diff --check` sin bloqueantes.
-- Correcciones RDD resueltas: el primer intento (`review-721608a01fefe952`) escaló tras `R3-blocking-main-thread`; se agregó RED específico para planificar I/O fuera de callbacks Android, y la Activity/receiver ahora despachan la lectura/escritura USB a un `Thread` separado. En el receiver se usa `goAsync()` y `finish()` después del trabajo para no bloquear `onReceive`. En la revisión fresca del candidato corregido (`review-e7808067fd67c3b1`) el reviewer abrió `R3-immutable-permission-result`; se agregó RED específico y el `PendingIntent` de permiso ahora usa `FLAG_UPDATE_CURRENT | FLAG_MUTABLE` para permitir que Android añada `EXTRA_PERMISSION_GRANTED` y `EXTRA_ACCESSORY`.
+- Correcciones RDD resueltas: el primer intento (`review-721608a01fefe952`) escaló tras `R3-blocking-main-thread`; se agregó RED específico para planificar I/O fuera de callbacks Android. En la revisión fresca del candidato corregido (`review-e7808067fd67c3b1`) el reviewer abrió `R3-immutable-permission-result`; se agregó RED específico y el `PendingIntent` de permiso ahora usa `FLAG_UPDATE_CURRENT | FLAG_MUTABLE` para permitir que Android añada `EXTRA_PERMISSION_GRANTED` y `EXTRA_ACCESSORY`. T5d1 reemplaza la estrategia de receiver: ya no retiene `goAsync()` para I/O USB; solo clasifica el callback y devuelve.
 
 ### Revisión nativa RDD T5d
 

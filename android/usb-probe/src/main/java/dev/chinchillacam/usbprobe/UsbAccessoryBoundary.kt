@@ -8,6 +8,10 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 @JvmInline
 value class AoaProtocolVersion(val value: Int) {
@@ -238,14 +242,86 @@ data class UsbProbeUiState(
 
 data class AccessorySmokeExecutionPlan(
     val runsOnAndroidMainThread: Boolean,
-    val finishesBroadcastAfterBackgroundIo: Boolean,
+    val holdsBroadcastPendingResultForUsbIo: Boolean,
+    val appLevelTimeoutMillis: Long,
+    val readCancellationGuaranteed: Boolean,
 )
 
 object AccessoryExecutionPlanner {
+    const val DEFAULT_SMOKE_TIMEOUT_MILLIS: Long = 10_000
+
     fun planApprovedSmokeIo(): AccessorySmokeExecutionPlan = AccessorySmokeExecutionPlan(
         runsOnAndroidMainThread = false,
-        finishesBroadcastAfterBackgroundIo = true,
+        holdsBroadcastPendingResultForUsbIo = false,
+        appLevelTimeoutMillis = DEFAULT_SMOKE_TIMEOUT_MILLIS,
+        readCancellationGuaranteed = false,
     )
+}
+
+sealed class AccessoryPermissionCallback {
+    object Granted : AccessoryPermissionCallback()
+    object Denied : AccessoryPermissionCallback()
+    object MissingAccessory : AccessoryPermissionCallback()
+    object MissingPermissionResult : AccessoryPermissionCallback()
+}
+
+sealed class AccessoryPermissionEvent {
+    object Requested : AccessoryPermissionEvent()
+    data class Callback(val callback: AccessoryPermissionCallback) : AccessoryPermissionEvent()
+    object CallbackTimedOut : AccessoryPermissionEvent()
+}
+
+sealed class AccessoryPermissionUiModel {
+    object Idle : AccessoryPermissionUiModel()
+    object WaitingForCallback : AccessoryPermissionUiModel()
+    object Granted : AccessoryPermissionUiModel()
+    object Denied : AccessoryPermissionUiModel()
+    object MissingAccessory : AccessoryPermissionUiModel()
+    object MissingPermissionResult : AccessoryPermissionUiModel()
+    object CallbackMissingOrCanceled : AccessoryPermissionUiModel()
+}
+
+object AccessoryPermissionLifecycleReducer {
+    fun reduce(current: AccessoryPermissionUiModel, event: AccessoryPermissionEvent): AccessoryPermissionUiModel = when (event) {
+        AccessoryPermissionEvent.Requested -> AccessoryPermissionUiModel.WaitingForCallback
+        AccessoryPermissionEvent.CallbackTimedOut -> if (current == AccessoryPermissionUiModel.WaitingForCallback) {
+            AccessoryPermissionUiModel.CallbackMissingOrCanceled
+        } else {
+            current
+        }
+        is AccessoryPermissionEvent.Callback -> when (event.callback) {
+            AccessoryPermissionCallback.Granted -> AccessoryPermissionUiModel.Granted
+            AccessoryPermissionCallback.Denied -> AccessoryPermissionUiModel.Denied
+            AccessoryPermissionCallback.MissingAccessory -> AccessoryPermissionUiModel.MissingAccessory
+            AccessoryPermissionCallback.MissingPermissionResult -> AccessoryPermissionUiModel.MissingPermissionResult
+        }
+    }
+}
+
+sealed class AccessoryPermissionReceiverPlan {
+    object Ignore : AccessoryPermissionReceiverPlan()
+    data class RecordAndLaunchActivity(val callback: AccessoryPermissionCallback) : AccessoryPermissionReceiverPlan()
+
+    val holdsBroadcastPendingResultForUsbIo: Boolean
+        get() = false
+}
+
+object AccessoryPermissionCallbackPlanner {
+    fun plan(
+        actionMatches: Boolean,
+        hasGrantExtra: Boolean,
+        permissionGranted: Boolean,
+        hasAccessory: Boolean,
+    ): AccessoryPermissionReceiverPlan {
+        if (!actionMatches) return AccessoryPermissionReceiverPlan.Ignore
+        val callback = when {
+            !hasGrantExtra -> AccessoryPermissionCallback.MissingPermissionResult
+            permissionGranted && hasAccessory -> AccessoryPermissionCallback.Granted
+            permissionGranted && !hasAccessory -> AccessoryPermissionCallback.MissingAccessory
+            else -> AccessoryPermissionCallback.Denied
+        }
+        return AccessoryPermissionReceiverPlan.RecordAndLaunchActivity(callback)
+    }
 }
 
 object UsbProbeScreenPlanner {
@@ -254,17 +330,33 @@ object UsbProbeScreenPlanner {
         permissionRequested: Boolean,
         busy: Boolean,
         lastResult: String?,
+    ): UsbProbeUiState = plan(
+        accessoryAvailable = accessoryAvailable,
+        permissionState = if (permissionRequested) AccessoryPermissionUiModel.WaitingForCallback else AccessoryPermissionUiModel.Idle,
+        busy = busy,
+        lastResult = lastResult,
+    )
+
+    fun plan(
+        accessoryAvailable: Boolean,
+        permissionState: AccessoryPermissionUiModel,
+        busy: Boolean,
+        lastResult: String?,
     ): UsbProbeUiState {
-        val status = lastResult ?: if (accessoryAvailable) {
-            "Accesorio USB detectado. Tocá el botón para pedir permiso."
-        } else {
-            "Conectá el accesorio USB para iniciar la prueba."
+        val status = lastResult ?: when {
+            permissionState == AccessoryPermissionUiModel.WaitingForCallback -> "Esperando permiso del sistema Android."
+            permissionState == AccessoryPermissionUiModel.Denied -> "Android denegó el permiso del accesorio; podés intentar de nuevo."
+            permissionState == AccessoryPermissionUiModel.MissingAccessory -> "Android aprobó el permiso, pero no devolvió el accesorio."
+            permissionState == AccessoryPermissionUiModel.MissingPermissionResult -> "Android devolvió un callback de permiso incompleto; podés intentar de nuevo."
+            permissionState == AccessoryPermissionUiModel.CallbackMissingOrCanceled -> "Android no devolvió el resultado de permiso; podés intentar de nuevo."
+            accessoryAvailable -> "Accesorio USB detectado. Tocá el botón para pedir permiso."
+            else -> "Conectá el accesorio USB para iniciar la prueba."
         }
         return UsbProbeUiState(
             title = "ChinchillaCam prueba USB",
             statusText = status,
             primaryActionLabel = "Solicitar permiso y abrir accesorio USB",
-            primaryActionEnabled = accessoryAvailable && !permissionRequested && !busy,
+            primaryActionEnabled = accessoryAvailable && !busy && permissionState != AccessoryPermissionUiModel.WaitingForCallback,
             safetyNotice = "No se abre nada hasta que toques el botón y Android apruebe el permiso.",
         )
     }
@@ -315,3 +407,32 @@ private fun Int.toLittleEndianBytes(): ByteArray = byteArrayOf(
 )
 
 private fun Int.toFourDigitHex(): String = toString(16).padStart(4, '0')
+
+
+sealed class BoundedAccessorySmokeResult {
+    data class Completed(val result: AccessorySmokeResult) : BoundedAccessorySmokeResult()
+    data class TimedOut(val readCancellationGuaranteed: Boolean) : BoundedAccessorySmokeResult()
+}
+
+class BoundedAccessorySmokeSession(
+    private val timeoutMillis: Long,
+    private val executor: ExecutorService = Executors.newSingleThreadExecutor(),
+) {
+    init {
+        require(timeoutMillis > 0) { "timeoutMillis must be positive" }
+    }
+
+    fun run(
+        session: AccessoryIoSession,
+        operation: (AccessoryIoSession) -> AccessorySmokeResult,
+    ): BoundedAccessorySmokeResult {
+        val future = executor.submit<AccessorySmokeResult> { operation(session) }
+        return try {
+            BoundedAccessorySmokeResult.Completed(future.get(timeoutMillis, TimeUnit.MILLISECONDS))
+        } catch (_: TimeoutException) {
+            session.close()
+            future.cancel(true)
+            BoundedAccessorySmokeResult.TimedOut(readCancellationGuaranteed = false)
+        }
+    }
+}
