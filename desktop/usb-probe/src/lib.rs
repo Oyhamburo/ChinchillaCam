@@ -33,6 +33,9 @@ pub enum UsbProbeError {
     MissingExplicitDeviceIdentifier,
     InvalidDeviceIdentifier(String),
     InvalidBulkEndpointClaim,
+    BulkInterfaceNotFound,
+    BulkInterfaceAmbiguous,
+    BulkInterfaceClaimFailed(String),
     InvalidBulkTransferBudget,
     EmptyBulkFrame,
     OversizeBulkFrame { length: usize, max: usize },
@@ -778,6 +781,214 @@ impl BulkEndpointClaim {
             in_endpoint,
             out_endpoint,
         })
+    }
+
+    pub fn in_endpoint(&self) -> u8 {
+        self.in_endpoint
+    }
+
+    pub fn out_endpoint(&self) -> u8 {
+        self.out_endpoint
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BulkTransferKind {
+    Bulk,
+    Interrupt,
+    Control,
+    Isochronous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BulkEndpointDescriptor {
+    address: u8,
+    transfer_kind: BulkTransferKind,
+}
+
+impl BulkEndpointDescriptor {
+    pub fn new(address: u8, transfer_kind: BulkTransferKind) -> Result<Self, UsbProbeError> {
+        if address & 0x0f == 0 {
+            return Err(UsbProbeError::InvalidBulkEndpointClaim);
+        }
+        Ok(Self {
+            address,
+            transfer_kind,
+        })
+    }
+
+    fn is_bulk_in(self) -> bool {
+        self.transfer_kind == BulkTransferKind::Bulk && self.address & 0x80 != 0
+    }
+
+    fn is_bulk_out(self) -> bool {
+        self.transfer_kind == BulkTransferKind::Bulk && self.address & 0x80 == 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkInterfaceDescriptor {
+    interface_number: u8,
+    endpoints: Vec<BulkEndpointDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkInterfaceClaim {
+    interface_number: u8,
+    endpoints: BulkEndpointClaim,
+}
+
+impl BulkInterfaceClaim {
+    pub fn candidate_descriptor(
+        interface_number: u8,
+        endpoints: Vec<BulkEndpointDescriptor>,
+    ) -> BulkInterfaceDescriptor {
+        BulkInterfaceDescriptor {
+            interface_number,
+            endpoints,
+        }
+    }
+
+    pub fn from_descriptors(
+        descriptors: &[BulkInterfaceDescriptor],
+    ) -> Result<Self, UsbProbeError> {
+        let mut candidates = Vec::new();
+        for descriptor in descriptors {
+            let bulk_in = descriptor
+                .endpoints
+                .iter()
+                .copied()
+                .filter(|endpoint| endpoint.is_bulk_in())
+                .collect::<Vec<_>>();
+            let bulk_out = descriptor
+                .endpoints
+                .iter()
+                .copied()
+                .filter(|endpoint| endpoint.is_bulk_out())
+                .collect::<Vec<_>>();
+
+            if bulk_in.is_empty() || bulk_out.is_empty() {
+                continue;
+            }
+            if bulk_in.len() > 1 || bulk_out.len() > 1 {
+                return Err(UsbProbeError::BulkInterfaceAmbiguous);
+            }
+
+            let endpoints = BulkEndpointClaim::new(bulk_in[0].address, bulk_out[0].address)?;
+            candidates.push(Self {
+                interface_number: descriptor.interface_number,
+                endpoints,
+            });
+        }
+
+        if candidates.len() > 1 {
+            return Err(UsbProbeError::BulkInterfaceAmbiguous);
+        }
+        candidates.pop().ok_or(UsbProbeError::BulkInterfaceNotFound)
+    }
+
+    pub fn interface_number(&self) -> u8 {
+        self.interface_number
+    }
+
+    pub fn endpoints(&self) -> &BulkEndpointClaim {
+        &self.endpoints
+    }
+}
+
+pub trait BulkInterfaceClaimer {
+    fn claim_bulk_interface(&mut self) -> Result<BulkInterfaceClaim, UsbProbeError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordingBulkInterfaceClaimer {
+    descriptors: Vec<BulkInterfaceDescriptor>,
+    claim_attempts: Vec<u8>,
+}
+
+impl RecordingBulkInterfaceClaimer {
+    pub fn with_descriptors(descriptors: Vec<BulkInterfaceDescriptor>) -> Self {
+        Self {
+            descriptors,
+            claim_attempts: Vec::new(),
+        }
+    }
+
+    pub fn claim_attempts(&self) -> &[u8] {
+        &self.claim_attempts
+    }
+}
+
+impl BulkInterfaceClaimer for RecordingBulkInterfaceClaimer {
+    fn claim_bulk_interface(&mut self) -> Result<BulkInterfaceClaim, UsbProbeError> {
+        let claim = BulkInterfaceClaim::from_descriptors(&self.descriptors)?;
+        self.claim_attempts.push(claim.interface_number());
+        Ok(claim)
+    }
+}
+
+#[derive(Debug)]
+pub struct RusbBulkInterfaceClaimer<'a, C>
+where
+    C: rusb::UsbContext,
+{
+    handle: &'a mut rusb::DeviceHandle<C>,
+}
+
+impl<'a, C> RusbBulkInterfaceClaimer<'a, C>
+where
+    C: rusb::UsbContext,
+{
+    pub fn new(handle: &'a mut rusb::DeviceHandle<C>) -> Self {
+        Self { handle }
+    }
+
+    fn descriptors_from_active_configuration(
+        &self,
+    ) -> Result<Vec<BulkInterfaceDescriptor>, UsbProbeError> {
+        let device = self.handle.device();
+        let config = device
+            .active_config_descriptor()
+            .or_else(|_| device.config_descriptor(0))
+            .map_err(|error| UsbProbeError::BulkInterfaceClaimFailed(error.to_string()))?;
+        let mut descriptors = Vec::new();
+
+        for interface in config.interfaces() {
+            for descriptor in interface.descriptors() {
+                let mut endpoints = Vec::new();
+                for endpoint in descriptor.endpoint_descriptors() {
+                    endpoints.push(BulkEndpointDescriptor::new(
+                        endpoint.address(),
+                        match endpoint.transfer_type() {
+                            rusb::TransferType::Bulk => BulkTransferKind::Bulk,
+                            rusb::TransferType::Interrupt => BulkTransferKind::Interrupt,
+                            rusb::TransferType::Control => BulkTransferKind::Control,
+                            rusb::TransferType::Isochronous => BulkTransferKind::Isochronous,
+                        },
+                    )?);
+                }
+                descriptors.push(BulkInterfaceClaim::candidate_descriptor(
+                    descriptor.interface_number(),
+                    endpoints,
+                ));
+            }
+        }
+
+        Ok(descriptors)
+    }
+}
+
+impl<C> BulkInterfaceClaimer for RusbBulkInterfaceClaimer<'_, C>
+where
+    C: rusb::UsbContext,
+{
+    fn claim_bulk_interface(&mut self) -> Result<BulkInterfaceClaim, UsbProbeError> {
+        let descriptors = self.descriptors_from_active_configuration()?;
+        let claim = BulkInterfaceClaim::from_descriptors(&descriptors)?;
+        self.handle
+            .claim_interface(claim.interface_number())
+            .map_err(|error| UsbProbeError::BulkInterfaceClaimFailed(error.to_string()))?;
+        Ok(claim)
     }
 }
 

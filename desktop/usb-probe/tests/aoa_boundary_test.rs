@@ -3,12 +3,13 @@ use std::time::Duration;
 use usb_probe::{
     parse_protocol_version_response, AccessoryIdentity, AoaAccessoryHandleRegistry,
     AoaAccessoryReenumerationPoller, AoaControlRequest, AoaHostController, AoaObservedDevice,
-    AoaOperation, AoaProtocolVersion, AoaStartOutcome, BulkEndpointClaim, BulkFrame,
-    BulkTransportBoundary, DeviceIdentifier, DeviceSummary, DryRunAoaPlanner, FakeAoaTransport,
-    FrameTransferBudget, FramedUsbStream, HostAoaControlOptions, LiveAoaControlRunner,
-    RecordingAoaAccessoryHandleRegistry, RecordingUsbBulkIo, RecordingUsbControlIo,
-    RecordingUsbDeviceRegistry, ReenumerationWait, RusbAoaControlTransport, UsbBulkIo,
-    UsbHostBoundary, UsbPhysicalLocation, AOA_ACCESSORY_DEVICE_IDS,
+    AoaOperation, AoaProtocolVersion, AoaStartOutcome, BulkEndpointClaim, BulkEndpointDescriptor,
+    BulkFrame, BulkInterfaceClaim, BulkInterfaceClaimer, BulkTransferKind, BulkTransportBoundary,
+    DeviceIdentifier, DeviceSummary, DryRunAoaPlanner, FakeAoaTransport, FrameTransferBudget,
+    FramedUsbStream, HostAoaControlOptions, LiveAoaControlRunner,
+    RecordingAoaAccessoryHandleRegistry, RecordingBulkInterfaceClaimer, RecordingUsbBulkIo,
+    RecordingUsbControlIo, RecordingUsbDeviceRegistry, ReenumerationWait, RusbAoaControlTransport,
+    UsbBulkIo, UsbHostBoundary, UsbPhysicalLocation, AOA_ACCESSORY_DEVICE_IDS,
 };
 
 #[test]
@@ -932,4 +933,94 @@ fn framed_usb_stream_rejects_backend_write_count_larger_than_remaining_slice_wit
             limit: frame.encode().len()
         }
     );
+}
+
+#[test]
+fn bulk_interface_claim_selects_single_interface_with_bulk_in_and_out_endpoints() {
+    let descriptors = vec![BulkInterfaceClaim::candidate_descriptor(
+        2,
+        vec![
+            BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+            BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+        ],
+    )];
+    let mut claimer = RecordingBulkInterfaceClaimer::with_descriptors(descriptors);
+
+    let claim = claimer.claim_bulk_interface().unwrap();
+
+    assert_eq!(claim.interface_number(), 2);
+    assert_eq!(claim.endpoints().in_endpoint(), 0x81);
+    assert_eq!(claim.endpoints().out_endpoint(), 0x02);
+    assert_eq!(claimer.claim_attempts(), &[2]);
+}
+
+#[test]
+fn bulk_interface_claim_rejects_missing_wrong_kind_or_ambiguous_bulk_pairs() {
+    let mut missing_out = RecordingBulkInterfaceClaimer::with_descriptors(vec![
+        BulkInterfaceClaim::candidate_descriptor(
+            1,
+            vec![BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap()],
+        ),
+    ]);
+    assert_eq!(
+        missing_out.claim_bulk_interface().unwrap_err(),
+        usb_probe::UsbProbeError::BulkInterfaceNotFound
+    );
+
+    let mut wrong_kind = RecordingBulkInterfaceClaimer::with_descriptors(vec![
+        BulkInterfaceClaim::candidate_descriptor(
+            1,
+            vec![
+                BulkEndpointDescriptor::new(0x81, BulkTransferKind::Interrupt).unwrap(),
+                BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+            ],
+        ),
+    ]);
+    assert_eq!(
+        wrong_kind.claim_bulk_interface().unwrap_err(),
+        usb_probe::UsbProbeError::BulkInterfaceNotFound
+    );
+
+    let mut ambiguous = RecordingBulkInterfaceClaimer::with_descriptors(vec![
+        BulkInterfaceClaim::candidate_descriptor(
+            1,
+            vec![
+                BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+                BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+            ],
+        ),
+        BulkInterfaceClaim::candidate_descriptor(
+            2,
+            vec![
+                BulkEndpointDescriptor::new(0x83, BulkTransferKind::Bulk).unwrap(),
+                BulkEndpointDescriptor::new(0x04, BulkTransferKind::Bulk).unwrap(),
+            ],
+        ),
+    ]);
+    assert_eq!(
+        ambiguous.claim_bulk_interface().unwrap_err(),
+        usb_probe::UsbProbeError::BulkInterfaceAmbiguous
+    );
+
+    let mut ambiguous_same_interface = RecordingBulkInterfaceClaimer::with_descriptors(vec![
+        BulkInterfaceClaim::candidate_descriptor(
+            1,
+            vec![
+                BulkEndpointDescriptor::new(0x81, BulkTransferKind::Bulk).unwrap(),
+                BulkEndpointDescriptor::new(0x82, BulkTransferKind::Bulk).unwrap(),
+                BulkEndpointDescriptor::new(0x02, BulkTransferKind::Bulk).unwrap(),
+            ],
+        ),
+    ]);
+    assert_eq!(
+        ambiguous_same_interface.claim_bulk_interface().unwrap_err(),
+        usb_probe::UsbProbeError::BulkInterfaceAmbiguous
+    );
+}
+
+#[test]
+fn bulk_endpoint_descriptor_rejects_endpoint_zero_and_invalid_directions() {
+    assert!(BulkEndpointDescriptor::new(0x00, BulkTransferKind::Bulk).is_err());
+    assert!(BulkEndpointClaim::new(0x01, 0x02).is_err());
+    assert!(BulkEndpointClaim::new(0x81, 0x82).is_err());
 }
