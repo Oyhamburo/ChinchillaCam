@@ -54,8 +54,8 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 - [x] **T1 — Prototipo USB mínimo buildable con handshake simulado.** Commit `394d2d1` (`feat: add strict TDD USB probe prototype`) agregó una unidad coherente de Android Kotlin y escritorio Rust que expresa límites de transporte USB, parsing AOA mínimo y validaciones sin hardware real. Incluye pruebas observables y documentación de evidencia en el mismo work unit. No afirma compatibilidad de dispositivo, Windows ni Samsung. Revisión nativa RDD aprobada y reconocida: lineage `review-3d704aca5d159a2f`.
 - [x] **T2 — Modelo AOA host control test-first.** Commit `bc4bb27` (`feat: model AOA host control handshake`) extendió el prototipo Rust con un modelo de handshake de control AOA: solicitud GET_PROTOCOL simulada, envío de identidad de accesorio en orden AOA, solicitud START_ACCESSORY simulada, validación de versión de protocolo y log ordenado de operaciones mediante `FakeAoaTransport`. Inició con RED observado y terminó con pruebas Rust en verde. No enumera hardware, no demuestra un handshake USB real y no afirma soporte real. Revisión nativa RDD aprobada y reconocida: lineage `review-2c36083eccc1a5f2`.
 - [x] **T3 — Adapter/CLI rusb para AOA host test-first.** Commit `dbf261c` (`feat: add rusb AOA host adapter`) agregó un límite host `rusb` testeado con mocks/fakes para mapear solicitudes de control AOA (`GET_PROTOCOL`, seis `SEND_STRING` y `START_ACCESSORY`) y devolver un estado seguro de re-enumeración esperada. No se ejecutó contra hardware, no enumera dispositivos en pruebas, no instala ni cambia drivers y no afirma endpoints bulk reales ni compatibilidad de plataforma/dispositivo. Revisión nativa RDD aprobada y reconocida: lineage `review-2eac537778fbc2c7`.
-- [ ] **T4 — Android UsbManager accessory open/read/write test-first.** Modelar y probar el lado Android para abrir `UsbAccessory`, obtener streams y leer/escribir payloads iniciales sin cámara/video. Debe mantener ADB fuera del transporte de producto.
-- [ ] **T5 — Framing mínimo y guía smoke end-to-end.** Definir framing mínimo de mensajes y una guía de smoke test host↔Android que pueda ejecutarse cuando haya hardware, sin afirmar que ya fue ejecutada.
+- [x] **T4 — Android UsbManager accessory open/read/write test-first.** Se agregó un límite Android pequeño alrededor de `UsbManager`/`UsbAccessory` mediante interfaces mockeables y streams inyectables. Las pruebas JVM cubren permiso denegado sin intento de apertura, apertura autorizada con sesión de lectura/escritura, lectura corta explícita, EOF explícito, cierre idempotente y escritura con `flush`. No usa hardware, no inicia cámara, no agrega Activity ni servicio, no usa ADB como transporte y no afirma compatibilidad real.
+- [ ] **T5 — Framing mínimo y smoke end-to-end ejecutable.** Debe producir una prueba offline runnable para ejecutar cuando haya hardware: enumeración host real, detección de re-enumeración AOA tras `START_ACCESSORY`, apertura/reclamo de endpoints bulk, intercambio de bytes con un framing mínimo documentado, y un artefacto Android instalable/testeable que pueda leer/escribir esos frames por `UsbAccessory`. La guía debe conservar pasos de ejecución reproducibles y resultados esperados; la validación real en Windows 11, Samsung Galaxy Note10/S24+ y hardware USB queda marcada como posterior/pendiente hasta observarla.
 - [ ] **T6 — Validación plataforma/dispositivo pendiente.** Registrar qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir advertencias de WinUSB/libusb como decisión manual del usuario, nunca automatizada.
 
 ## Estrategia de entrega y slicing
@@ -73,7 +73,32 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 3. `feat: model AOA host control handshake` — modelo host AOA bajo TDD estricto con `FakeAoaTransport` y pruebas RED/GREEN; commit `bc4bb27`; revisión nativa aprobada y reconocida en lineage `review-2c36083eccc1a5f2`.
 4. `feat: add rusb AOA host adapter` — adapter host con solicitudes de control AOA sobre `rusb`, re-enumeración esperada y límites explícitos bajo TDD estricto; commit `dbf261c`; revisión nativa aprobada y reconocida en lineage `review-2eac537778fbc2c7`.
 5. T4 previsto: `feat: model Android accessory IO boundary` — contrato Android `UsbManager`/`UsbAccessory` open/read/write bajo TDD estricto; docs/evidencia en el mismo work unit.
-6. T5 previsto: `docs: define USB smoke framing and validation guide` — framing mínimo y guía smoke end-to-end marcada como pendiente hasta ejecución con hardware.
+6. T5 previsto: `feat: add executable USB smoke framing proof` — framing mínimo, enumeración/re-enumeración host, bulk I/O y artefacto Android instalable para prueba offline runnable cuando haya hardware; Windows/Samsung real siguen pendientes hasta ejecución observada.
+
+## Verificación T4
+
+La verificación local de T4 cubre solo un límite Android de I/O accesorio con pruebas JVM y streams mockeables. No prueba hardware USB real, permisos Android reales mostrados por el sistema, re-enumeración AOA real, endpoints bulk reales, Windows, Samsung Galaxy Note10, Samsung Galaxy S24+, cámara, OBS, Wi‑Fi, video, drivers, Zadig ni configuraciones del sistema. ADB no se usa como transporte de producto.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` por símbolos Kotlin inexistentes: `UsbAccessoryBoundary`, `AccessoryOpenResult`, `AccessoryStreams`, `AccessoryIoSession`, `AccessoryReadResult` y `UsbAccessoryGateway`.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: pasó; `BUILD SUCCESSFUL` con 14 tareas, 5 ejecutadas y 9 up-to-date. Antes del verde final hubo una falla de implementación por usar `data object`, no compatible con la versión Kotlin efectiva; se corrigió a `object`.
+
+### Refactor, assemble, spot check y límites explícitos
+
+- Refactor/compatibilidad: `AccessoryReadResult.Eof` quedó como `object` para mantener compatibilidad con el lenguaje Kotlin efectivo del módulo.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó; `BUILD SUCCESSFUL` con 21 tareas, 14 ejecutadas y 7 up-to-date.
+- `git diff --check`: pasó sin salida.
+- Spot check del parent local después del writer: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest` pasó con `BUILD SUCCESSFUL`; `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug` pasó con `BUILD SUCCESSFUL`; `git diff --check` pasó sin salida.
+- El modelo Android no concede permisos: recibe `hasPermission` o consulta `UsbManager.hasPermission` y si falta permiso devuelve `PermissionDenied` sin abrir.
+- La apertura autorizada usa un `UsbAccessoryGateway` inyectable; `AndroidUsbAccessoryGateway` encapsula `UsbManager.openAccessory` y expone `FileInputStream`/`FileOutputStream` sobre el descriptor devuelto.
+- `AccessoryIoSession.readExactly` distingue lectura completa, lectura corta y EOF; una lectura corta no se trata como frame completo.
+- `AccessoryIoSession.write` escribe bytes y llama `flush`.
+- `AccessoryIoSession.close` es idempotente y cierra input, output y el recurso de sesión exactamente una vez en las pruebas JVM.
+- No se ejecutó contra hardware, no se tocó Windows, Samsung, cámara, OBS, Wi‑Fi, drivers, Zadig ni configuraciones del sistema, y no se usó ADB como transporte.
 
 ## Verificación T3
 

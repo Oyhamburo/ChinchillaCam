@@ -68,6 +68,8 @@ La fuente de ayuda de Google indica que USB tethering con computadoras Mac no es
 
 Límite del prototipo T3: el adapter host Rust solo mapea solicitudes de control AOA sobre un límite `rusb` con pruebas fake/mocks. El estado posterior a `START_ACCESSORY` se modela como re-enumeración esperada que debe observarse aparte buscando Google AOA VID/PID o endpoints bulk reclamados; no es evidencia de que haya ocurrido en hardware.
 
+Límite del prototipo T4: el límite Android Kotlin modela permiso, apertura de `UsbAccessory`, streams y lectura/escritura con pruebas JVM e interfaces mockeables. Esto verifica comportamiento local de código, no un permiso real otorgado por Android, no una conexión con hardware, no endpoints bulk observados y no compatibilidad con Samsung o escritorio.
+
 Puertas de aceptación USB:
 
 - detectar dispositivo por cable en Windows 11;
