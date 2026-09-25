@@ -38,6 +38,7 @@ pub enum UsbProbeError {
     PhysicalIdentityUnavailable,
     AoaReenumerationAmbiguous,
     AoaReenumerationTimedOut,
+    AoaHandlePhysicalIdentityMismatch,
 }
 
 pub fn parse_protocol_version_response(
@@ -249,10 +250,14 @@ impl AoaObservedDevice {
         &self.identifier
     }
 
-    pub fn physical_location(&self) -> &UsbPhysicalLocation {
+    pub fn physical_location(&self) -> Option<&UsbPhysicalLocation> {
+        self.physical_location.as_ref()
+    }
+
+    pub fn required_physical_location(&self) -> Result<&UsbPhysicalLocation, UsbProbeError> {
         self.physical_location
             .as_ref()
-            .expect("bound AOA observations always carry physical location")
+            .ok_or(UsbProbeError::PhysicalIdentityUnavailable)
     }
 }
 
@@ -266,6 +271,190 @@ impl fmt::Display for AoaObservedDevice {
                 self.identifier
             ),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundAoaAccessoryHandle<I = ()> {
+    io: I,
+    identifier: DeviceIdentifier,
+    physical_location: UsbPhysicalLocation,
+    bulk_interface_claimed: bool,
+}
+
+impl BoundAoaAccessoryHandle<()> {
+    pub fn metadata_only(
+        identifier: DeviceIdentifier,
+        physical_location: UsbPhysicalLocation,
+    ) -> Self {
+        Self::new((), identifier, physical_location)
+    }
+}
+
+impl<I> BoundAoaAccessoryHandle<I> {
+    pub fn new(
+        io: I,
+        identifier: DeviceIdentifier,
+        physical_location: UsbPhysicalLocation,
+    ) -> Self {
+        Self {
+            io,
+            identifier,
+            physical_location,
+            bulk_interface_claimed: false,
+        }
+    }
+
+    pub fn io(&self) -> &I {
+        &self.io
+    }
+
+    pub fn identifier(&self) -> &DeviceIdentifier {
+        &self.identifier
+    }
+
+    pub fn physical_location(&self) -> &UsbPhysicalLocation {
+        &self.physical_location
+    }
+
+    pub fn bulk_interface_claimed(&self) -> bool {
+        self.bulk_interface_claimed
+    }
+}
+
+pub trait AoaAccessoryHandleRegistry {
+    type Io;
+
+    fn open_bound_accessory_handle(
+        &mut self,
+        physical_location: &UsbPhysicalLocation,
+    ) -> Result<BoundAoaAccessoryHandle<Self::Io>, UsbProbeError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordingAoaAccessoryHandleRegistry {
+    observed_devices: Vec<AoaObservedDevice>,
+    opened_handle_location: Option<UsbPhysicalLocation>,
+    open_attempts: Vec<DeviceIdentifier>,
+}
+
+impl RecordingAoaAccessoryHandleRegistry {
+    pub fn with_observed_devices(observed_devices: Vec<AoaObservedDevice>) -> Self {
+        Self {
+            observed_devices,
+            opened_handle_location: None,
+            open_attempts: Vec::new(),
+        }
+    }
+
+    pub fn with_opened_handle_location(mut self, physical_location: UsbPhysicalLocation) -> Self {
+        self.opened_handle_location = Some(physical_location);
+        self
+    }
+
+    pub fn open_attempts(&self) -> &[DeviceIdentifier] {
+        &self.open_attempts
+    }
+}
+
+impl AoaAccessoryHandleRegistry for RecordingAoaAccessoryHandleRegistry {
+    type Io = ();
+
+    fn open_bound_accessory_handle(
+        &mut self,
+        physical_location: &UsbPhysicalLocation,
+    ) -> Result<BoundAoaAccessoryHandle<Self::Io>, UsbProbeError> {
+        let mut matches = Vec::new();
+        for device in self
+            .observed_devices
+            .iter()
+            .filter(|device| AOA_ACCESSORY_DEVICE_IDS.contains(device.identifier()))
+        {
+            let location = device.required_physical_location()?;
+            if location == physical_location {
+                matches.push(device.clone());
+            }
+        }
+
+        if matches.len() > 1 {
+            return Err(UsbProbeError::AoaReenumerationAmbiguous);
+        }
+
+        let Some(device) = matches.pop() else {
+            return Err(UsbProbeError::AoaReenumerationTimedOut);
+        };
+        self.open_attempts.push(*device.identifier());
+        let opened_location = self
+            .opened_handle_location
+            .clone()
+            .unwrap_or_else(|| physical_location.clone());
+        if &opened_location != physical_location {
+            return Err(UsbProbeError::AoaHandlePhysicalIdentityMismatch);
+        }
+
+        Ok(BoundAoaAccessoryHandle::metadata_only(
+            *device.identifier(),
+            opened_location,
+        ))
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct RusbAoaAccessoryHandleRegistry {
+    _context_type: PhantomData<rusb::Context>,
+}
+
+impl AoaAccessoryHandleRegistry for RusbAoaAccessoryHandleRegistry {
+    type Io = rusb::DeviceHandle<rusb::Context>;
+
+    fn open_bound_accessory_handle(
+        &mut self,
+        physical_location: &UsbPhysicalLocation,
+    ) -> Result<BoundAoaAccessoryHandle<Self::Io>, UsbProbeError> {
+        let context = rusb::Context::new()
+            .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
+        let devices = context
+            .devices()
+            .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
+        let mut matches = Vec::new();
+
+        for device in devices.iter() {
+            let Ok(descriptor) = device.device_descriptor() else {
+                continue;
+            };
+            let identifier = DeviceIdentifier::VidPid {
+                vendor_id: descriptor.vendor_id(),
+                product_id: descriptor.product_id(),
+            };
+            if !AOA_ACCESSORY_DEVICE_IDS.contains(&identifier) {
+                continue;
+            }
+            let location = physical_location_for_rusb_device(&device)?;
+            if &location == physical_location {
+                matches.push((device, identifier));
+            }
+        }
+
+        if matches.len() > 1 {
+            return Err(UsbProbeError::AoaReenumerationAmbiguous);
+        }
+        let Some((device, identifier)) = matches.pop() else {
+            return Err(UsbProbeError::AoaReenumerationTimedOut);
+        };
+
+        let handle = device
+            .open()
+            .map_err(|error| UsbProbeError::UsbControlTransferFailed(error.to_string()))?;
+        let opened_location = physical_location_for_rusb_device(&handle.device())?;
+        if &opened_location != physical_location {
+            return Err(UsbProbeError::AoaHandlePhysicalIdentityMismatch);
+        }
+
+        Ok(BoundAoaAccessoryHandle::new(
+            handle,
+            identifier,
+            opened_location,
+        ))
     }
 }
 

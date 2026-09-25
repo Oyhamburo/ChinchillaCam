@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use usb_probe::{
-    parse_protocol_version_response, AccessoryIdentity, AoaAccessoryReenumerationPoller,
-    AoaControlRequest, AoaHostController, AoaObservedDevice, AoaOperation, AoaProtocolVersion,
-    AoaStartOutcome, BulkEndpointClaim, BulkFrame, BulkTransportBoundary, DeviceIdentifier,
-    DeviceSummary, DryRunAoaPlanner, FakeAoaTransport, HostAoaControlOptions, LiveAoaControlRunner,
+    parse_protocol_version_response, AccessoryIdentity, AoaAccessoryHandleRegistry,
+    AoaAccessoryReenumerationPoller, AoaControlRequest, AoaHostController, AoaObservedDevice,
+    AoaOperation, AoaProtocolVersion, AoaStartOutcome, BulkEndpointClaim, BulkFrame,
+    BulkTransportBoundary, DeviceIdentifier, DeviceSummary, DryRunAoaPlanner, FakeAoaTransport,
+    HostAoaControlOptions, LiveAoaControlRunner, RecordingAoaAccessoryHandleRegistry,
     RecordingUsbControlIo, RecordingUsbDeviceRegistry, ReenumerationWait, RusbAoaControlTransport,
     UsbHostBoundary, UsbPhysicalLocation, AOA_ACCESSORY_DEVICE_IDS,
 };
@@ -537,7 +538,7 @@ fn live_host_control_runner_polls_for_aoa_reenumeration_after_start_accessory() 
     );
     assert_eq!(
         result.accessory_device().unwrap().physical_location(),
-        &physical_location
+        Some(&physical_location)
     );
     assert!(result.aoa_reenumeration_observed());
     assert_eq!(result.reenumeration_poll_attempts(), 2);
@@ -566,7 +567,7 @@ fn reenumeration_poller_binds_aoa_device_to_pre_start_physical_location() {
         .unwrap();
 
     assert_eq!(observed.identifier().to_string(), "18d1:2d01");
-    assert_eq!(observed.physical_location(), &physical_location);
+    assert_eq!(observed.physical_location(), Some(&physical_location));
     assert_eq!(poller.attempts(), 1);
 }
 
@@ -644,4 +645,86 @@ fn reenumeration_wait_zero_timeout_is_bounded_to_one_attempt_without_overflow() 
     let wait = ReenumerationWait::bounded(Duration::ZERO);
 
     assert_eq!(wait.max_attempts(), 1);
+}
+
+#[test]
+fn aoa_accessory_handle_registry_opens_only_single_aoa_device_at_bound_physical_location() {
+    let bound_location = UsbPhysicalLocation::new(3, vec![1, 4]).unwrap();
+    let observed = AoaObservedDevice::new(
+        DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap(),
+        Some(bound_location.clone()),
+    );
+    let mut registry = RecordingAoaAccessoryHandleRegistry::with_observed_devices(vec![observed]);
+
+    let handle = registry
+        .open_bound_accessory_handle(&bound_location)
+        .unwrap();
+
+    assert_eq!(handle.identifier().to_string(), "18d1:2d01");
+    assert_eq!(handle.physical_location(), &bound_location);
+    assert!(!handle.bulk_interface_claimed());
+    assert_eq!(
+        registry.open_attempts(),
+        &[DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap()]
+    );
+}
+
+#[test]
+fn aoa_accessory_handle_registry_fails_closed_on_missing_or_ambiguous_handle_identity() {
+    let bound_location = UsbPhysicalLocation::new(3, vec![1, 4]).unwrap();
+    let mut missing_identity =
+        RecordingAoaAccessoryHandleRegistry::with_observed_devices(vec![AoaObservedDevice::new(
+            DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap(),
+            None,
+        )]);
+
+    assert_eq!(
+        missing_identity
+            .open_bound_accessory_handle(&bound_location)
+            .unwrap_err(),
+        usb_probe::UsbProbeError::PhysicalIdentityUnavailable
+    );
+
+    let mut ambiguous = RecordingAoaAccessoryHandleRegistry::with_observed_devices(vec![
+        AoaObservedDevice::new(
+            DeviceIdentifier::parse_vid_pid("18d1:2d00").unwrap(),
+            Some(bound_location.clone()),
+        ),
+        AoaObservedDevice::new(
+            DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap(),
+            Some(bound_location.clone()),
+        ),
+    ]);
+
+    assert_eq!(
+        ambiguous
+            .open_bound_accessory_handle(&bound_location)
+            .unwrap_err(),
+        usb_probe::UsbProbeError::AoaReenumerationAmbiguous
+    );
+}
+
+#[test]
+fn aoa_accessory_handle_registry_rejects_wrong_opened_handle_physical_location() {
+    let bound_location = UsbPhysicalLocation::new(3, vec![1, 4]).unwrap();
+    let wrong_open_location = UsbPhysicalLocation::new(3, vec![1, 5]).unwrap();
+    let observed = AoaObservedDevice::new(
+        DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap(),
+        Some(bound_location.clone()),
+    );
+    let mut registry = RecordingAoaAccessoryHandleRegistry::with_observed_devices(vec![observed])
+        .with_opened_handle_location(wrong_open_location);
+
+    let error = registry
+        .open_bound_accessory_handle(&bound_location)
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        usb_probe::UsbProbeError::AoaHandlePhysicalIdentityMismatch
+    );
+    assert_eq!(
+        registry.open_attempts(),
+        &[DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap()]
+    );
 }
