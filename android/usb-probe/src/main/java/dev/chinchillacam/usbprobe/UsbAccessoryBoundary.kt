@@ -224,7 +224,7 @@ object AccessoryPermissionPlanner {
         action = "$packageName.action.USB_ACCESSORY_PERMISSION",
         packageName = packageName,
         receiverClassName = receiverClassName,
-        pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
     )
 }
 

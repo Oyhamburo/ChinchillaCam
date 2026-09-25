@@ -167,7 +167,7 @@ class UsbAccessoryBoundaryTest {
     }
 
     @Test
-    fun permissionRequestPlanUsesExplicitReceiverActionAndModernSafeFlags() {
+    fun permissionRequestPlanUsesExplicitReceiverActionAndMutableResultFlags() {
         val plan = AccessoryPermissionPlanner.plan(
             packageName = "dev.chinchillacam.usbprobe",
             receiverClassName = "dev.chinchillacam.usbprobe.UsbAccessoryPermissionReceiver",
@@ -176,7 +176,7 @@ class UsbAccessoryBoundaryTest {
         assertEquals("dev.chinchillacam.usbprobe.action.USB_ACCESSORY_PERMISSION", plan.action)
         assertEquals("dev.chinchillacam.usbprobe", plan.packageName)
         assertEquals("dev.chinchillacam.usbprobe.UsbAccessoryPermissionReceiver", plan.receiverClassName)
-        assertEquals(0x0c000000, plan.pendingIntentFlags)
+        assertEquals(0x0a000000, plan.pendingIntentFlags)
     }
 
     @Test
