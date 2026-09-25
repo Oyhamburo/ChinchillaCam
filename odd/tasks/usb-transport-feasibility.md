@@ -53,7 +53,7 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 
 - [x] **T1 — Prototipo USB mínimo buildable con handshake simulado.** Commit `394d2d1` (`feat: add strict TDD USB probe prototype`) agregó una unidad coherente de Android Kotlin y escritorio Rust que expresa límites de transporte USB, parsing AOA mínimo y validaciones sin hardware real. Incluye pruebas observables y documentación de evidencia en el mismo work unit. No afirma compatibilidad de dispositivo, Windows ni Samsung. Revisión nativa RDD aprobada y reconocida: lineage `review-3d704aca5d159a2f`.
 - [x] **T2 — Modelo AOA host control test-first.** Commit `bc4bb27` (`feat: model AOA host control handshake`) extendió el prototipo Rust con un modelo de handshake de control AOA: solicitud GET_PROTOCOL simulada, envío de identidad de accesorio en orden AOA, solicitud START_ACCESSORY simulada, validación de versión de protocolo y log ordenado de operaciones mediante `FakeAoaTransport`. Inició con RED observado y terminó con pruebas Rust en verde. No enumera hardware, no demuestra un handshake USB real y no afirma soporte real. Revisión nativa RDD aprobada y reconocida: lineage `review-2c36083eccc1a5f2`.
-- [x] **T3 — Adapter/CLI rusb para AOA host test-first.** Se agregó un límite host `rusb` testeado con mocks/fakes para mapear solicitudes de control AOA (`GET_PROTOCOL`, seis `SEND_STRING` y `START_ACCESSORY`) y devolver un estado seguro de re-enumeración esperada. No se ejecutó contra hardware, no enumera dispositivos en pruebas, no instala ni cambia drivers y no afirma endpoints bulk reales ni compatibilidad de plataforma/dispositivo.
+- [x] **T3 — Adapter/CLI rusb para AOA host test-first.** Commit `dbf261c` (`feat: add rusb AOA host adapter`) agregó un límite host `rusb` testeado con mocks/fakes para mapear solicitudes de control AOA (`GET_PROTOCOL`, seis `SEND_STRING` y `START_ACCESSORY`) y devolver un estado seguro de re-enumeración esperada. No se ejecutó contra hardware, no enumera dispositivos en pruebas, no instala ni cambia drivers y no afirma endpoints bulk reales ni compatibilidad de plataforma/dispositivo. Revisión nativa RDD aprobada y reconocida: lineage `review-2eac537778fbc2c7`.
 - [ ] **T4 — Android UsbManager accessory open/read/write test-first.** Modelar y probar el lado Android para abrir `UsbAccessory`, obtener streams y leer/escribir payloads iniciales sin cámara/video. Debe mantener ADB fuera del transporte de producto.
 - [ ] **T5 — Framing mínimo y guía smoke end-to-end.** Definir framing mínimo de mensajes y una guía de smoke test host↔Android que pueda ejecutarse cuando haya hardware, sin afirmar que ya fue ejecutada.
 - [ ] **T6 — Validación plataforma/dispositivo pendiente.** Registrar qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir advertencias de WinUSB/libusb como decisión manual del usuario, nunca automatizada.
@@ -71,13 +71,20 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 1. `chore: track USB transport feasibility prototype` — esta tarea ODD y espejo de memoria. Commit `9066ff1`.
 2. `feat: add strict TDD USB probe prototype` — código mínimo, pruebas y evidencia del primer prototipo. Commit `394d2d1`; revisión nativa aprobada y reconocida en lineage `review-3d704aca5d159a2f`.
 3. `feat: model AOA host control handshake` — modelo host AOA bajo TDD estricto con `FakeAoaTransport` y pruebas RED/GREEN; commit `bc4bb27`; revisión nativa aprobada y reconocida en lineage `review-2c36083eccc1a5f2`.
-4. T3 previsto: `feat: add rusb AOA host adapter` — adapter host con solicitudes de control AOA sobre `rusb`, re-enumeración esperada y límites explícitos bajo TDD estricto; docs/evidencia en el mismo work unit. Commit pendiente: el parent inspeccionará y decidirá commit/revisión.
+4. `feat: add rusb AOA host adapter` — adapter host con solicitudes de control AOA sobre `rusb`, re-enumeración esperada y límites explícitos bajo TDD estricto; commit `dbf261c`; revisión nativa aprobada y reconocida en lineage `review-2eac537778fbc2c7`.
 5. T4 previsto: `feat: model Android accessory IO boundary` — contrato Android `UsbManager`/`UsbAccessory` open/read/write bajo TDD estricto; docs/evidencia en el mismo work unit.
 6. T5 previsto: `docs: define USB smoke framing and validation guide` — framing mínimo y guía smoke end-to-end marcada como pendiente hasta ejecución con hardware.
 
 ## Verificación T3
 
 La verificación local de T3 cubre el mapeo de solicitudes de control AOA hacia un límite host `rusb` usando mocks/fakes. No prueba hardware USB real, re-enumeración real, Google AOA VID/PID observado, endpoints bulk reales, Windows, macOS como host real, Samsung Galaxy Note10, Samsung Galaxy S24+, cámara, OBS, Wi‑Fi, video, drivers ni configuración del sistema. ADB no se usa como transporte de producto.
+
+### Revisión nativa RDD T3
+
+- Candidato: `dbf261c` contra base `43634da`.
+- Lineage: `review-2eac537778fbc2c7`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida. No volver a consultar STATUS sobre este lineage quemado.
+- Hallazgo advisory no bloqueante del reviewer: `R3-short-transfer` en `desktop/usb-probe/src/lib.rs:332`. No abre corrección para T3; se trata como trabajo futuro.
 
 ### RED observado antes del código de producción
 
