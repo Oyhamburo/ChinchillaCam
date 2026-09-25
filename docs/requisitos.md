@@ -30,7 +30,7 @@ La primera versión debe soportar ambos transportes:
 
 USB y Wi‑Fi son requisitos de primera versión. No se acepta definir la primera entrega como Wi‑Fi-only.
 
-El objetivo del modo USB es funcionar sin Internet y sin ADB. Esa condición todavía es una hipótesis de implementación y debe validarse en Windows 11 y macOS.
+El objetivo del modo USB es funcionar sin Internet, sin ADB, sin opciones de desarrollador y sin depuración USB. Esa condición todavía es una hipótesis de implementación y debe validarse en Windows 11 y macOS. Si la validación demuestra que una combinación concreta de plataforma y dispositivo no tiene transporte viable sin depuración USB, el producto puede exigirla como fallback documentado para ese caso específico, no como predeterminado ni como supuesto silencioso.
 
 ### 2.3 Emparejamiento
 
@@ -92,7 +92,7 @@ No se promete soporte para Windows 10 en esta definición inicial.
 Puertas pendientes:
 
 - exposición del video como cámara seleccionable en aplicaciones de terceros;
-- funcionamiento USB sin ADB;
+- funcionamiento USB sin ADB, opciones de desarrollador ni depuración USB;
 - reconexión luego de desconectar y conectar el teléfono;
 - comportamiento con una sola computadora activa.
 
@@ -160,8 +160,8 @@ La distribución inicial debe ser gratuita mediante GitHub. En macOS, si no hay 
 
 Estas afirmaciones requieren evidencia antes de pasar a soporte declarado:
 
-1. USB directo sin ADB en Windows 11.
-2. USB directo sin ADB en macOS 13+ Apple Silicon.
+1. USB directo sin ADB, opciones de desarrollador ni depuración USB en Windows 11.
+2. USB directo sin ADB, opciones de desarrollador ni depuración USB en macOS 13+ Apple Silicon.
 3. Automatización suficiente de OBS Studio para una experiencia aceptable.
 4. Exposición estable como cámara virtual o fuente seleccionable según plataforma.
 5. Continuidad de video con pantalla bloqueada.
@@ -171,7 +171,7 @@ Estas afirmaciones requieren evidencia antes de pasar a soporte declarado:
 9. Controles de cámara disponibles desde escritorio.
 10. Cambio entre USB y Wi‑Fi sin corte perceptible.
 
-Si una hipótesis falla, el producto debe documentar la limitación y ajustar el alcance antes de prometer compatibilidad.
+Si una hipótesis falla, el producto debe documentar la limitación y ajustar el alcance antes de prometer compatibilidad. Requerir depuración USB solo es aceptable como fallback explícito por plataforma/dispositivo después de esa validación; no implica que ADB ya esté elegido ni que la depuración sea parte normal del flujo.
 
 ## 7. Puertas de aceptación observables
 
@@ -189,7 +189,8 @@ Una versión no debe declararse lista si no cumple puertas observables. Para T1,
 - Una computadora Windows 11 recibe video por USB.
 - Una computadora macOS 13+ Apple Silicon recibe video por USB o mediante la integración definida.
 - La conexión USB no requiere Internet.
-- La afirmación de no usar ADB solo se declara soportada después de validación.
+- La afirmación de no usar ADB, opciones de desarrollador ni depuración USB solo se declara soportada después de validación.
+- Si un fallback requiere depuración USB, la documentación de ese perfil explica el riesgo, los pasos de autorización y cómo desactivar o revocar la depuración al terminar.
 
 ### 7.3 Wi‑Fi
 

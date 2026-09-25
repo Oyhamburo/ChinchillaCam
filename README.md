@@ -60,7 +60,7 @@ ChinchillaCam no busca incluir en esta etapa:
 
 Las siguientes capacidades son objetivos de diseño, no hechos comprobados todavía:
 
-- USB directo sin ADB ni depuración USB en Windows 11 y macOS;
+- USB directo sin ADB, opciones de desarrollador ni depuración USB en Windows 11 y macOS; si una validación futura demuestra que no existe transporte viable sin depuración USB en una combinación concreta de plataforma y dispositivo, esa exigencia podrá documentarse como fallback específico, nunca como comportamiento predeterminado ni supuesto silencioso;
 - automatización o integración suficiente con OBS Studio en macOS para exponer la cámara virtual con buena experiencia;
 - continuidad del video con la pantalla del teléfono bloqueada;
 - soporte efectivo en Samsung Galaxy Note10 y Samsung Galaxy S24+;
@@ -83,7 +83,7 @@ La experiencia debe priorizar claridad y control:
 
 ## Privacidad y límites de red
 
-La primera versión debe funcionar sin cuentas y sin servidores externos. En Wi‑Fi, la comunicación se limita a la red local. En USB, el objetivo es funcionar sin Internet.
+La primera versión debe funcionar sin cuentas y sin servidores externos. En Wi‑Fi, la comunicación se limita a la red local. En USB, el objetivo es funcionar sin Internet y sin activar depuración USB ni opciones de desarrollador. Si una plataforma o dispositivo finalmente requiere depuración USB como fallback validado, la documentación debe explicarlo antes de usarlo, incluir los pasos de seguridad necesarios y aclarar que la autorización puede revocarse y la depuración puede desactivarse después de la sesión.
 
 El proyecto transmite video solamente. No captura ni transmite audio.
 
@@ -99,7 +99,7 @@ Antes de declarar soportada una versión funcional, deben observarse como mínim
 - las métricas muestran FPS reales, latencia y cuadros perdidos;
 - el usuario puede distinguir si el problema observado viene de red Wi‑Fi o de calidad de video;
 - los instaladores o paquetes se obtienen desde GitHub sin costo;
-- las hipótesis de USB sin ADB, OBS, pantalla bloqueada, Samsung y Android mínimo tienen evidencia específica o quedan documentadas como limitaciones.
+- las hipótesis de USB sin ADB ni depuración USB, OBS, pantalla bloqueada, Samsung y Android mínimo tienen evidencia específica o quedan documentadas como limitaciones por plataforma/dispositivo.
 
 ## Documentación relacionada
 

@@ -48,7 +48,7 @@ Flujo previsto:
 Puertas pendientes:
 
 - confirmar que Windows 11 puede exponer la salida como cámara seleccionable con la implementación elegida;
-- validar USB directo sin ADB ni opciones de desarrollador;
+- validar USB directo sin ADB, opciones de desarrollador ni depuración USB;
 - validar reconexión después de desconectar y volver a conectar el cable.
 
 ### 2.3 macOS 13+ Apple Silicon: paquete desde GitHub y OBS Studio
@@ -103,12 +103,13 @@ Condiciones de aceptación de primera versión:
 
 - USB debe estar disponible junto con Wi‑Fi; no es una mejora posterior opcional;
 - el modo USB debe funcionar sin Internet;
-- el objetivo es no requerir ADB, depuración USB ni opciones de desarrollador.
+- el objetivo es no requerir ADB, depuración USB ni opciones de desarrollador;
+- si una validación futura demuestra que una plataforma o dispositivo no tiene transporte USB viable sin depuración USB, esa exigencia debe aparecer como fallback específico antes de usarlo, con advertencia de seguridad y pasos para revocar la autorización o volver a desactivar la depuración después.
 
 Estado técnico:
 
-- USB directo sin ADB en Windows 11 está no validado;
-- USB directo sin ADB en macOS 13+ Apple Silicon está no validado;
+- USB directo sin ADB, opciones de desarrollador ni depuración USB en Windows 11 está no validado;
+- USB directo sin ADB, opciones de desarrollador ni depuración USB en macOS 13+ Apple Silicon está no validado;
 - el hecho de que Android tenga protocolos USB accesorios no demuestra por sí solo que el host de escritorio en Windows/macOS ya funcione;
 - USB tethering no debe confundirse con transporte USB directo de video.
 
@@ -191,7 +192,8 @@ Recuperación prevista:
 - indicar si el cable no fue detectado;
 - sugerir probar otro puerto o cable;
 - mostrar si el transporte USB no está soportado por la plataforma actual;
-- permitir cambiar a Wi‑Fi sin reemparejar.
+- permitir cambiar a Wi‑Fi sin reemparejar;
+- si el perfil documentado requiere depuración USB como fallback, explicar cómo revocar la autorización de la computadora y desactivar depuración USB cuando el usuario termine.
 
 ### 9.3 Falla Wi‑Fi
 
