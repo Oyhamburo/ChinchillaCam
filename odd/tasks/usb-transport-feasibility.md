@@ -60,8 +60,8 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
   - RED observado T5b: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml .` falló con código 101 por imports inexistentes en `usb_probe`: `HostAoaControlOptions`, `LiveAoaControlRunner`, `RecordingUsbDeviceRegistry`, `ReenumerationWait` y variante `UsbProbeError::SelectedDeviceNotFound`.
 - [x] **T5c1 — Host live AOA re-enumeration poll test-first.** Commit `25cacc4` (`feat: poll for AOA re-enumeration`) agregó una sub-unidad separada para corregir el límite de T5b: después de `START_ACCESSORY`, la ruta live-control ahora hace un poll acotado buscando re-enumeración a Google AOA `18d1:2d00` o `18d1:2d01`, con error distinto si no aparece. Usa fakes en pruebas, no reclama interfaces bulk, no lee/escribe frames, no ejecuta hardware físico y no afirma compatibilidad real. Revisión nativa RDD aprobada y reconocida: lineage `review-3b74a320767c5602`.
 - [x] **T5c1b — Guard de identidad física post-AOA test-first.** Commit `7a53e0e` (`feat: bind AOA re-enumeration identity`) agregó el guard previo a cualquier reclamo bulk: la ruta live-control captura la identidad física estable del dispositivo pre-START mediante `rusb` (`bus_number` + `port_numbers`) y el poll post-AOA solo acepta `18d1:2d00`/`18d1:2d01` si aparece en la misma ubicación física. Falla cerrado con errores distintos cuando la identidad física no está disponible, cuando hay ambigüedad o cuando vence el poll. También endurece el cálculo de intentos para timeout cero/saturación y mantiene T5c2 como bulk futuro. Sin hardware real ni afirmación de misma identidad física probada en dispositivo físico. Revisión nativa RDD aprobada y reconocida: lineage `review-7f646ad8c675d1c1`.
-- [x] **T5c2a — Host safe AOA handle binding test-first.** Agregó la apertura segura del handle AOA post-reenumeración solo si el handle abierto conserva la misma identidad física `bus_number + port_path` seleccionada antes de `START_ACCESSORY`. Falla cerrado si la identidad del handle no está disponible, si hay más de un candidato AOA en la misma ubicación física o si el handle abierto corresponde a otra ubicación. Incluye pruebas de handle equivocado con fakes; no lee ni escribe frames, no reclama interfaz bulk y no afirma hardware real. Revisión nativa RDD pendiente en este candidato.
-- [ ] **T5c2b — Host framed USB stream boundary test-first.** Implementar el framing USB acotado sobre un límite fake/inyectable: header de longitud explícito, límite máximo de frame, lecturas/escrituras incrementales, header fragmentado, payload fragmentado, EOF/errores propagados, short writes detectados y sin truncación/overflow. No reclamar aún interfaz real si eso amplía el cambio.
+- [x] **T5c2a — Host safe AOA handle binding test-first.** Commit `6d3b4fc` (`feat: bind opened AOA handle identity`) agregó la apertura segura del handle AOA post-reenumeración solo si el handle abierto conserva la misma identidad física `bus_number + port_path` seleccionada antes de `START_ACCESSORY`. Falla cerrado si la identidad del handle no está disponible, si hay más de un candidato AOA en la misma ubicación física o si el handle abierto corresponde a otra ubicación. Incluye pruebas de handle equivocado con fakes; no lee ni escribe frames, no reclama interfaz bulk y no afirma hardware real. Revisión nativa RDD aprobada y reconocida: lineage `review-3fe355b7919ce6cf`.
+- [x] **T5c2b — Host framed USB stream boundary test-first.** Agregó un framing USB acotado sobre un límite fake/inyectable: header de longitud explícito, límite máximo de frame, lecturas/escrituras incrementales, header fragmentado, payload fragmentado, EOF/errores propagados, short writes detectados y sin truncación/overflow. No reclama interfaz real, no integra CLI live y no afirma hardware real. Revisión nativa RDD pendiente en este candidato.
 - [ ] **T5c2c — Host live bulk interface integration test-first.** Integrar la ruta live CLI después de T5c2a y T5c2b: descubrir/validar descriptor de interfaz con endpoints bulk IN/OUT explícitos, reclamar interfaz y conectar un frame mínimo con timeout. Debe mantener direcciones de endpoint fuertes, límite de longitud, propagación de errores y no afirmar éxito físico sin smoke real.
 - [ ] **T5d — APK Android de prueba instalable.** Agregar un artefacto Android mínimo de prueba con UI/entrada visible del usuario para permiso/accesorio, apertura de accessory y lectura/escritura de payload framed acotado. Debe incluir pruebas, no iniciar cámara, no iniciar trabajo silencioso en segundo plano y no usar ADB como transporte de producto.
 - [ ] **T5e — Framing y guía smoke host↔phone.** Documentar comandos host↔teléfono reproducibles, salida esperada, ruta de cross-build Windows si es factible y hardware real pendiente. Debe mantener el dry-run como planificación, no como soporte de hardware.
@@ -86,11 +86,40 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 7. T5b previsto: `feat: add live AOA host control path` — ruta host no-dry-run para control AOA con `rusb` contra `VID:PID` explícito, timeouts y re-enumeración acotada; pruebas con fakes y docs/evidencia en el mismo work unit.
 8. `feat: poll for AOA re-enumeration` — poll acotado post-START hacia `18d1:2d00`/`18d1:2d01`, error distinto de timeout y pruebas fake. Commit `25cacc4`; revisión nativa aprobada y reconocida en lineage `review-3b74a320767c5602`.
 9. `feat: bind AOA re-enumeration identity` — guard de identidad física pre/post START usando `rusb` bus/puertos, fallo cerrado en ambigüedad/no disponibilidad/timeout y pruebas fake. Commit `7a53e0e`; revisión nativa aprobada y reconocida en lineage `review-7f646ad8c675d1c1`.
-10. `feat: bind opened AOA handle identity` — apertura segura del handle AOA post-reenumeración solo si conserva la ubicación física pre-START; fallos cerrados para metadata ausente, ambigüedad o handle equivocado; pruebas/fakes/docs en el mismo work unit. Revisión nativa RDD pendiente en este candidato.
-11. T5c2b previsto: `feat: add bounded USB frame stream` — framing incremental con límite de longitud, header/payload fragmentados, EOF/errores y short writes sin truncación/overflow; pruebas/fakes/docs en el mismo work unit.
+10. `feat: bind opened AOA handle identity` — apertura segura del handle AOA post-reenumeración solo si conserva la ubicación física pre-START; fallos cerrados para metadata ausente, ambigüedad o handle equivocado; pruebas/fakes/docs en el mismo work unit. Commit `6d3b4fc`; revisión nativa aprobada y reconocida en lineage `review-3fe355b7919ce6cf`.
+11. `feat: add bounded USB frame stream` — framing incremental con límite de longitud, header/payload fragmentados, EOF/errores y short writes sin truncación/overflow; pruebas/fakes/docs en el mismo work unit. Revisión nativa RDD pendiente en este candidato.
 12. T5c2c previsto: `feat: integrate live AOA bulk interface` — descriptor/interfaz/endpoints bulk reales y CLI live conectados al binding T5c2a y al framing T5c2b; pruebas/fakes/docs en el mismo work unit.
 13. T5d previsto: `feat: add Android accessory smoke APK` — APK Android de prueba instalable con permiso visible y payload framed acotado bajo TDD estricto; docs/evidencia en el mismo work unit.
 14. T5e previsto: `docs: define host phone USB smoke procedure` — comandos host↔phone, ruta Windows si es factible y validación hardware marcada pendiente.
+
+## Verificación T5c2b
+
+La verificación local de T5c2b cubre solo el formato de frames y el stream de bytes sobre un límite fake/inyectable. No se ejecutó contra hardware USB físico, no se reclamó interfaz bulk real, no se integró la CLI live, no se instalaron ni modificaron drivers, no se usó Zadig, no se tocó Windows, Samsung, cámara, OBS ni Wi‑Fi, y no se usó ADB como transporte.
+
+### Formato de cable compartido T5c2b
+
+- Cada frame usa un header fijo de 8 bytes little-endian seguido del payload.
+- Bytes `0..3`: `stream_id` como `u32` little-endian.
+- Bytes `4..7`: longitud de payload como `u32` little-endian.
+- Bytes `8..`: payload exacto de la longitud declarada.
+- El lector rechaza longitud mayor que el máximo configurado antes de leer payload. La conversión de longitud se valida y nunca trunca silenciosamente.
+- El escritor reutiliza el mismo `BulkFrame::encode()` y rechaza frames cuyo payload excede el máximo configurado.
+
+### RED observado antes del código de producción
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: falló con código 101 porque aún no existían `FramedUsbStream`, `FrameTransferBudget`, `RecordingUsbBulkIo` ni las variantes `UsbProbeError::OversizeBulkFrame`, `BulkFrameHeaderTruncated`, `BulkFramePayloadTruncated`, `UsbBulkTransferFailed` y `BulkShortWrite`.
+
+### GREEN observado
+
+- `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml`: pasó sin salida y aplicó formato Rust.
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: pasó con código 0; 33 pruebas Rust en verde, más lib/bin/doc tests sin pruebas.
+
+### Límites y decisiones T5c2b
+
+- `FrameTransferBudget` exige máximo de payload no cero, representable como `u32`, y cantidad máxima de intentos de I/O no cero.
+- `FramedUsbStream::read_frame` lee header y payload en bucles acotados; acepta fragmentación de header/payload y distingue header truncado, payload truncado, longitud excesiva y errores USB propagados.
+- `FramedUsbStream::write_frame` escribe el frame completo con writes parciales acotados y devuelve `BulkShortWrite` si no hay progreso o se agotan los intentos.
+- `RecordingUsbBulkIo` solo modela lecturas/escrituras parciales deterministas para pruebas; no abre hardware ni conoce endpoints reales. La integración con descriptor/interfaz/endpoints bulk queda para T5c2c.
 
 ## Verificación T5c2a
 

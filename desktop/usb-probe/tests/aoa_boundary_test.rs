@@ -5,9 +5,10 @@ use usb_probe::{
     AoaAccessoryReenumerationPoller, AoaControlRequest, AoaHostController, AoaObservedDevice,
     AoaOperation, AoaProtocolVersion, AoaStartOutcome, BulkEndpointClaim, BulkFrame,
     BulkTransportBoundary, DeviceIdentifier, DeviceSummary, DryRunAoaPlanner, FakeAoaTransport,
-    HostAoaControlOptions, LiveAoaControlRunner, RecordingAoaAccessoryHandleRegistry,
-    RecordingUsbControlIo, RecordingUsbDeviceRegistry, ReenumerationWait, RusbAoaControlTransport,
-    UsbHostBoundary, UsbPhysicalLocation, AOA_ACCESSORY_DEVICE_IDS,
+    FrameTransferBudget, FramedUsbStream, HostAoaControlOptions, LiveAoaControlRunner,
+    RecordingAoaAccessoryHandleRegistry, RecordingUsbBulkIo, RecordingUsbControlIo,
+    RecordingUsbDeviceRegistry, ReenumerationWait, RusbAoaControlTransport, UsbHostBoundary,
+    UsbPhysicalLocation, AOA_ACCESSORY_DEVICE_IDS,
 };
 
 #[test]
@@ -726,5 +727,127 @@ fn aoa_accessory_handle_registry_rejects_wrong_opened_handle_physical_location()
     assert_eq!(
         registry.open_attempts(),
         &[DeviceIdentifier::parse_vid_pid("18d1:2d01").unwrap()]
+    );
+}
+
+#[test]
+fn frame_transfer_budget_rejects_unrepresentable_or_unbounded_limits() {
+    assert_eq!(
+        FrameTransferBudget::new(Duration::from_millis(250), (u32::MAX as usize) + 1, 1)
+            .unwrap_err(),
+        usb_probe::UsbProbeError::InvalidBulkTransferBudget
+    );
+    assert!(FrameTransferBudget::new(Duration::from_millis(250), 16, 0).is_err());
+}
+
+#[test]
+fn framed_usb_stream_reads_segmented_header_and_payload_until_complete() {
+    let frame = BulkFrame::new(9, b"hello".to_vec()).unwrap();
+    let encoded = frame.encode();
+    let io = RecordingUsbBulkIo::with_read_chunks(vec![
+        Ok(encoded[0..3].to_vec()),
+        Ok(encoded[3..8].to_vec()),
+        Ok(encoded[8..10].to_vec()),
+        Ok(encoded[10..].to_vec()),
+    ]);
+    let budget = FrameTransferBudget::new(Duration::from_millis(250), 16, 8).unwrap();
+    let mut stream = FramedUsbStream::new(io, budget);
+
+    let decoded = stream.read_frame().unwrap();
+
+    assert_eq!(decoded.stream_id(), 9);
+    assert_eq!(decoded.payload(), b"hello");
+    assert_eq!(stream.io().read_attempts(), 4);
+}
+
+#[test]
+fn framed_usb_stream_rejects_oversize_length_before_reading_payload() {
+    let mut encoded_header = Vec::new();
+    encoded_header.extend_from_slice(&7u32.to_le_bytes());
+    encoded_header.extend_from_slice(&17u32.to_le_bytes());
+    let io = RecordingUsbBulkIo::with_read_chunks(vec![Ok(encoded_header)]);
+    let budget = FrameTransferBudget::new(Duration::from_millis(250), 16, 4).unwrap();
+    let mut stream = FramedUsbStream::new(io, budget);
+
+    let error = stream.read_frame().unwrap_err();
+
+    assert_eq!(
+        error,
+        usb_probe::UsbProbeError::OversizeBulkFrame {
+            length: 17,
+            max: 16
+        }
+    );
+    assert_eq!(stream.io().read_attempts(), 1);
+}
+
+#[test]
+fn framed_usb_stream_rejects_truncated_header_and_payload_without_panics() {
+    let budget = FrameTransferBudget::new(Duration::from_millis(250), 16, 4).unwrap();
+    let mut truncated_header = FramedUsbStream::new(
+        RecordingUsbBulkIo::with_read_chunks(vec![Ok(vec![1, 0, 0]), Ok(Vec::new())]),
+        budget.clone(),
+    );
+
+    assert_eq!(
+        truncated_header.read_frame().unwrap_err(),
+        usb_probe::UsbProbeError::BulkFrameHeaderTruncated
+    );
+
+    let frame = BulkFrame::new(1, b"hello".to_vec()).unwrap();
+    let encoded = frame.encode();
+    let mut truncated_payload = FramedUsbStream::new(
+        RecordingUsbBulkIo::with_read_chunks(vec![
+            Ok(encoded[0..8].to_vec()),
+            Ok(b"he".to_vec()),
+            Ok(Vec::new()),
+        ]),
+        budget,
+    );
+
+    assert_eq!(
+        truncated_payload.read_frame().unwrap_err(),
+        usb_probe::UsbProbeError::BulkFramePayloadTruncated {
+            expected: 5,
+            actual: 2
+        }
+    );
+}
+
+#[test]
+fn framed_usb_stream_writes_frame_with_partial_writes_until_complete() {
+    let frame = BulkFrame::new(11, b"abc".to_vec()).unwrap();
+    let io = RecordingUsbBulkIo::for_writes_with_max_chunk(4);
+    let budget = FrameTransferBudget::new(Duration::from_millis(250), 16, 8).unwrap();
+    let mut stream = FramedUsbStream::new(io, budget);
+
+    stream.write_frame(&frame).unwrap();
+
+    assert_eq!(stream.io().write_attempts(), 3);
+    assert_eq!(stream.io().written_bytes(), frame.encode());
+}
+
+#[test]
+fn framed_usb_stream_propagates_usb_errors_and_zero_progress_short_writes() {
+    let frame = BulkFrame::new(2, b"abc".to_vec()).unwrap();
+    let budget = FrameTransferBudget::new(Duration::from_millis(250), 16, 2).unwrap();
+    let mut read_error = FramedUsbStream::new(
+        RecordingUsbBulkIo::with_read_chunks(vec![Err(
+            usb_probe::UsbProbeError::UsbBulkTransferFailed("read boom".to_string()),
+        )]),
+        budget.clone(),
+    );
+
+    assert_eq!(
+        read_error.read_frame().unwrap_err(),
+        usb_probe::UsbProbeError::UsbBulkTransferFailed("read boom".to_string())
+    );
+
+    let mut zero_write =
+        FramedUsbStream::new(RecordingUsbBulkIo::for_writes_with_max_chunk(0), budget);
+
+    assert_eq!(
+        zero_write.write_frame(&frame).unwrap_err(),
+        usb_probe::UsbProbeError::BulkShortWrite
     );
 }

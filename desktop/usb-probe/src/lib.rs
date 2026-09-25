@@ -32,7 +32,13 @@ pub enum UsbProbeError {
     MissingExplicitDeviceIdentifier,
     InvalidDeviceIdentifier(String),
     InvalidBulkEndpointClaim,
+    InvalidBulkTransferBudget,
     EmptyBulkFrame,
+    OversizeBulkFrame { length: usize, max: usize },
+    BulkFrameHeaderTruncated,
+    BulkFramePayloadTruncated { expected: usize, actual: usize },
+    BulkShortWrite,
+    UsbBulkTransferFailed(String),
     SelectedDeviceNotFound(DeviceIdentifier),
     InvalidReenumerationWait,
     PhysicalIdentityUnavailable,
@@ -825,6 +831,213 @@ impl BulkFrame {
         encoded.extend_from_slice(&(self.payload.len() as u32).to_le_bytes());
         encoded.extend_from_slice(&self.payload);
         encoded
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameTransferBudget {
+    timeout: Duration,
+    max_payload_len: usize,
+    max_io_attempts: usize,
+}
+
+impl FrameTransferBudget {
+    pub fn new(
+        timeout: Duration,
+        max_payload_len: usize,
+        max_io_attempts: usize,
+    ) -> Result<Self, UsbProbeError> {
+        if max_payload_len == 0 || max_payload_len > u32::MAX as usize || max_io_attempts == 0 {
+            return Err(UsbProbeError::InvalidBulkTransferBudget);
+        }
+
+        Ok(Self {
+            timeout,
+            max_payload_len,
+            max_io_attempts,
+        })
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    pub fn max_payload_len(&self) -> usize {
+        self.max_payload_len
+    }
+
+    pub fn max_io_attempts(&self) -> usize {
+        self.max_io_attempts
+    }
+}
+
+pub trait UsbBulkIo {
+    fn read_bulk(&mut self, buffer: &mut [u8], timeout: Duration) -> Result<usize, UsbProbeError>;
+    fn write_bulk(&mut self, bytes: &[u8], timeout: Duration) -> Result<usize, UsbProbeError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordingUsbBulkIo {
+    read_chunks: Vec<Result<Vec<u8>, UsbProbeError>>,
+    read_attempts: usize,
+    max_write_chunk: usize,
+    write_attempts: usize,
+    written_bytes: Vec<u8>,
+}
+
+impl RecordingUsbBulkIo {
+    pub fn with_read_chunks(read_chunks: Vec<Result<Vec<u8>, UsbProbeError>>) -> Self {
+        Self {
+            read_chunks,
+            read_attempts: 0,
+            max_write_chunk: usize::MAX,
+            write_attempts: 0,
+            written_bytes: Vec::new(),
+        }
+    }
+
+    pub fn for_writes_with_max_chunk(max_write_chunk: usize) -> Self {
+        Self {
+            read_chunks: Vec::new(),
+            read_attempts: 0,
+            max_write_chunk,
+            write_attempts: 0,
+            written_bytes: Vec::new(),
+        }
+    }
+
+    pub fn read_attempts(&self) -> usize {
+        self.read_attempts
+    }
+
+    pub fn write_attempts(&self) -> usize {
+        self.write_attempts
+    }
+
+    pub fn written_bytes(&self) -> &[u8] {
+        &self.written_bytes
+    }
+}
+
+impl UsbBulkIo for RecordingUsbBulkIo {
+    fn read_bulk(&mut self, buffer: &mut [u8], _timeout: Duration) -> Result<usize, UsbProbeError> {
+        self.read_attempts += 1;
+        if self.read_chunks.is_empty() {
+            return Ok(0);
+        }
+
+        let chunk = self.read_chunks.remove(0)?;
+        let copied = chunk.len().min(buffer.len());
+        buffer[..copied].copy_from_slice(&chunk[..copied]);
+        Ok(copied)
+    }
+
+    fn write_bulk(&mut self, bytes: &[u8], _timeout: Duration) -> Result<usize, UsbProbeError> {
+        self.write_attempts += 1;
+        let written = bytes.len().min(self.max_write_chunk);
+        self.written_bytes.extend_from_slice(&bytes[..written]);
+        Ok(written)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FramedUsbStream<I> {
+    io: I,
+    budget: FrameTransferBudget,
+}
+
+impl<I> FramedUsbStream<I>
+where
+    I: UsbBulkIo,
+{
+    pub fn new(io: I, budget: FrameTransferBudget) -> Self {
+        Self { io, budget }
+    }
+
+    pub fn read_frame(&mut self) -> Result<BulkFrame, UsbProbeError> {
+        let mut header = [0; 8];
+        let header_read = self.read_exact_bounded(&mut header)?;
+        if header_read < header.len() {
+            return Err(UsbProbeError::BulkFrameHeaderTruncated);
+        }
+
+        let stream_id = u32::from_le_bytes(header[0..4].try_into().expect("fixed header slice"));
+        let payload_len_u32 =
+            u32::from_le_bytes(header[4..8].try_into().expect("fixed header slice"));
+        let payload_len =
+            usize::try_from(payload_len_u32).map_err(|_| UsbProbeError::OversizeBulkFrame {
+                length: usize::MAX,
+                max: self.budget.max_payload_len(),
+            })?;
+        if payload_len > self.budget.max_payload_len() {
+            return Err(UsbProbeError::OversizeBulkFrame {
+                length: payload_len,
+                max: self.budget.max_payload_len(),
+            });
+        }
+
+        let mut payload = vec![0; payload_len];
+        let payload_read = self.read_exact_bounded(&mut payload)?;
+        if payload_read < payload_len {
+            return Err(UsbProbeError::BulkFramePayloadTruncated {
+                expected: payload_len,
+                actual: payload_read,
+            });
+        }
+
+        BulkFrame::new(stream_id, payload)
+    }
+
+    pub fn write_frame(&mut self, frame: &BulkFrame) -> Result<(), UsbProbeError> {
+        let payload_len = frame.payload().len();
+        if payload_len > self.budget.max_payload_len() {
+            return Err(UsbProbeError::OversizeBulkFrame {
+                length: payload_len,
+                max: self.budget.max_payload_len(),
+            });
+        }
+
+        let encoded = frame.encode();
+        let mut written = 0;
+        for _ in 0..self.budget.max_io_attempts() {
+            if written == encoded.len() {
+                return Ok(());
+            }
+            let count = self
+                .io
+                .write_bulk(&encoded[written..], self.budget.timeout())?;
+            if count == 0 {
+                return Err(UsbProbeError::BulkShortWrite);
+            }
+            written = written.saturating_add(count);
+        }
+
+        if written == encoded.len() {
+            Ok(())
+        } else {
+            Err(UsbProbeError::BulkShortWrite)
+        }
+    }
+
+    pub fn io(&self) -> &I {
+        &self.io
+    }
+
+    fn read_exact_bounded(&mut self, buffer: &mut [u8]) -> Result<usize, UsbProbeError> {
+        let mut read = 0;
+        for _ in 0..self.budget.max_io_attempts() {
+            if read == buffer.len() {
+                return Ok(read);
+            }
+            let count = self
+                .io
+                .read_bulk(&mut buffer[read..], self.budget.timeout())?;
+            if count == 0 {
+                return Ok(read);
+            }
+            read = read.saturating_add(count);
+        }
+        Ok(read)
     }
 }
 
