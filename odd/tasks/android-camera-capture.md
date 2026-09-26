@@ -23,6 +23,7 @@ Construir la ruta Android desde selección de cámara hasta frames/encoder/metri
 - [x] T8c: cableado Activity visible Start/Stop del pipeline local. Integrar el orquestador T8b con `UsbProbeActivity` solo mientras la app está visible; cerrar en `onPause`/`onDestroy`; sin USB/Wi‑Fi/network/storage/FGS ni claim de producto.
 - [x] T9: métricas Android de captura/encode visibles desde el pipeline real local: FPS, chunks drenados/dropped por backpressure, latencia encode y estado.
 - [ ] T10: foreground service/pantalla bloqueada experimental, con límites honestos y sin claims hasta prueba física.
+- [x] T10a: shell seguro de foreground service de cámara visible. Declara permisos/tipo FGS cámara, agrega planner puro para permitir start solo desde Activity visible con permiso `CAMERA` fresco y selección directa actual, publica notificación honesta de prueba local visible descartada en memoria, y mantiene la Activity como dueña del pipeline local: start del shell solo después de `Running`; stop en stop de usuario, `onStop` y `onDestroy`; sin transferencia de ownership, background cold-start, USB/Wi‑Fi/network/storage/audio/wire protocol ni claims de pantalla bloqueada.
 
 ## T6 límites de aceptación
 
@@ -389,6 +390,28 @@ T9b corrige las métricas visibles para que el texto no sobredeclare FPS ni late
 - Lineage: `review-14346f5071aab802`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes del reviewer: `R3-batching-dependent-fps`, `R3-restart-test-gap`. No abrieron corrección para T9b; quedan como hardening posterior si se requiere mayor precisión temporal o cobertura de reinicio end-to-end.
+
+## Verificación T10a
+
+T10a agrega un shell seguro de foreground service de cámara visible sin transferir todavía la propiedad del pipeline desde la Activity.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `VisibleCameraForegroundServicePlanner`, `VisibleCameraForegroundServiceStartPlan`, `VisibleCameraForegroundServiceNotificationSpec` y `VisibleCameraForegroundService` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date.
+
+### Límites y decisiones T10a
+
+- Manifest declara `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CAMERA` y `.VisibleCameraForegroundService` no exportado con `foregroundServiceType="camera"`.
+- `VisibleCameraForegroundServicePlanner` permite start solo si la Activity está visible, `CAMERA` está concedido y la selección actual sigue siendo `DirectOpenCandidate`; los bloqueos devuelven mensajes en español.
+- La notificación dice prueba local visible, video codificado descartado en memoria, no transmite y no graba; no hace claim de pantalla bloqueada, USB, Wi‑Fi, red, storage, audio ni protocolo.
+- El servicio expone acciones explícitas START/STOP, devuelve `START_NOT_STICKY`, y STOP llama `stopForeground(true)`/`stopSelf()`.
+- `UsbProbeActivity` inicia el shell solo después de que el pipeline local llega a `Running` y el plan fresco visible+permiso+selección lo permite; sigue deteniendo pipeline y shell en stop de usuario, `onStop` y `onDestroy`.
+- T10a no transfiere ownership de la captura al service, no agrega background cold-start ni valida pantalla bloqueada.
 
 ## Diseño T10 — servicio foreground de cámara visible
 
