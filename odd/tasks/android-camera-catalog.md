@@ -254,3 +254,10 @@ T4 agrega el gate de permiso runtime de cámara sin abrir cámara ni iniciar cap
 - El flujo de prueba USB queda separado y utilizable aunque el permiso de cámara esté denegado.
 - El manifest declara `android.permission.CAMERA` y `android.hardware.camera.any` como opcional (`required=false`).
 - No se agregó `CameraDevice.open`, `openCamera`, captura, sesión, `ImageReader`, frame stream, persistencia ni prueba física.
+
+### Revisión nativa RDD T4
+
+- Candidato: `d9f0727` contra base `5e45bec`.
+- Lineage: `review-8490f15400a70b47`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgo advisory no bloqueante del reviewer: `R3-permission-state-lifecycle`. No abrió corrección para T4; queda como hardening futuro si se persiste/restaura estado de permiso junto con la selección en T5.
