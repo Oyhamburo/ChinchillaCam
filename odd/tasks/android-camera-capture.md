@@ -1,6 +1,6 @@
 # Captura Android y encoder local
 
-> Estado (2026-09-26): M2 inicia en rama local `feat/android-camera-capture` desde HEAD limpio `d558885` de M1. Commits locales autorizados; sin push, PR ni merge. Pruebas físicas se mantienen para el final.
+> Estado (2026-09-26): M2 implementado y revisado en rama local `feat/android-camera-capture`; sin push, PR ni merge. Pruebas físicas y claims de soporte se mantienen para el final.
 
 ## Alcance M2
 
@@ -22,9 +22,13 @@ Construir la ruta Android desde selección de cámara hasta frames/encoder/metri
 - [x] T8b: orquestador local cámara→encoder con fakes. Conectar selección directa actual + permiso `CAMERA` actual + acción explícita Start/Stop visible a la secuencia abrir cámara → configurar encoder Surface → sesión repeating → drenar chunks codificados acotados/tipados → stop/release en fallos y ciclo de vida, sin Activity real todavía. Debe corregir el advisory T7 `R3-stop-failure-cleanup` antes de captura prolongada.
 - [x] T8c: cableado Activity visible Start/Stop del pipeline local. Integrar el orquestador T8b con `UsbProbeActivity` solo mientras la app está visible; cerrar en `onPause`/`onDestroy`; sin USB/Wi‑Fi/network/storage/FGS ni claim de producto.
 - [x] T9: métricas Android de captura/encode visibles desde el pipeline real local: FPS, chunks drenados/dropped por backpressure, latencia encode y estado.
-- [ ] T10: foreground service/estado no visible experimental, con límites honestos y sin claims hasta prueba física.
+- [x] T10: foreground service de cámara con límites honestos y sin claims hasta prueba física.
 - [x] T10a: shell seguro de foreground service de cámara visible. Declara permisos/tipo FGS cámara, agrega planner puro para permitir start solo desde Activity visible con permiso `CAMERA` fresco y selección directa actual, publica notificación honesta de prueba local visible descartada en memoria, y mantiene la Activity como dueña del pipeline local: start del shell solo después de `Running`; stop en stop de usuario, `onStop` y `onDestroy`; sin transferencia de ownership, background cold-start, USB/Wi‑Fi/network/storage/audio/wire protocol ni claims de estado no visible.
 - [x] T10b: transferir ownership completo cámara→encoder al foreground service no exportado. El service inicia desde Activity visible con permiso `CAMERA` fresco, selección directa actual y marcador de arranque visible; revalida permiso/snapshot en el service; Activity no retiene la cámara ni la detiene en `onStop` mientras el ownership de service está solicitado/activo; STOP/destrucción del service detienen el pipeline; `START_NOT_STICKY`; sin background cold-start, Activity retenida, tests físicos ni claims de compatibilidad.
+- [x] T10c1: corregir deadlock de arranque FGS/cámara moviendo open/configuración fuera de main y usando HandlerThread dedicado para callbacks Camera2.
+- [x] T10c2: aislar generaciones del drain loop del foreground service.
+- [x] T10c3: vincular Activity recreada al estado real process-local del service-owned pipeline.
+- [x] T10c4: endurecer verdad UI del estado del service: renderizar Error, mantener Stopping hasta confirmación y evitar Stop→Start rápido.
 
 ## T6 límites de aceptación
 
@@ -657,3 +661,23 @@ T10c4 endurece la verdad visible del estado del foreground service: la Activity 
 - Lineage: `review-6e4f4e4cec9731cd`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgo advisory no bloqueante: `R3-stop-result-wiring-untested`. No abrió corrección para T10c4; queda para hardening si se agrega test Activity/Android de retorno real de `stopService`.
+
+
+## Cierre M2 local
+
+M2 queda cerrado como implementación local testeada de captura Android visible y foreground service de cámara: catálogo/selección heredados de M1, apertura `CameraDevice`, sesión repeating, encoder H.264, orquestador cámara→encoder, UI visible Start/Stop, métricas reales, ownership de service no exportado, arranque off-main, drain con generación y binding de Activity a estado real del service.
+
+Evidencia final local antes de cerrar:
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: APK presente.
+- `git diff --check`: sin salida.
+- Revisiones nativas RDD aprobadas y reconocidas hasta `review-6e4f4e4cec9731cd` (T10c4).
+
+Límites de cierre:
+
+- Sin pruebas físicas aún; no se declara soporte Samsung ni compatibilidad de dispositivo.
+- Sin USB/Wi‑Fi de producto, network externo, storage, audio ni wire protocol.
+- El comportamiento en estados no visibles queda pendiente de matriz física final; esta rama sólo deja el diseño preparado y testeado con fakes/unit tests.
+- M3 debe empezar con pairing/trust/one-active-PC/framing antes de cualquier listener LAN externo.
