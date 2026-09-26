@@ -202,3 +202,19 @@ T8b agrega un orquestador local fake-first para conectar los seams T6/T7/T8 sin 
 - Lineage: `review-a66bdc560529df5b`.
 - Resultado: corrección validada, aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes del reviewer: `R3-discarded-startup-cleanup-failures`, `R3-terminal-open-state`. No abrieron corrección para T8b; quedan para hardening antes del cableado Activity/prolongado.
+
+## Diseño T8c — Start/Stop visible en Activity
+
+T8c cablea el pipeline local en `UsbProbeActivity` con acción explícita del usuario mientras la pantalla está visible. Esta unidad sigue siendo local: descarta outputs codificados en memoria después de drenar, no graba, no envía a USB/Wi‑Fi y no activa foreground service.
+
+Límites T8c:
+
+- UI española con botón Start/Stop de cámara local y estado claro: inactivo, iniciando, configurando, corriendo, detenido o error.
+- Start solo por tap explícito; no auto-start tras recreación, callbacks de permiso ni restauración de estado.
+- Start usa selección directa actual y permiso `CAMERA` leído fresco del SO inmediatamente antes de abrir.
+- La ruta Android real debe construir adapters existentes: `AndroidCameraDeviceOpenGateway`, `AndroidH264EncoderGateway` y `AndroidCameraCaptureSessionGateway` cuando el callback `onOpened` entregue el `CameraDevice`.
+- El trabajo de open/encoder/session/drain se orquesta fuera del hilo principal; la UI solo publica estado.
+- Drain acotado descarta chunks en memoria y llama `consumeEncoded`; sin storage, wire format, transporte ni métricas finales todavía.
+- Stop explícito, `onStop` y `onDestroy` cierran captura, encoder y cámara; hasta T10 no se promete continuidad con pantalla bloqueada.
+- T8c debe manejar los advisories T8b antes de captura prolongada: exponer/mostrar errores de cleanup de arranque y tratar callback terminal de open como fallo/stop en vez de quedar en estado pendiente.
+- Sin USB, Wi‑Fi, network, audio, storage, FGS, screen-lock claim, pruebas físicas ni claim de producto funcional.
