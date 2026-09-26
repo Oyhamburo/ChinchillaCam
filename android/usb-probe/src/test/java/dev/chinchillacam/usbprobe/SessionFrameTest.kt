@@ -109,6 +109,52 @@ class SessionFrameTest {
         assertEquals(SessionFrameDecodeError.InvalidSessionId, SessionFrameCodec.decode(emptySessionId).exceptionOrNull())
     }
 
+
+    @Test
+    fun rejectsMalformedUtf8WithoutReplacement() {
+        val bytes = byteArrayOf(
+            'C'.code.toByte(), 'C'.code.toByte(), 'S'.code.toByte(), 'F'.code.toByte(),
+            1, SessionFrameType.HANDSHAKE_ACCEPT.id.toByte(),
+            0, 0, 0, 1,
+            0, 1, 0xC3.toByte(),
+            0, 0, 0, 0,
+        )
+
+        assertEquals(SessionFrameDecodeError.InvalidPayload("invalid utf-8 in sessionId"), SessionFrameCodec.decode(bytes).exceptionOrNull())
+    }
+
+    @Test
+    fun rejectsDuplicateCameraControlArguments() {
+        val payload = ByteArrayBuilder()
+            .writeString("setZoom")
+            .writeShort(2)
+            .writeString("level")
+            .writeString("2.0")
+            .writeString("level")
+            .writeString("3.0")
+            .toByteArray()
+        val frame = rawFrame(SessionFrameType.CAMERA_CONTROL_COMMAND, payload)
+
+        assertEquals(SessionFrameDecodeError.InvalidPayload("duplicate argument key: level"), SessionFrameCodec.decode(frame).exceptionOrNull())
+    }
+
+    @Test
+    fun rejectsCollectionCountsThatDoNotFitWireShort() {
+        val tooManyCapabilities = List(UShort.MAX_VALUE.toInt() + 1) { "cap" }
+        val capabilitiesError = runCatching {
+            SessionFrameCodec.encode(SessionFrame(1, 1, "s", SessionPayload.HandshakeHello("phone", "ChinchillaCam", tooManyCapabilities)))
+        }.exceptionOrNull()
+        assertTrue(capabilitiesError is IllegalArgumentException)
+        assertEquals("capability count is too large", capabilitiesError?.message)
+
+        val tooManyArguments = (0..UShort.MAX_VALUE.toInt()).associate { index -> "k$index" to "v" }
+        val argumentsError = runCatching {
+            SessionFrameCodec.encode(SessionFrame(1, 1, "s", SessionPayload.CameraControlCommand("set", tooManyArguments)))
+        }.exceptionOrNull()
+        assertTrue(argumentsError is IllegalArgumentException)
+        assertEquals("argument count is too large", argumentsError?.message)
+    }
+
     private fun assertFrameEquals(expected: SessionFrame, actual: SessionFrame) {
         assertEquals(expected.version, actual.version)
         assertEquals(expected.sequence, actual.sequence)
@@ -124,4 +170,38 @@ class SessionFrameTest {
         }
         assertTrue(actual.sequence >= 0)
     }
+
+    private fun rawFrame(type: SessionFrameType, payload: ByteArray): ByteArray = ByteArrayBuilder()
+        .writeBytes(byteArrayOf('C'.code.toByte(), 'C'.code.toByte(), 'S'.code.toByte(), 'F'.code.toByte()))
+        .writeByte(1)
+        .writeByte(type.id)
+        .writeInt(1)
+        .writeString("s")
+        .writeInt(payload.size)
+        .writeBytes(payload)
+        .toByteArray()
+
+    private class ByteArrayBuilder {
+        private val bytes = mutableListOf<Byte>()
+
+        fun writeByte(value: Int) = apply { bytes.add(value.toByte()) }
+        fun writeBytes(value: ByteArray) = apply { bytes.addAll(value.toList()) }
+        fun writeShort(value: Int) = apply {
+            bytes.add(((value ushr 8) and 0xff).toByte())
+            bytes.add((value and 0xff).toByte())
+        }
+        fun writeInt(value: Int) = apply {
+            bytes.add(((value ushr 24) and 0xff).toByte())
+            bytes.add(((value ushr 16) and 0xff).toByte())
+            bytes.add(((value ushr 8) and 0xff).toByte())
+            bytes.add((value and 0xff).toByte())
+        }
+        fun writeString(value: String) = apply {
+            val encoded = value.toByteArray(Charsets.UTF_8)
+            writeShort(encoded.size)
+            writeBytes(encoded)
+        }
+        fun toByteArray(): ByteArray = bytes.toByteArray()
+    }
+
 }

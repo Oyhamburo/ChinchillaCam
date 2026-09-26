@@ -103,9 +103,11 @@ Para cada unidad de trabajo:
 ### M3 — Pairing, autoridad local y framing de sesión
 
 10. **T11 — Protocolo de sesión y framing de video.** Extender framing para handshake, stream metadata, video chunks, metrics y control messages.
-11. **T12 — QR pairing payload.** Diseñar payload local con claves/identificador de PC, expiración y tests.
+11. **T12 — QR pairing payload.** Diseñar payload local con claves/identificador de PC, expiración y tests; el checksum sin clave solo detecta corrupción accidental, no autentica.
 12. **T13 — Persistencia de confianza local.** Guardar confianza en Android y desktop; revocación local.
 13. **T14 — One-active-computer enforcement.** Rechazar segunda sesión activa con mensaje claro; handoff explícito.
+
+Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN autenticado debe existir prueba de posesión de la clave privada correspondiente al `trustMaterial` del QR, nonce de uso único con expiración y confirmación explícita de confianza.
 
 ### M4 — Transportes autenticados y cambio de modo
 

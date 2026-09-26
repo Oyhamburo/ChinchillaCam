@@ -19,8 +19,9 @@ Construir el contrato local de sesión entre Android y desktop antes de transpor
 
 - [x] T11: framing de sesión tipado. Define envelopes para handshake, stream metadata, video chunks, métricas y controles; decoder/encoder deterministas con límites de tamaño/versionado; sin transporte real.
   - 2026-09-26: Implementación pura añadida en `SessionFrame.kt`; tests en `SessionFrameTest.kt`. Validado localmente con `testDebugUnitTest --rerun-tasks`, `assembleDebug`, APK presente y `git diff --check`.
-- [x] T12: payload QR local. Incluir identificador de PC, clave pública o material de confianza, expiración y versión; tests de expiración/tamper.
+- [x] T12: payload QR local. Incluir identificador de PC, clave pública o material de confianza, expiración y versión; tests de expiración y corrupción accidental por checksum sin clave.
   - 2026-09-26: Implementación pura añadida en `PairingQrPayload.kt`; tests en `PairingQrPayloadTest.kt`. Validado localmente con `testDebugUnitTest --rerun-tasks` y `git diff --check`.
+  - 2026-09-26: Semántica ajustada: el checksum sin clave solo detecta corrupción accidental y campos extra/desconocidos; no autentica ni resiste manipulación maliciosa.
 - [ ] T13: persistencia de confianza local en Android y desktop con revocación; fakes primero.
 - [ ] T14: una computadora activa. Rechazar segunda sesión activa con mensaje español; handoff explícito como acción separada.
 
@@ -34,8 +35,15 @@ Alcance T12:
 - Definir `PairingQrPayload` versionado con identificador de PC, nombre visible, clave pública/material de confianza, expiración y nonce.
 - Codificación textual determinista apta para QR y decodificación con errores tipados.
 - Validación de expiración mediante reloj inyectado; rechazo de payload expirado, manipulado, versión desconocida, campos faltantes y material inválido.
-- Pruebas RED para roundtrip, orden determinista, expiración, tamper y límites de tamaño/campo.
+- Pruebas RED para roundtrip, orden determinista, expiración, mismatch de checksum por corrupción accidental y límites de tamaño/campo.
 - Sin persistencia de confianza todavía, sin listener LAN, sin USB/Wi‑Fi real, sin crypto handshake completo ni claims físicos.
+
+Gate explícito M3 antes de cualquier LAN autenticado/T17:
+
+- La autenticidad debe venir más adelante de prueba de posesión de la clave privada correspondiente al `trustMaterial` del QR.
+- El nonce debe ser de uso único y expirar.
+- Debe existir confirmación explícita de confianza antes de activar cualquier sesión LAN autenticada.
+- No se habilita LAN sin protección ni listener externo no autenticado.
 
 ## Diseño T11 — framing de sesión tipado
 

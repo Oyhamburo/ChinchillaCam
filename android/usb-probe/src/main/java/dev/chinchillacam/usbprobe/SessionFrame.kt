@@ -3,6 +3,8 @@ package dev.chinchillacam.usbprobe
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 
 private val SESSION_FRAME_MAGIC = byteArrayOf('C'.code.toByte(), 'C'.code.toByte(), 'S'.code.toByte(), 'F'.code.toByte())
 private const val SUPPORTED_SESSION_FRAME_VERSION = 1
@@ -183,6 +185,7 @@ private class PayloadWriter {
             is SessionPayload.HandshakeHello -> {
                 writeString(payload.deviceId)
                 writeString(payload.appName)
+                require(payload.capabilities.size <= UShort.MAX_VALUE.toInt()) { "capability count is too large" }
                 writeShort(payload.capabilities.size)
                 payload.capabilities.forEach(::writeString)
             }
@@ -223,6 +226,7 @@ private class PayloadWriter {
             is SessionPayload.CameraControlCommand -> {
                 writeString(payload.command)
                 val sortedArguments = payload.arguments.toSortedMap()
+                require(sortedArguments.size <= UShort.MAX_VALUE.toInt()) { "argument count is too large" }
                 writeShort(sortedArguments.size)
                 sortedArguments.forEach { (key, value) ->
                     writeString(key)
@@ -301,7 +305,11 @@ private class PayloadReader(private val bytes: ByteArray) {
                 val argumentCount = reader.readUnsignedShort("argumentCount")
                 val arguments = linkedMapOf<String, String>()
                 repeat(argumentCount) {
-                    arguments[readString("argumentKey")] = readString("argumentValue")
+                    val key = readString("argumentKey")
+                    val value = readString("argumentValue")
+                    if (arguments.put(key, value) != null) {
+                        throw SessionFrameDecodeError.InvalidPayload("duplicate argument key: $key")
+                    }
                 }
                 SessionPayload.CameraControlCommand(command, arguments)
             }
@@ -355,7 +363,18 @@ private class FrameReader(private val bytes: ByteArray) {
         return bytes.copyOfRange(position, position + length).also { position += length }
     }
 
-    fun readUtf8(length: Int, field: String): String = readBytes(length, field).toString(Charsets.UTF_8)
+    fun readUtf8(length: Int, field: String): String {
+        val fieldBytes = readBytes(length, field)
+        return try {
+            Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(fieldBytes))
+                .toString()
+        } catch (_: CharacterCodingException) {
+            throw SessionFrameDecodeError.InvalidPayload("invalid utf-8 in $field")
+        }
+    }
 
     private fun ensureAvailable(length: Int, field: String) {
         if (remaining < length) {

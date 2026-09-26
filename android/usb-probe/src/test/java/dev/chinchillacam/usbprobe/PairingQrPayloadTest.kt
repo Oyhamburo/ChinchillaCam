@@ -48,11 +48,19 @@ class PairingQrPayloadTest {
     }
 
     @Test
-    fun rejectsTamperedChecksum() {
+    fun rejectsChecksumMismatchFromAccidentalCorruption() {
         val encoded = PairingQrPayloadCodec.encode(payload)
-        val tampered = encoded.replace("desktop-01", "desktop-02")
+        val corrupted = encoded.replace("desktop-01", "desktop-02")
 
-        assertEquals(PairingQrPayloadDecodeError.TamperedChecksum, PairingQrPayloadCodec.decode(tampered, nowEpochSeconds = 1L).exceptionOrNull())
+        assertEquals(PairingQrPayloadDecodeError.ChecksumMismatch, PairingQrPayloadCodec.decode(corrupted, nowEpochSeconds = 1L).exceptionOrNull())
+    }
+
+    @Test
+    fun rejectsUnknownExtraField() {
+        val encoded = PairingQrPayloadCodec.encode(payload)
+        val withExtraField = encoded.replace("&checksum=", "&extra=value&checksum=")
+
+        assertEquals(PairingQrPayloadDecodeError.InvalidFormatOrPrefix, PairingQrPayloadCodec.decode(withExtraField, nowEpochSeconds = 1L).exceptionOrNull())
     }
 
     @Test

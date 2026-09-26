@@ -51,7 +51,7 @@ sealed class PairingQrPayloadDecodeError(message: String) : Exception(message) {
     data class MissingField(val field: String) : PairingQrPayloadDecodeError("missing pairing QR field: $field")
     data class InvalidField(val field: String) : PairingQrPayloadDecodeError("invalid pairing QR field: $field")
     data class Expired(val expiresAtEpochSeconds: Long, val nowEpochSeconds: Long) : PairingQrPayloadDecodeError("pairing QR payload expired")
-    object TamperedChecksum : PairingQrPayloadDecodeError("pairing QR checksum mismatch")
+    object ChecksumMismatch : PairingQrPayloadDecodeError("pairing QR checksum mismatch")
 }
 
 object PairingQrPayloadCodec {
@@ -116,7 +116,7 @@ object PairingQrPayloadCodec {
             val canonicalBody = canonicalBodyFromRequiredFields(fields).getOrElse { return Result.failure(it) }
             val expectedChecksum = fields["checksum"] ?: return Result.failure(PairingQrPayloadDecodeError.MissingField("checksum"))
             if (expectedChecksum != checksum(canonicalBody)) {
-                return Result.failure(PairingQrPayloadDecodeError.TamperedChecksum)
+                return Result.failure(PairingQrPayloadDecodeError.ChecksumMismatch)
             }
 
             val desktopId = fields.getValue("desktopId")
@@ -170,10 +170,12 @@ private fun canonicalBody(
 
 private fun parseFields(body: String): Map<String, String> {
     val fields = linkedMapOf<String, String>()
+    val allowedFields = setOf("desktopId", "desktopName", "expiresAt", "nonce", "trustMaterial", "checksum")
     body.split('&').forEach { part ->
         val separator = part.indexOf('=')
         if (separator <= 0) throw IllegalArgumentException("invalid field")
         val key = part.substring(0, separator)
+        if (key !in allowedFields) throw IllegalArgumentException("unknown field")
         val value = part.substring(separator + 1).percentDecode()
         if (fields.put(key, value) != null) throw IllegalArgumentException("duplicate field")
     }
