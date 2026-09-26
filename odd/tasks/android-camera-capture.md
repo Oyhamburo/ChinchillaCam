@@ -104,3 +104,43 @@ T7 agrega un boundary de sesión Camera2 de repetición hacia una `Surface` inye
 - Lineage: `review-ffd0a9367006b39d`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgo advisory no bloqueante del reviewer: `R3-stop-failure-cleanup`. No abrió corrección para T7; queda como hardening futuro antes de integrar captura real prolongada.
+
+## Diseño T8 — seam `MediaCodec` H.264 con `Surface` de entrada
+
+T8 crea el boundary del encoder H.264/AVC sin conectarlo todavía a cámara, USB, Wi‑Fi, storage ni UI. El encoder es dueño de la `Surface` de entrada que luego podrá inyectarse en T7 como `AndroidCaptureTargetSurface`, pero T8 no decide formato de paquete de red ni contrato de transporte.
+
+Límites T8:
+
+- Configurar solo `MediaCodec` video/avc con entrada por `Surface` y parámetros explícitos de resolución, bitrate, fps e intervalo I-frame.
+- Exponer una `CaptureTargetSurface` propiedad del encoder para enlazar futuro T7, sin abrir cámara ni iniciar sesión de captura.
+- Drenar outputs a chunks tipados con timestamp, flags de config/keyframe y copia propia de bytes desde `BufferInfo.offset/size`.
+- Liberar `releaseOutputBuffer` en todos los caminos donde se obtiene un buffer.
+- Manejar `INFO_OUTPUT_FORMAT_CHANGED` y `BUFFER_FLAG_CODEC_CONFIG` sin descartar SPS/PPS.
+- Acotar backpressure por cantidad máxima de chunks pendientes; cuando se excede, devolver error tipado y no crecer memoria sin límite.
+- Cancel/stop/release deben cerrar recursos de forma idempotente y tolerar errores de cierre como estado tipado.
+- Sin audio, almacenamiento, paquetes de wire protocol, transporte, Activity, foreground service, pruebas físicas ni claims de producto funcional.
+
+## Verificación T8
+
+T8 agrega un seam `MediaCodec` H.264/AVC con entrada por `Surface` propia del encoder y salida como chunks codificados tipados. Aún no se conecta con cámara, transportes, storage ni UI.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `H264EncoderBoundary`, `H264EncoderConfig`, `EncoderInputSurface`, `H264EncoderGateway`, `H264EncoderStartOutcome`, `H264EncoderStartResult`, `H264EncoderSession`, `H264DrainResult`, `H264CodecOutput`, `H264BufferInfo`, `H264BufferFlags`, `CloseableH264CodecSession`, `H264CodecCloseOutcome` y `H264EncoderStopResult` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date en la corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+
+### Límites y decisiones T8
+
+- `H264EncoderBoundary` delega configuración a un gateway y devuelve una `EncoderInputSurface` que implementa `CaptureTargetSurface` para enlace futuro con T7.
+- `H264EncoderSession.drain` copia bytes propios desde `H264BufferInfo.offset/size`, conserva `presentationTimeUs`, marca config/keyframe y llama `releaseOutputBuffer` también si la copia falla.
+- `INFO_OUTPUT_FORMAT_CHANGED` se modela como formato observado y no descarta los outputs siguientes; `BUFFER_FLAG_CODEC_CONFIG` produce chunk para no perder SPS/PPS.
+- El backpressure queda acotado por chunks pendientes; el consumidor debe llamar `consumePending` antes de drenar más cuando llega al límite.
+- `stop` y `cancel` son idempotentes y devuelven errores tipados de cierre/release.
+- `AndroidH264EncoderGateway` compila contra `MediaCodec.createEncoderByType`, `MediaFormat`, `configure`, `createInputSurface`, `start`, `dequeueOutputBuffer`, `getOutputBuffer` y `releaseOutputBuffer`.
+- No hay audio, almacenamiento, formato wire, transporte USB/Wi‑Fi, integración Activity, foreground service, prueba física ni claim de producto funcional.
