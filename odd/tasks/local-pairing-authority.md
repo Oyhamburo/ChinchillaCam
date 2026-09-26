@@ -43,6 +43,7 @@ Gate explícito M3 antes de cualquier LAN autenticado/T17:
 - La autenticidad debe venir más adelante de prueba de posesión de la clave privada correspondiente al `trustMaterial` del QR.
 - El nonce debe ser de uso único y expirar.
 - Debe existir confirmación explícita de confianza antes de activar cualquier sesión LAN autenticada.
+- Debe existir un threat model acotado y un plan testeable con TLS estándar: `SSLEngine`/TLS para USB no-socket cuando aplique, TLS para LAN, identidad de par pinneada o certificado esperado, y rechazo de peers no esperados.
 - No se habilita LAN sin protección ni listener externo no autenticado.
 
 ## Diseño T11 — framing de sesión tipado

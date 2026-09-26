@@ -107,7 +107,7 @@ Para cada unidad de trabajo:
 12. **T13 — Persistencia de confianza local.** Guardar confianza en Android y desktop; revocación local.
 13. **T14 — One-active-computer enforcement.** Rechazar segunda sesión activa con mensaje claro; handoff explícito.
 
-Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN autenticado debe existir prueba de posesión de la clave privada correspondiente al `trustMaterial` del QR, nonce de uso único con expiración y confirmación explícita de confianza.
+Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN autenticado debe existir prueba de posesión de la clave privada correspondiente al `trustMaterial` del QR, nonce de uso único con expiración, confirmación explícita de confianza y threat model/plan testeable con TLS estándar e identidad de par pinneada/esperada.
 
 ### M4 — Transportes autenticados y cambio de modo
 
@@ -152,7 +152,7 @@ Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN auten
 
 ## Próxima unidad autorizada
 
-La próxima unidad de código recomendada en la rama actual es **M2/T10b — Transferir ownership del pipeline al foreground service no exportado**. T10a solo agregó el shell seguro; no declarar M2 completo ni comportamiento en estado no visible mientras el código siga deteniendo el pipeline en `onStop`.
+La próxima unidad de código recomendada en la rama `feat/local-pairing-authority` es **M3/T13 — persistencia de confianza local**, después de revisar el candidato T12/T11b cuando el slot nativo quede libre. No abrir listener LAN externo antes del gate M3/T17.
 
 Antes de escribir source para T8b se debe:
 
