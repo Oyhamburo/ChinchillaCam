@@ -16,7 +16,7 @@ Construir la ruta Android desde selección de cámara hasta frames/encoder/metri
 
 ## Plan secuencial
 
-- [ ] T6: apertura `CameraDevice` acotada detrás de seam testeable. Abrir solo ID seleccionado que siga siendo `DirectOpenCandidate` y solo con permiso real concedido; errores tipados para sin selección, físico-only/stale, permiso faltante y fallo del opener; `StateCallback` maneja `onOpened`, `onDisconnected`, `onError`; cerrar recursos en stop/cancel; callbacks stale no activan cámara después de deselección. Sin sesión de captura, sin `ImageReader`, sin frames, sin encoder, sin streaming externo y sin pruebas físicas.
+- [x] T6: apertura `CameraDevice` acotada detrás de seam testeable. Abrir solo ID seleccionado que siga siendo `DirectOpenCandidate` y solo con permiso real concedido; errores tipados para sin selección, físico-only/stale, permiso faltante y fallo del opener; `StateCallback` maneja `onOpened`, `onDisconnected`, `onError`; cerrar recursos en stop/cancel; callbacks stale no activan cámara después de deselección. Sin sesión de captura, sin `ImageReader`, sin frames, sin encoder, sin streaming externo y sin pruebas físicas.
 - [ ] T7: sesión de captura preview/frame source con recursos cerrables; no encoder aún.
 - [ ] T8: `MediaCodec` H.264/AVC MVP con state machine/fakes; producir chunks codificados o errores tipados.
 - [ ] T9: métricas Android de captura/encode visibles: FPS, dropped frames, latencia encode y estado.
@@ -52,3 +52,12 @@ T6 agrega un boundary de apertura acotada y un adapter Android mínimo para soli
 - Selecciones físicas-only, stale o ausentes devuelven errores tipados y no hacen fallback silencioso a otra cámara.
 - `CameraOpenSession` activa `onOpened`, cierra en disconnect/error/cancel y cierra dispositivos tardíos si la sesión fue cancelada antes del callback.
 - `AndroidCameraDeviceOpenGateway` encapsula `CameraManager.openCamera` y traduce fallos esperados a resultado tipado. No crea `CameraCaptureSession`, `ImageReader`, frames, encoder ni transporte externo.
+
+
+### Revisión nativa RDD T6
+
+- Candidato inicial: `eef16e9` contra base `d558885`.
+- Hallazgo bloqueante corregido: `R3-terminal-callback-device-leak`; si `onDisconnected`/`onError` era el primer callback, el adapter podía descartar el `CameraDevice` callback sin cerrarlo.
+- Corrección local: `8c06bbb` (`fix: close terminal camera open callbacks`) permite pasar el device terminal al callback, lo cierra incluso sin `onOpened` previo y agrega test de terminal-before-open.
+- Lineage: `review-8b56c568217a22f4`.
+- Resultado: corrección validada, aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
