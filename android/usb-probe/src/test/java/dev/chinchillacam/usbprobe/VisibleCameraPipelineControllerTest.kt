@@ -161,7 +161,7 @@ class VisibleCameraPipelineControllerTest {
         worker.join(1_000)
 
         assertEquals(VisibleCameraPipelineStatus.Stopped, controller.currentState().status)
-        assertEquals("Cámara local detenida al ocultar la app; no continúa con pantalla bloqueada.", controller.currentState().detail)
+        assertEquals("Cámara local detenida al ocultar la app.", controller.currentState().detail)
     }
 
     @Test

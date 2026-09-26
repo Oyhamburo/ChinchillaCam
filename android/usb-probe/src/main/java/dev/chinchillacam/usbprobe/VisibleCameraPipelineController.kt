@@ -102,7 +102,7 @@ class VisibleCameraPipelineController(
     fun stopFromUser(): VisibleCameraPipelineUiState = stopWithMessage("Cámara local detenida por el usuario.")
 
     @Synchronized
-    fun stopForLifecycle(): VisibleCameraPipelineUiState = stopWithMessage("Cámara local detenida al ocultar la app; no continúa con pantalla bloqueada.")
+    fun stopForLifecycle(): VisibleCameraPipelineUiState = stopWithMessage("Cámara local detenida al ocultar la app.")
 
     private fun failAndStop(detail: String): VisibleCameraPipelineUiState {
         val stoppedHandle = handle
