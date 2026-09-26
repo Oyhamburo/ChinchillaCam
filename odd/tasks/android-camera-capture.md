@@ -17,7 +17,7 @@ Construir la ruta Android desde selección de cámara hasta frames/encoder/metri
 ## Plan secuencial
 
 - [x] T6: apertura `CameraDevice` acotada detrás de seam testeable. Abrir solo ID seleccionado que siga siendo `DirectOpenCandidate` y solo con permiso real concedido; errores tipados para sin selección, físico-only/stale, permiso faltante y fallo del opener; `StateCallback` maneja `onOpened`, `onDisconnected`, `onError`; cerrar recursos en stop/cancel; callbacks stale no activan cámara después de deselección. Sin sesión de captura, sin `ImageReader`, sin frames, sin encoder, sin streaming externo y sin pruebas físicas.
-- [ ] T7: sesión de captura preview/frame source con recursos cerrables; no encoder aún.
+- [x] T7: sesión de captura preview/frame source con recursos cerrables; no encoder aún.
 - [ ] T8: `MediaCodec` H.264/AVC MVP con state machine/fakes; producir chunks codificados o errores tipados.
 - [ ] T9: métricas Android de captura/encode visibles: FPS, dropped frames, latencia encode y estado.
 - [ ] T10: foreground service/pantalla bloqueada experimental, con límites honestos y sin claims hasta prueba física.
@@ -61,3 +61,39 @@ T6 agrega un boundary de apertura acotada y un adapter Android mínimo para soli
 - Corrección local: `8c06bbb` (`fix: close terminal camera open callbacks`) permite pasar el device terminal al callback, lo cierra incluso sin `onOpened` previo y agrega test de terminal-before-open.
 - Lineage: `review-8b56c568217a22f4`.
 - Resultado: corrección validada, aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+
+## Diseño T7 — sesión con `Surface` inyectada
+
+T7 no implementa un camino `ImageReader`/YUV CPU-copy porque ese prototipo sería descartable para la ruta de baja latencia de T8. El boundary de T7 configura una sesión Camera2 de repetición hacia una `Surface` inyectada/propiedad del siguiente componente. En T8 esa `Surface` podrá venir de `MediaCodec.createInputSurface()`.
+
+Límites T7:
+
+- Crear solo el seam de sesión/repeating request y recursos cerrables.
+- La `Surface` se inyecta; T7 no crea encoder, `ImageReader`, buffers YUV ni frame stream.
+- Modelar fallo de configuración, cancel/stop, callback stale y cierre con fakes.
+- El adapter real puede compilar contra `CameraDevice.createCaptureSession`, `CaptureRequest` y `CameraCaptureSession.setRepeatingRequest`, pero no debe integrarse todavía en la Activity ni declarar producto funcional.
+- Sin USB, Wi‑Fi, foreground service, background capture ni pruebas físicas.
+
+
+## Verificación T7
+
+T7 agrega un boundary de sesión Camera2 de repetición hacia una `Surface` inyectada, dejando el origen real de la `Surface` para T8.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `CameraCaptureSessionBoundary`, `CaptureSessionRequestOutcome`, `CameraCaptureStartResult`, `CameraCaptureSessionCallbackResult`, `CaptureTargetSurface`, `CameraCaptureSessionGateway`, `CaptureSessionCallbacks` y `CloseableRepeatingCaptureSession` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date en la corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+
+### Límites y decisiones T7
+
+- `CameraCaptureSessionBoundary` exige una `CameraOpenSession` activa y una `CaptureTargetSurface` explícita.
+- Faltante de surface, cámara inactiva y fallo de configuración devuelven errores tipados.
+- `RepeatingCaptureSession` cierra recursos en stop/cancel/configure-failed y evita activar callbacks stale si la sesión fue cancelada antes de `onConfigured`.
+- `AndroidCameraCaptureSessionGateway` compila contra `CameraDevice.createCaptureSession`, `CameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)` y `CameraCaptureSession.setRepeatingRequest` hacia una `AndroidCaptureTargetSurface`.
+- No se crea `ImageReader`, no se leen frames/YUV, no hay encoder, no hay transporte externo, no hay integración Activity y no hay prueba física.
