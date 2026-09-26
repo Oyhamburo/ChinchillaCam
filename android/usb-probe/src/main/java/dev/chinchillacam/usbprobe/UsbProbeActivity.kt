@@ -236,10 +236,13 @@ class UsbProbeActivity : Activity() {
 
 
     private fun renderLocalCameraPipeline() {
-        if (localCameraServiceOwnershipRequested) {
-            localCameraStatus.text = "Cámara local\nServicio visible solicitado/activo. La Activity no retiene la cámara; usá Detener para cerrar la prueba local.\n"
-            localCameraAction.text = "Detener cámara local"
-            localCameraAction.isEnabled = true
+        val serviceStatus = VisibleCameraServiceStatusStore.snapshot()
+        localCameraServiceOwnershipRequested = serviceStatus.isActive
+        if (serviceStatus.isActive || serviceStatus.state == VisibleCameraServiceState.Stopping) {
+            val serviceUi = VisibleCameraServiceActivityBindingPolicy.render(serviceStatus)
+            localCameraStatus.text = "${serviceUi.title}\n${serviceUi.detail}\n"
+            localCameraAction.text = serviceUi.primaryAction
+            localCameraAction.isEnabled = serviceUi.primaryActionEnabled
             return
         }
         val ui = localCameraController.currentState()
@@ -249,8 +252,20 @@ class UsbProbeActivity : Activity() {
     }
 
     private fun handleLocalCameraAction() {
-        if (localCameraServiceOwnershipRequested) {
-            stopLocalCameraFromUser()
+        val serviceStatus = VisibleCameraServiceStatusStore.snapshot()
+        if (serviceStatus.isActive || serviceStatus.state == VisibleCameraServiceState.Stopping) {
+            VisibleCameraServiceActivityBindingPolicy.actionForPrimaryClick(serviceStatus).apply(
+                object : VisibleCameraServiceActivityStarter {
+                    override fun startVisibleCameraService(selectedCameraId: String) {
+                        this@UsbProbeActivity.startVisibleCameraForegroundService(selectedCameraId)
+                    }
+
+                    override fun stopVisibleCameraService() {
+                        this@UsbProbeActivity.stopLocalCameraFromUser()
+                    }
+                },
+                selectedCameraId = selectedCameraId,
+            )
             return
         }
         when (localCameraController.currentState().status) {
@@ -268,10 +283,18 @@ class UsbProbeActivity : Activity() {
         val permissionGranted = currentCameraPermissionState() == CameraPermissionUiModel.Granted
         when (val plan = VisibleCameraForegroundServicePlanner.planStart(activityVisible, permissionGranted, snapshot, selected)) {
             is VisibleCameraForegroundServiceStartPlan.Allowed -> {
+                VisibleCameraServiceStatusStore.publish(
+                    VisibleCameraServiceStatus(
+                        state = VisibleCameraServiceState.Starting,
+                        selectedCameraId = plan.cameraId,
+                        message = "Iniciando prueba local desde el servicio visible.",
+                    ),
+                )
                 localCameraServiceOwnershipRequested = true
                 startVisibleCameraForegroundService(plan.cameraId)
             }
             is VisibleCameraForegroundServiceStartPlan.Blocked -> {
+                VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = plan.message))
                 localCameraServiceOwnershipRequested = false
                 stopVisibleCameraForegroundService()
             }
@@ -293,8 +316,10 @@ class UsbProbeActivity : Activity() {
     private fun stopLocalCameraFromUser() {
         localCameraDrainActive = false
         localCameraServiceOwnershipRequested = false
+        VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
         stopVisibleCameraForegroundService()
         localCameraController.stopFromUser()
+        VisibleCameraServiceStatusStore.clearStopped()
         renderLocalCameraPipeline()
     }
 

@@ -62,16 +62,22 @@ class VisibleCameraForegroundService : Service() {
                 )
             }
             ACTION_STOP -> {
+                VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
                 pipelineOwner.handleStopCommand()
+                VisibleCameraServiceStatusStore.clearStopped()
                 stopForegroundAndSelf()
             }
-            else -> stopSelf(startId)
+            else -> {
+                VisibleCameraServiceStatusStore.clearStopped()
+                stopSelf(startId)
+            }
         }
         return restartMode()
     }
 
     override fun onDestroy() {
         pipelineOwner.handleDestroy()
+        VisibleCameraServiceStatusStore.clearStopped()
         startExecutor.shutdownNow()
         cameraCallbackThread.quitSafely()
         super.onDestroy()
@@ -89,7 +95,9 @@ class VisibleCameraForegroundService : Service() {
     }
 
     private fun stopForegroundAndSelf() {
+        VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
         pipelineOwner.handleStopCommand()
+        VisibleCameraServiceStatusStore.clearStopped()
         @Suppress("DEPRECATION")
         stopForeground(true)
         stopSelf()
@@ -220,6 +228,115 @@ enum class VisibleCameraServiceCommandOutcome {
     IgnoredColdRestart,
 }
 
+enum class VisibleCameraServiceState {
+    Idle,
+    Starting,
+    Running,
+    Stopping,
+    Stopped,
+    Error,
+}
+
+data class VisibleCameraServiceStatus(
+    val state: VisibleCameraServiceState,
+    val selectedCameraId: String? = null,
+    val message: String = "",
+) {
+    val isActive: Boolean = state == VisibleCameraServiceState.Starting || state == VisibleCameraServiceState.Running
+}
+
+object VisibleCameraServiceStatusStore {
+    val exposesActivityReference: Boolean = false
+    private val lock = Any()
+    private var current: VisibleCameraServiceStatus = VisibleCameraServiceStatus(
+        state = VisibleCameraServiceState.Idle,
+        message = "Servicio visible inactivo.",
+    )
+
+    fun snapshot(): VisibleCameraServiceStatus = synchronized(lock) { current }
+
+    fun publish(status: VisibleCameraServiceStatus) {
+        synchronized(lock) { current = status }
+    }
+
+    fun clearStopped(message: String = "Servicio visible detenido.") {
+        publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopped, message = message))
+    }
+}
+
+data class VisibleCameraServiceActivityUiState(
+    val title: String,
+    val detail: String,
+    val primaryAction: String,
+    val primaryActionEnabled: Boolean,
+)
+
+interface VisibleCameraServiceActivityStarter {
+    fun startVisibleCameraService(selectedCameraId: String)
+    fun stopVisibleCameraService()
+}
+
+sealed class VisibleCameraServiceActivityAction {
+    abstract fun apply(starter: VisibleCameraServiceActivityStarter, selectedCameraId: String?)
+
+    object Start : VisibleCameraServiceActivityAction() {
+        override fun apply(starter: VisibleCameraServiceActivityStarter, selectedCameraId: String?) {
+            selectedCameraId?.let { starter.startVisibleCameraService(it) }
+        }
+    }
+
+    object Stop : VisibleCameraServiceActivityAction() {
+        override fun apply(starter: VisibleCameraServiceActivityStarter, selectedCameraId: String?) {
+            starter.stopVisibleCameraService()
+        }
+    }
+}
+
+object VisibleCameraServiceActivityBindingPolicy {
+    fun render(status: VisibleCameraServiceStatus): VisibleCameraServiceActivityUiState = when (status.state) {
+        VisibleCameraServiceState.Starting -> VisibleCameraServiceActivityUiState(
+            title = "Cámara local",
+            detail = status.message.ifBlank { "Iniciando prueba local desde el servicio visible." },
+            primaryAction = "Detener cámara local",
+            primaryActionEnabled = true,
+        )
+        VisibleCameraServiceState.Running -> VisibleCameraServiceActivityUiState(
+            title = "Cámara local",
+            detail = status.message.ifBlank { "Prueba local activa desde el servicio visible." },
+            primaryAction = "Detener cámara local",
+            primaryActionEnabled = true,
+        )
+        VisibleCameraServiceState.Stopping -> VisibleCameraServiceActivityUiState(
+            title = "Cámara local",
+            detail = status.message.ifBlank { "Deteniendo servicio visible de cámara local." },
+            primaryAction = "Detener cámara local",
+            primaryActionEnabled = false,
+        )
+        VisibleCameraServiceState.Error -> VisibleCameraServiceActivityUiState(
+            title = "Cámara local",
+            detail = status.message.ifBlank { "El servicio visible de cámara local informó un error." },
+            primaryAction = "Iniciar cámara local",
+            primaryActionEnabled = true,
+        )
+        VisibleCameraServiceState.Idle,
+        VisibleCameraServiceState.Stopped -> VisibleCameraServiceActivityUiState(
+            title = "Cámara local",
+            detail = status.message.ifBlank { "Servicio visible detenido." },
+            primaryAction = "Iniciar cámara local",
+            primaryActionEnabled = true,
+        )
+    }
+
+    fun actionForPrimaryClick(status: VisibleCameraServiceStatus): VisibleCameraServiceActivityAction = when (status.state) {
+        VisibleCameraServiceState.Starting,
+        VisibleCameraServiceState.Running,
+        VisibleCameraServiceState.Stopping -> VisibleCameraServiceActivityAction.Stop
+        VisibleCameraServiceState.Idle,
+        VisibleCameraServiceState.Stopped,
+        VisibleCameraServiceState.Error -> VisibleCameraServiceActivityAction.Start
+    }
+}
+
 interface VisibleCameraForegroundStarter {
     fun startForegroundForVisibleCamera()
 }
@@ -255,8 +372,12 @@ class VisibleCameraForegroundServiceCommandRunner(
         cameraPermissionGranted: Boolean,
         snapshotProvider: () -> CameraCatalogSnapshot,
     ): VisibleCameraServiceCommandOutcome {
-        if (request == null) return VisibleCameraServiceCommandOutcome.IgnoredColdRestart
+        if (request == null) {
+            VisibleCameraServiceStatusStore.clearStopped("Servicio visible no reinicia cámara sin una acción explícita.")
+            return VisibleCameraServiceCommandOutcome.IgnoredColdRestart
+        }
         if (!request.visibleStartRequested || request.selectedCameraId.isNullOrBlank()) {
+            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = "La app debe estar visible para iniciar la prueba local de cámara."))
             stopService()
             return VisibleCameraServiceCommandOutcome.Blocked
         }
@@ -264,6 +385,7 @@ class VisibleCameraForegroundServiceCommandRunner(
             foreground.startForegroundForVisibleCamera()
         } catch (exception: RuntimeException) {
             if (!exception.isForegroundStartFailure()) throw exception
+            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, selectedCameraId = request.selectedCameraId, message = "Android bloqueó el inicio del servicio visible de cámara."))
             stopService()
             return VisibleCameraServiceCommandOutcome.Blocked
         }
@@ -324,10 +446,18 @@ class VisibleCameraForegroundServicePipelineOwner(
             active = false
             generation
         }
+        VisibleCameraServiceStatusStore.publish(
+            VisibleCameraServiceStatus(
+                state = VisibleCameraServiceState.Starting,
+                selectedCameraId = startRequest.selectedCameraId,
+                message = "Iniciando prueba local desde el servicio visible.",
+            ),
+        )
         val snapshot = snapshotProvider()
         if (synchronized(this) { token != generation }) return VisibleCameraServiceCommandOutcome.Stopped
         val decision = policy.planStartCommand(startRequest.visibleStartRequested, cameraPermissionGranted, snapshot, startRequest.selectedCameraId)
         if (decision is VisibleCameraServiceStartDecision.Blocked) {
+            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = decision.message))
             synchronized(this) {
                 if (token == generation) stopActiveLocked()
             }
@@ -350,25 +480,41 @@ class VisibleCameraForegroundServicePipelineOwner(
             return VisibleCameraServiceCommandOutcome.Stopped
         }
         return if (status == VisibleCameraPipelineStatus.Running || status == VisibleCameraPipelineStatus.Starting) {
+            VisibleCameraServiceStatusStore.publish(
+                VisibleCameraServiceStatus(
+                    state = if (status == VisibleCameraPipelineStatus.Running) VisibleCameraServiceState.Running else VisibleCameraServiceState.Starting,
+                    selectedCameraId = decision.cameraId,
+                    message = if (status == VisibleCameraPipelineStatus.Running) {
+                        "Prueba local activa desde el servicio visible."
+                    } else {
+                        "Iniciando prueba local desde el servicio visible."
+                    },
+                ),
+            )
             VisibleCameraServiceCommandOutcome.Started
         } else {
+            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, selectedCameraId = decision.cameraId, message = "No se pudo iniciar la prueba local desde el servicio visible."))
             VisibleCameraServiceCommandOutcome.Blocked
         }
     }
 
     fun handleStopCommand(): VisibleCameraServiceCommandOutcome {
+        VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
         synchronized(this) {
             generation += 1
             stopActiveLocked()
         }
+        VisibleCameraServiceStatusStore.clearStopped()
         return VisibleCameraServiceCommandOutcome.Stopped
     }
 
     fun handleDestroy() {
+        VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
         synchronized(this) {
             generation += 1
             stopActiveLocked()
         }
+        VisibleCameraServiceStatusStore.clearStopped()
     }
 
     private fun stopActiveLocked() {

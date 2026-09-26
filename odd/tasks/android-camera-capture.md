@@ -587,3 +587,24 @@ Alcance T10c3:
 - No confiar en `savedInstanceState` ni en booleanos locales como fuente de verdad de ownership.
 - Tests RED: estado process-local Running/Starting produce UI Stop después de recreación; Start repetido no invoca nuevo start si service ya activo; Stop recreado envía stop y estado vuelve a Stopped; no referencia Activity guardada.
 - Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
+
+## Verificación T10c3
+
+T10c3 vincula la UI recreada al estado real process-local del foreground service, en lugar de depender de un booleano local perdido por recreación. La Activity consulta el status store al renderizar/onResume, muestra Stop cuando el service-owned pipeline está `Starting`/`Running`, y el Stop explícito desde una Activity recreada detiene el service y limpia el estado local.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `VisibleCameraServiceActivityBindingPolicy`, `VisibleCameraServiceStatus`, `VisibleCameraServiceState`, `VisibleCameraServiceStatusStore` y `VisibleCameraServiceActivityStarter` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+
+### Límites y decisiones T10c3
+
+- `VisibleCameraServiceStatusStore` expone un snapshot tipado process-local sin retener Activity: `Idle`, `Starting`, `Running`, `Stopping`, `Stopped` y `Error`, con `selectedCameraId`/mensaje opcionales.
+- `VisibleCameraForegroundService`/owner publican `Starting`, `Running`, `Stopping`, `Stopped` y errores/bloqueos al aceptar start, arrancar pipeline, detener, destruir o rechazar start.
+- `UsbProbeActivity.renderLocalCameraPipeline` consulta el store real, no sólo `localCameraServiceOwnershipRequested`; una Activity recreada ve `Starting`/`Running` y muestra Stop habilitado.
+- La acción principal sobre `Starting`/`Running` se mapea a Stop, por lo que un Start repetido desde una Activity recreada no manda otro start/open.
+- Stop explícito limpia el status process-local a `Stopped` y pide detener el service/pipeline.
+- No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
