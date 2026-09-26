@@ -25,7 +25,11 @@ class CameraEncoderPipeline(
                     encoderBoundary = encoderBoundary,
                     captureSessionBoundary = captureSessionBoundary,
                 )
-                if (openResult.session.isActive) pending.continueAfterCameraOpened() else CameraEncoderPipelineStartResult.Opening(pending)
+                when {
+                    openResult.session.isActive -> pending.continueAfterCameraOpened()
+                    openResult.session.isTerminal -> pending.continueAfterCameraOpened()
+                    else -> CameraEncoderPipelineStartResult.Opening(pending)
+                }
             }
         }
     }
@@ -68,6 +72,10 @@ class PendingCameraEncoderPipelineStart internal constructor(
     @Synchronized
     fun continueAfterCameraOpened(): CameraEncoderPipelineStartResult {
         if (completed) return CameraEncoderPipelineStartResult.Failed("pipeline start already completed")
+        if (openSession.isTerminal) {
+            completed = true
+            return CameraEncoderPipelineStartResult.Failed("camera open did not complete")
+        }
         if (!openSession.isActive) return CameraEncoderPipelineStartResult.Opening(this)
         completed = true
         return startEncoderAndCapture()

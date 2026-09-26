@@ -77,6 +77,12 @@ class CameraOpenSession(
     val isActive: Boolean
         @Synchronized get() = device != null && !canceled
 
+    val isTerminal: Boolean
+        @Synchronized get() = canceled && device == null
+
+    val activeDevice: CloseableCameraDevice?
+        @Synchronized get() = device
+
     @Synchronized
     fun cancel() {
         canceled = true
@@ -136,8 +142,8 @@ class AndroidCameraDeviceOpenGateway(
     }
 }
 
-private class AndroidCloseableCameraDevice(
-    private val camera: CameraDevice,
+class AndroidCloseableCameraDevice(
+    val camera: CameraDevice,
 ) : CloseableCameraDevice {
     override val cameraId: String = camera.id
     override fun close() {

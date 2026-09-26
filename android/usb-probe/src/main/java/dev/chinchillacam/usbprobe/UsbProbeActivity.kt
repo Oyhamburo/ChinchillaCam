@@ -31,6 +31,8 @@ class UsbProbeActivity : Activity() {
     private lateinit var cameraPermissionAction: Button
     private lateinit var cameraCatalog: TextView
     private lateinit var cameraRows: LinearLayout
+    private lateinit var localCameraStatus: TextView
+    private lateinit var localCameraAction: Button
     private lateinit var action: Button
     private var selectedCameraId: String? = null
     private var cameraPermissionState: CameraPermissionUiModel = CameraPermissionUiModel.NotRequested
@@ -42,6 +44,16 @@ class UsbProbeActivity : Activity() {
     private var permissionGate = AccessoryPermissionRequestGate(PERMISSION_CALLBACK_TIMEOUT_MILLIS)
     private var busy: Boolean = false
     private var lastResult: String? = null
+    private val localCameraController: VisibleCameraPipelineController by lazy {
+        VisibleCameraPipelineController(
+            launcher = AndroidVisibleCameraPipelineLauncher(
+                cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager,
+                handler = mainHandler,
+            ),
+            encoderConfig = H264EncoderConfig(width = 1280, height = 720, bitrate = 2_000_000, frameRate = 30, iFrameIntervalSeconds = 2),
+        )
+    }
+    @Volatile private var localCameraDrainActive: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,6 +63,7 @@ class UsbProbeActivity : Activity() {
         buildUi()
         action.setOnClickListener { requestPermissionFromUserAction() }
         cameraPermissionAction.setOnClickListener { requestCameraPermissionFromUserAction() }
+        localCameraAction.setOnClickListener { handleLocalCameraAction() }
         if (permissionState == AccessoryPermissionUiModel.WaitingForCallback) {
             schedulePermissionCallbackTimeout()
         }
@@ -98,6 +111,16 @@ class UsbProbeActivity : Activity() {
         render()
     }
 
+    override fun onStop() {
+        stopLocalCameraForLifecycle()
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        stopLocalCameraForLifecycle()
+        super.onDestroy()
+    }
+
     private fun buildUi() {
         title = TextView(this).apply { textSize = 22f }
         status = TextView(this).apply { textSize = 16f }
@@ -106,6 +129,8 @@ class UsbProbeActivity : Activity() {
         cameraPermissionAction = Button(this)
         cameraCatalog = TextView(this).apply { textSize = 14f }
         cameraRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        localCameraStatus = TextView(this).apply { textSize = 14f }
+        localCameraAction = Button(this)
         action = Button(this)
 
         val layout = LinearLayout(this).apply {
@@ -120,6 +145,8 @@ class UsbProbeActivity : Activity() {
             addView(cameraPermissionAction, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(cameraCatalog, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(cameraRows, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(localCameraStatus, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(localCameraAction, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
         setContentView(layout)
     }
@@ -138,6 +165,7 @@ class UsbProbeActivity : Activity() {
         action.isEnabled = ui.primaryActionEnabled
         renderCameraPermission()
         renderCameraCatalog()
+        renderLocalCameraPipeline()
     }
 
     private fun renderCameraPermission() {
@@ -200,6 +228,61 @@ class UsbProbeActivity : Activity() {
         return CameraCapabilityCatalog(
             AndroidCameraManagerGateway(AndroidCameraManagerFacadeImpl(cameraManager)),
         ).snapshot()
+    }
+
+
+    private fun renderLocalCameraPipeline() {
+        val ui = localCameraController.currentState()
+        localCameraStatus.text = "${ui.title}\n${ui.detail}"
+        localCameraAction.text = ui.primaryAction
+        localCameraAction.isEnabled = ui.primaryActionEnabled
+    }
+
+    private fun handleLocalCameraAction() {
+        when (localCameraController.currentState().status) {
+            VisibleCameraPipelineStatus.Running,
+            VisibleCameraPipelineStatus.Starting -> stopLocalCameraFromUser()
+            VisibleCameraPipelineStatus.Idle,
+            VisibleCameraPipelineStatus.Stopped,
+            VisibleCameraPipelineStatus.Error -> startLocalCameraFromUser()
+        }
+    }
+
+    private fun startLocalCameraFromUser() {
+        val snapshot = currentCameraCatalogSnapshot()
+        val selected = selectedCameraId ?: cameraSelectionPreference.restoreSelection(snapshot)
+        val permissionGranted = currentCameraPermissionState() == CameraPermissionUiModel.Granted
+        localCameraStatus.text = "Cámara local\nIniciando cámara local visible…"
+        localCameraAction.text = "Detener cámara local"
+        localCameraAction.isEnabled = true
+        Thread {
+            localCameraController.start(snapshot, selected, permissionGranted)
+            localCameraDrainActive = localCameraController.currentState().status == VisibleCameraPipelineStatus.Running
+            runOnUiThread { renderLocalCameraPipeline() }
+            drainLocalCameraWhileRunning()
+        }.start()
+    }
+
+    private fun drainLocalCameraWhileRunning() {
+        while (localCameraDrainActive && localCameraController.currentState().status == VisibleCameraPipelineStatus.Running) {
+            val state = localCameraController.drainOnce(maxOutputs = LOCAL_CAMERA_MAX_DRAIN_OUTPUTS)
+            runOnUiThread { renderLocalCameraPipeline() }
+            if (state.status != VisibleCameraPipelineStatus.Running) {
+                localCameraDrainActive = false
+            }
+            Thread.sleep(LOCAL_CAMERA_DRAIN_INTERVAL_MILLIS)
+        }
+    }
+
+    private fun stopLocalCameraFromUser() {
+        localCameraDrainActive = false
+        localCameraController.stopFromUser()
+        renderLocalCameraPipeline()
+    }
+
+    private fun stopLocalCameraForLifecycle() {
+        localCameraDrainActive = false
+        localCameraController.stopForLifecycle()
     }
 
     private fun requestPermissionFromUserAction() {
@@ -388,5 +471,7 @@ class UsbProbeActivity : Activity() {
         const val REQUEST_CAMERA_PERMISSION = 2001
         const val CAMERA_PREFERENCES = "dev.chinchillacam.usbprobe.camera"
         const val CAMERA_SELECTION_KEY = "selected_direct_camera_id"
+        const val LOCAL_CAMERA_MAX_DRAIN_OUTPUTS = 4
+        const val LOCAL_CAMERA_DRAIN_INTERVAL_MILLIS = 33L
     }
 }

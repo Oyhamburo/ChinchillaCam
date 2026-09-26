@@ -19,7 +19,7 @@ Construir la ruta Android desde selección de cámara hasta frames/encoder/metri
 - [x] T6: apertura `CameraDevice` acotada detrás de seam testeable. Abrir solo ID seleccionado que siga siendo `DirectOpenCandidate` y solo con permiso real concedido; errores tipados para sin selección, físico-only/stale, permiso faltante y fallo del opener; `StateCallback` maneja `onOpened`, `onDisconnected`, `onError`; cerrar recursos en stop/cancel; callbacks stale no activan cámara después de deselección. Sin sesión de captura, sin `ImageReader`, sin frames, sin encoder, sin streaming externo y sin pruebas físicas.
 - [x] T7: sesión de captura preview/frame source con recursos cerrables; no encoder aún.
 - [x] T8: `MediaCodec` H.264/AVC MVP con state machine/fakes; producir chunks codificados o errores tipados.
-- [ ] T8b: orquestador local cámara→encoder con fakes. Conectar selección directa actual + permiso `CAMERA` actual + acción explícita Start/Stop visible a la secuencia abrir cámara → configurar encoder Surface → sesión repeating → drenar chunks codificados acotados/tipados → stop/release en fallos y ciclo de vida, sin Activity real todavía. Debe corregir el advisory T7 `R3-stop-failure-cleanup` antes de captura prolongada.
+- [x] T8b: orquestador local cámara→encoder con fakes. Conectar selección directa actual + permiso `CAMERA` actual + acción explícita Start/Stop visible a la secuencia abrir cámara → configurar encoder Surface → sesión repeating → drenar chunks codificados acotados/tipados → stop/release en fallos y ciclo de vida, sin Activity real todavía. Debe corregir el advisory T7 `R3-stop-failure-cleanup` antes de captura prolongada.
 - [ ] T8c: cableado Activity visible Start/Stop del pipeline local. Integrar el orquestador T8b con `UsbProbeActivity` solo mientras la app está visible; cerrar en `onPause`/`onDestroy`; sin USB/Wi‑Fi/network/storage/FGS ni claim de producto.
 - [ ] T9: métricas Android de captura/encode visibles desde el pipeline real local: FPS, chunks drenados/dropped por backpressure, latencia encode y estado.
 - [ ] T10: foreground service/pantalla bloqueada experimental, con límites honestos y sin claims hasta prueba física.
@@ -218,3 +218,28 @@ Límites T8c:
 - Stop explícito, `onStop` y `onDestroy` cierran captura, encoder y cámara; hasta T10 no se promete continuidad con pantalla bloqueada.
 - T8c debe manejar los advisories T8b antes de captura prolongada: exponer/mostrar errores de cleanup de arranque y tratar callback terminal de open como fallo/stop en vez de quedar en estado pendiente.
 - Sin USB, Wi‑Fi, network, audio, storage, FGS, screen-lock claim, pruebas físicas ni claim de producto funcional.
+
+## Verificación T8c
+
+T8c agrega cableado visible Start/Stop en `UsbProbeActivity` para una prueba local cámara→encoder. La salida codificada se drena de forma acotada y se descarta en memoria; no hay grabación, transporte ni foreground service.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `VisibleCameraPipelineController`, `VisibleCameraPipelineLauncher`, `VisibleCameraPipelineLaunchResult`, `VisibleCameraPipelineHandle` y `VisibleCameraPipelineStatus` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date en la corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+
+### Límites y decisiones T8c
+
+- `VisibleCameraPipelineController` mantiene estado UI en español y exige tap explícito para iniciar; no hay auto-start en resume, permiso o recreación.
+- Start rechaza falta de permiso `CAMERA` fresco y selección no directa antes de llamar al launcher.
+- `AndroidVisibleCameraPipelineLauncher` usa adapters reales Android: `AndroidCameraDeviceOpenGateway`, `AndroidH264EncoderGateway` y `AndroidCameraCaptureSessionGateway`.
+- El launcher espera apertura/configuración de captura en hilo de trabajo y trata callback terminal de open como fallo en vez de quedar pendiente.
+- `UsbProbeActivity` agrega botón local Start/Stop, arranca fuera del hilo principal, drena chunks con límite pequeño, descarta en memoria y llama `consumeEncoded`.
+- Stop explícito, `onStop` y `onDestroy` cierran el pipeline; el texto aclara que no continúa con pantalla bloqueada hasta T10.
+- No hay USB, Wi‑Fi, network, storage, audio, wire protocol, FGS, prueba física ni claim de producto funcional.
