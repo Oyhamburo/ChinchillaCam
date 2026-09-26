@@ -1,4 +1,4 @@
-# Complete ChinchillaCam webcam product plan
+# Plan integral del producto ChinchillaCam
 
 > Estado (2026-09-26): plan paraguas creado y revisado en `feat/android-camera-catalog` desde HEAD limpio `2958236`; corrección de seguridad de planificación aplicada en commit separado. Este plan coordina el producto completo sin push/PR/merge. Los commits siguen siendo locales. Las pruebas físicas Samsung/Mac/Windows quedan deliberadamente al final y requieren acceso explícito a hardware del usuario.
 

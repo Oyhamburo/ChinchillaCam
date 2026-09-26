@@ -1,5 +1,11 @@
 package dev.chinchillacam.usbprobe
 
+import android.graphics.ImageFormat
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.params.StreamConfigurationMap
+import android.os.Build
+
 class CameraCapabilityCatalog(
     private val gateway: CameraCapabilityGateway,
 ) {
@@ -133,3 +139,136 @@ data class CameraControlAvailability(
     val exposureCompensation: Boolean,
     val zoomRatio: Boolean,
 )
+
+
+enum class AndroidCameraCharacteristicField {
+    Facing,
+    PhysicalCameraIds,
+    OutputSizes,
+    FpsRanges,
+    Controls,
+}
+
+interface AndroidCameraManagerFacade {
+    val sdkInt: Int
+    fun getCameraIdList(): List<String>
+    fun getFacing(cameraId: String): CameraFacing?
+    fun getPhysicalCameraIds(cameraId: String): Set<String>
+    fun getOutputSizes(cameraId: String): List<CameraOutputSize>?
+    fun getFpsRanges(cameraId: String): List<CameraFpsRange>?
+    fun getControls(cameraId: String): CameraControlAvailability?
+}
+
+class AndroidCameraManagerGateway(
+    private val facade: AndroidCameraManagerFacade,
+) : CameraCapabilityGateway {
+    private var directCandidateIds: Set<String> = emptySet()
+
+    override fun getOpenableCameraIds(): List<String> = runCatching {
+        facade.getCameraIdList()
+    }.getOrDefault(emptyList()).also { ids ->
+        directCandidateIds = ids.toSet()
+    }
+
+    override fun getCharacteristics(cameraId: String): CameraCapabilityCharacteristics {
+        if (cameraId !in directCandidateIds && facade.sdkInt < 29) {
+            return unknownCharacteristics("physical camera characteristics require API 29 for $cameraId")
+        }
+
+        return CameraCapabilityCharacteristics(
+            facing = knownOrUnknown(cameraId, "facing") { facade.getFacing(cameraId) },
+            physicalCameraIds = safePhysicalCameraIds(cameraId),
+            outputSizes = sizesFor(cameraId),
+            fpsRanges = knownOrUnknown(cameraId, "fps ranges") { facade.getFpsRanges(cameraId) },
+            controls = knownOrUnknown(cameraId, "controls") { facade.getControls(cameraId) },
+        )
+    }
+
+    private fun unknownCharacteristics(reason: String): CameraCapabilityCharacteristics = CameraCapabilityCharacteristics(
+        facing = CapabilityState.Unknown(reason),
+        physicalCameraIds = emptySet(),
+        outputSizes = CapabilityState.Unknown(reason),
+        fpsRanges = CapabilityState.Unknown(reason),
+        controls = CapabilityState.Unknown(reason),
+    )
+
+    private fun safePhysicalCameraIds(cameraId: String): Set<String> = runCatching {
+        facade.getPhysicalCameraIds(cameraId)
+    }.getOrDefault(emptySet())
+
+    private fun sizesFor(cameraId: String): CapabilityState<List<CameraOutputSize>> = try {
+        val sizes = facade.getOutputSizes(cameraId)
+        when {
+            sizes == null -> CapabilityState.Unavailable("output sizes not advertised for $cameraId")
+            else -> CapabilityState.Known(sizes)
+        }
+    } catch (_: Exception) {
+        CapabilityState.Unknown("output sizes unavailable for $cameraId")
+    }
+
+    private fun <T> knownOrUnknown(
+        cameraId: String,
+        label: String,
+        read: () -> T?,
+    ): CapabilityState<T> = try {
+        val value = read()
+        if (value == null) {
+            CapabilityState.Unknown("$label unavailable for $cameraId")
+        } else {
+            CapabilityState.Known(value)
+        }
+    } catch (_: Exception) {
+        CapabilityState.Unknown("$label unavailable for $cameraId")
+    }
+}
+
+class AndroidCameraManagerFacadeImpl(
+    private val cameraManager: CameraManager,
+    override val sdkInt: Int = Build.VERSION.SDK_INT,
+) : AndroidCameraManagerFacade {
+    override fun getCameraIdList(): List<String> = cameraManager.cameraIdList.toList()
+
+    override fun getFacing(cameraId: String): CameraFacing? = when (characteristics(cameraId).get(CameraCharacteristics.LENS_FACING)) {
+        CameraCharacteristics.LENS_FACING_FRONT -> CameraFacing.Front
+        CameraCharacteristics.LENS_FACING_BACK -> CameraFacing.Back
+        CameraCharacteristics.LENS_FACING_EXTERNAL -> CameraFacing.External
+        else -> null
+    }
+
+    override fun getPhysicalCameraIds(cameraId: String): Set<String> = if (sdkInt >= Build.VERSION_CODES.P) {
+        characteristics(cameraId).physicalCameraIds
+    } else {
+        emptySet()
+    }
+
+    override fun getOutputSizes(cameraId: String): List<CameraOutputSize>? = streamConfiguration(cameraId)
+        ?.getOutputSizes(ImageFormat.YUV_420_888)
+        ?.map { CameraOutputSize(width = it.width, height = it.height) }
+        ?.sortedWith(compareBy<CameraOutputSize> { it.width }.thenBy { it.height })
+
+    override fun getFpsRanges(cameraId: String): List<CameraFpsRange>? = characteristics(cameraId)
+        .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+        ?.map { range -> CameraFpsRange(min = range.lower, max = range.upper) }
+        ?.sortedWith(compareBy<CameraFpsRange> { it.min }.thenBy { it.max })
+
+    override fun getControls(cameraId: String): CameraControlAvailability? {
+        val characteristics = characteristics(cameraId)
+        val afModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+        val exposureRange = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+        val zoomAvailable = if (sdkInt >= Build.VERSION_CODES.R) {
+            characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) != null
+        } else {
+            characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)?.let { it > 1.0f } == true
+        }
+        return CameraControlAvailability(
+            autoFocus = afModes?.any { it != CameraCharacteristics.CONTROL_AF_MODE_OFF } == true,
+            exposureCompensation = exposureRange?.let { it.lower != 0 || it.upper != 0 } == true,
+            zoomRatio = zoomAvailable,
+        )
+    }
+
+    private fun characteristics(cameraId: String): CameraCharacteristics = cameraManager.getCameraCharacteristics(cameraId)
+
+    private fun streamConfiguration(cameraId: String): StreamConfigurationMap? = characteristics(cameraId)
+        .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+}
