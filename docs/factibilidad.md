@@ -72,6 +72,8 @@ Límite del prototipo T4: el límite Android Kotlin modela permiso, apertura de 
 
 Límite del prototipo T5a: la CLI host Rust opera en modo `--dry-run` y exige un identificador explícito `VID:PID` antes de producir cualquier plan AOA. Ese plan modela la secuencia de control, la espera de re-enumeración y un límite bulk fake para endpoints/frames, pero no abre hardware, no reclama endpoints reales, no cambia drivers y no demuestra compatibilidad con Windows, macOS, Samsung ni dispositivos USB.
 
+Límite del candidato T5e: `--live-bulk-smoke` es solo un smoke AOA bulk de un frame host↔teléfono. El framing compartido es `u32` little-endian `stream_id`, `u32` little-endian `payload_len`, payload acotado y ACK Android. Esto no afirma soporte de video, cámara virtual ni hardware; no automatiza drivers, Zadig ni asociaciones WinUSB; no usa ADB como transporte de producto; y la validación física en Samsung, Windows 11 y macOS 13+ Apple Silicon sigue pendiente.
+
 Puertas de aceptación USB:
 
 - detectar dispositivo por cable en Windows 11;

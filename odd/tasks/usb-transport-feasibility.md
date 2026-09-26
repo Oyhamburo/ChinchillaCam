@@ -69,7 +69,7 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 - [x] **T5d — APK Android de prueba instalable.** Agregó un APK Android mínimo instalable con UI visible en español y acción explícita para solicitar permiso sobre `UsbAccessory`; después de permiso aprobado abre vía `UsbManager`, lee un frame acotado compatible con Rust (`u32` little-endian `stream_id`, `u32` little-endian `payload_len`, payload acotado) y responde un ACK framed con el mismo `stream_id`. Incluye pruebas JVM automatizadas RED→GREEN para framing, oversize/short read, plan de permiso/flags y estado UI. No inicia cámara, no crea servicio, no instala/ejecuta en dispositivo físico, no usa ADB como transporte de producto y no afirma compatibilidad hardware. Revisión nativa RDD aprobada y reconocida: lineage `review-e7808067fd67c3b1`.
 - [x] **T5d1 — Endurecer APK smoke antes de uso físico.** Resolvió test-first los advisories aprobados de T5d: `R3-permission-state-never-resolved` con reducer/estado explícito para grant, deny, accesorio faltante, resultado de permiso faltante y callback cancelado/ausente; y `R3-unbounded-accessory-read` con sesión smoke Activity-owned fuera del main thread, timeout app-level de 10s, cierre de sesión al vencer y sin `goAsync()` retenido para I/O USB. La limitación queda explícita: el timeout/cierre acota la espera de la app, pero no garantiza que el SO interrumpa todo `stream.read` bloqueado. No se instaló ni ejecutó en dispositivo físico, no se usó ADB como transporte de producto y no se afirma compatibilidad hardware.
 - [x] **T5d2 — Vincular permiso Android a una sola solicitud/accesorio.** Commit `2aaa5be` (`fix: bind Android permission result identity`) endureció test-first los advisories `R3-accessory-identity-discarded`, `R3-permission-callback-replayed` y `R3-stale-permission-timeout`: cada solicitud de permiso iniciada por el usuario lleva token único y fingerprint app-local derivado de `UsbAccessory` (`manufacturer`, `model`, `description`, `version`, `uri`, `serial`), se consume una sola vez y rechaza callbacks wrong/duplicate/stale con estado UI visible. El receiver solo clasifica/traslada el callback y no hace I/O USB. No se instaló ni ejecutó en dispositivo físico, no se usó ADB como transporte de producto, no se agregó cámara/background service y no se afirma compatibilidad hardware/Samsung. Revisión nativa RDD aprobada y reconocida: lineage `review-f288311aa738e1e1`.
-- [ ] **T5e — Framing y guía smoke host↔phone.** Documentar comandos host↔teléfono reproducibles, salida esperada, ruta de cross-build Windows si es factible y hardware real pendiente. Debe mantener el dry-run como planificación, no como soporte de hardware.
+- [x] **T5e — Framing y guía smoke host↔phone.** Documentó la guía smoke host↔teléfono en `docs/uso.md` y el límite de factibilidad en `docs/factibilidad.md`: comandos reproducibles para construir APK, verificar el artefacto, correr pruebas Rust, ejecutar `--dry-run` como plan sin hardware y reservar `--live-bulk-smoke` para prueba física explícita. Mantiene `--live-bulk-smoke` como smoke AOA bulk de un frame con framing `u32 LE stream_id + u32 LE payload_len + payload acotado + ACK Android`, sin afirmar video/cámara virtual/hardware, sin automatizar drivers/Zadig/WinUSB, sin ADB como transporte de producto y con validación física Samsung/Windows/macOS pendiente.
 - [ ] **T6 — Validación plataforma/dispositivo pendiente.** Registrar qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir advertencias de WinUSB/libusb como decisión manual del usuario, nunca automatizada. Mantener no-ADB como default; cualquier fallback de depuración USB solo se documenta después de pruebas específicas.
 
 ## Estrategia de entrega y slicing
@@ -100,7 +100,26 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 16. `feat: add Android accessory smoke APK` — APK Android mínimo instalable con UI visible en español, permiso de accesorio aprobado por el sistema, lectura de frame `u32 LE stream_id + u32 LE payload_len + payload`, respuesta ACK framed con el mismo protocolo y pruebas JVM automatizadas; commits `62795ea`, `9857589`, `dd736db`; revisión nativa aprobada y reconocida en lineage `review-e7808067fd67c3b1`.
 17. `fix: bound Android accessory smoke readiness` — resolver los advisories `R3-permission-state-never-resolved` y `R3-unbounded-accessory-read` con reducer/receiver liviano y sesión smoke acotada por timeout antes de uso físico; sin instalación/dispositivo. Commit `a0641b0`; revisión nativa aprobada y reconocida en lineage `review-8345144ca6a9ee5b`.
 18. `fix: bind Android permission result identity` — una solicitud de permiso Android se vincula a un accesorio específico, se consume una sola vez y rechaza callbacks wrong/duplicate/stale con estado visible. Commit `2aaa5be`; revisión nativa aprobada y reconocida en lineage `review-f288311aa738e1e1`.
-19. T5e previsto: `docs: define host phone USB smoke procedure` — comandos host↔phone, ruta Windows si es factible y validación hardware marcada pendiente.
+19. T5e candidato: `docs: define host phone USB smoke procedure` — comandos host↔phone, ruta Windows si es factible y validación hardware marcada pendiente.
+20. T6 previsto: `docs: record remaining USB platform validation gates` — Windows 11, macOS host real y Samsung reales quedan como validación física pendiente.
+
+
+## Verificación T5e
+
+La verificación local de T5e es documental y de comandos referenciados. No se instaló el APK, no se ejecutó en dispositivo físico, no se usó ADB como transporte de producto, no se cambiaron drivers ni asociaciones WinUSB/Zadig y no se afirma compatibilidad Samsung/hardware.
+
+### RED observado antes de la documentación
+
+- `grep -R "Smoke USB host↔teléfono" docs/uso.md docs/factibilidad.md`: no encontró la sección y confirmó que la guía smoke todavía faltaba.
+
+### GREEN observado
+
+- `grep -R "Smoke USB host↔teléfono" docs/uso.md docs/factibilidad.md`: encontró la sección `### 4.1 Smoke USB host↔teléfono del prototipo AOA` en `docs/uso.md`.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables up-to-date.
+- `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml`: pasó con 44 tests Rust.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta documentada.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: pasó con `BUILD SUCCESSFUL`; 19 tareas accionables up-to-date.
+- `git diff --check`: pasó sin salida.
 
 
 ## Verificación T5d2

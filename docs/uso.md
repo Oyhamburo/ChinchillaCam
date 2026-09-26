@@ -113,6 +113,69 @@ Estado técnico:
 - el hecho de que Android tenga protocolos USB accesorios no demuestra por sí solo que el host de escritorio en Windows/macOS ya funcione;
 - USB tethering no debe confundirse con transporte USB directo de video.
 
+### 4.1 Smoke USB host↔teléfono del prototipo AOA
+
+> Estado: guía de prueba manual para el prototipo de transporte. Todavía no es soporte de webcam, no valida Samsung reales, no instala drivers y no convierte ADB en transporte de producto.
+
+Objetivo del smoke:
+
+1. construir el APK Android de prueba;
+2. instalarlo manualmente en el teléfono si se decide ejecutar la prueba física;
+3. iniciar desde la app una solicitud explícita de permiso USB accessory;
+4. ejecutar el host Rust con `--live-bulk-smoke` contra un `VID:PID` explícito;
+5. comprobar un frame pequeño host→teléfono y un ACK teléfono→host.
+
+Preparación local automatizada:
+
+```bash
+ANDROID_HOME=$HOME/Library/Android/sdk \
+  "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" \
+  :android:usb-probe:assembleDebug
+
+test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk
+
+PATH=$HOME/.cargo/bin:$PATH \
+  cargo test --manifest-path desktop/usb-probe/Cargo.toml
+```
+
+APK esperado:
+
+```text
+android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk
+```
+
+Plan host sin tocar hardware:
+
+```bash
+PATH=$HOME/.cargo/bin:$PATH \
+  cargo run --manifest-path desktop/usb-probe/Cargo.toml -- \
+  --dry-run --device VID:PID
+```
+
+Ese comando solo imprime el plan AOA. No abre el dispositivo, no reclama endpoints y no valida hardware.
+
+Prueba física pendiente, cuando el usuario la autorice explícitamente:
+
+```bash
+PATH=$HOME/.cargo/bin:$PATH \
+  cargo run --manifest-path desktop/usb-probe/Cargo.toml -- \
+  --live-bulk-smoke --device VID:PID
+```
+
+Resultado esperado si el prototipo funciona en ese equipo:
+
+- en Android, la pantalla muestra que recibió un frame y envió un ACK para el mismo `stream_id`;
+- en host, el comando termina después de leer un frame de respuesta acotado;
+- el protocolo del frame es `u32` little-endian `stream_id`, `u32` little-endian `payload_len` y payload acotado;
+- cualquier timeout, permiso denegado, accesorio equivocado, callback duplicado/stale, descriptor inesperado o endpoint faltante debe fallar cerrado y mostrarse como diagnóstico, no como éxito parcial.
+
+Notas de plataforma:
+
+- Windows puede requerir una asociación manual compatible con libusb/WinUSB para que `rusb` acceda al dispositivo; esta guía no automatiza drivers, no recomienda Zadig como paso obligatorio y no cambia configuración del sistema.
+- macOS puede requerir permisos del sistema o acceso USB permitido por el usuario; todavía no hay validación en macOS real.
+- ADB puede usarse solo como herramienta externa de instalación si el usuario lo decide durante pruebas, pero no forma parte del transporte de producto ni de la aceptación USB de ChinchillaCam.
+- Hasta ejecutar esta prueba en dispositivos reales, no hay afirmación de compatibilidad con Samsung Galaxy Note10, Samsung Galaxy S24+, Windows 11 ni macOS 13+ Apple Silicon.
+
 ## 5. Uso por Wi‑Fi local
 
 Objetivo de uso:
