@@ -29,6 +29,29 @@ Construir el contrato local de sesión entre Android y desktop antes de transpor
 
 
 
+
+## Diseño T14 — una computadora activa
+
+T14 debe modelar autoridad de sesión antes de cualquier transporte real. Mientras el review nativo de T12/T11b/T13a siga pendiente, este bloque queda como planificación solamente: no agrega source ni tests nuevos.
+
+Alcance propuesto T14:
+
+- Definir un estado puro de autoridad local con `NoActiveDesktop`, `ActiveDesktop` y `HandoffPending` como modelo testeable.
+- Autorizar una sesión solo cuando el desktop presentado esté confiado, no revocado, no expirado y coincida con la fingerprint esperada.
+- Rechazar una segunda computadora activa con resultado tipado y mensaje UI español futuro: "Ya hay una computadora activa".
+- Permitir handoff explícito como acción separada, nunca como fallback silencioso.
+- Mantener `sessionId`/desktop activo separado del transporte; USB/Wi‑Fi solo podrán consultar esta autoridad cuando existan.
+- No abrir LAN, no crear listener, no tocar cámara, no integrar desktop, no asumir prueba de posesión hasta el gate pre-T17.
+
+Criterios de tests futuros:
+
+- Primera PC confiada pasa a activa.
+- Misma PC activa puede renovar sesión si la confianza sigue válida.
+- Segunda PC confiada se rechaza sin handoff.
+- Handoff explícito cambia la PC activa y registra evidencia de decisión.
+- PC desconocida, revocada, expirada o con fingerprint distinta no puede quedar activa.
+- Stop/forget/revoke de la PC activa libera o invalida autoridad según la acción, sin fallback automático a otra PC.
+
 ## Diseño T13a — persistencia de confianza local Android
 
 T13 se divide para mantener worktrees aislados: T13a implementa solo el seam Android de confianza local; el lado desktop queda fuera de este worktree y no se integra sin decisión fresca.
