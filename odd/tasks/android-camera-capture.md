@@ -573,3 +573,17 @@ T10c3 queda separado si T10c2 ya ocupa el lote: una Activity recreada debe consu
 - Lineage: `review-8a93c76b34342afd`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes: `R3-generation-tracker-race`, `R3-repeated-start-false-pass`, `R3-test-thread-cleanup`. No abrieron corrección para T10c2; quedan como hardening de tests/observabilidad si se toca de nuevo el drain loop.
+
+## Diseño T10c3 — Activity recreada se vincula al estado real del service
+
+T10c3 corrige la brecha de ownership UI después de T10b/T10c: una Activity recreada no debe confiar en un booleano propio perdido ni mostrar la cámara como detenida si el foreground service sigue `Starting`/`Running`; tampoco debe permitir Start repetido que abra una segunda cámara.
+
+Alcance T10c3:
+
+- Agregar API tipada y de sólo lectura para estado del service-owned pipeline en el proceso actual (por ejemplo store process-local del service/owner o binder/status simple), sin retener Activity.
+- La Activity al renderizar/volver a `onResume` debe consultar el estado real del service y mostrar acción Stop usable si el service está `Starting` o `Running`.
+- Start repetido desde Activity recreada mientras el service ya está `Starting`/`Running` debe ser tratado como estado existente, no como segundo start/cámara.
+- Stop explícito desde Activity recreada debe detener el service/pipeline y limpiar el estado process-local.
+- No confiar en `savedInstanceState` ni en booleanos locales como fuente de verdad de ownership.
+- Tests RED: estado process-local Running/Starting produce UI Stop después de recreación; Start repetido no invoca nuevo start si service ya activo; Stop recreado envía stop y estado vuelve a Stopped; no referencia Activity guardada.
+- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
