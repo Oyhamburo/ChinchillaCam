@@ -566,3 +566,10 @@ T10c2 reemplaza el drain loop basado en un booleano compartido por un job/genera
 ## Diseño T10c3 — binding de Activity a service-owned state
 
 T10c3 queda separado si T10c2 ya ocupa el lote: una Activity recreada debe consultar estado real del service/owner mediante API tipada de sólo lectura o binder/status process-local, mostrar Stop usable si el service está `Starting`/`Running`, y un Start repetido no debe abrir una segunda cámara. No confiar en booleanos guardados de Activity. No declarar M2 completo hasta cubrirlo.
+
+### Revisión nativa RDD T10c2
+
+- Candidato: `08c413f` contra base `d594adf`.
+- Lineage: `review-8a93c76b34342afd`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes: `R3-generation-tracker-race`, `R3-repeated-start-false-pass`, `R3-test-thread-cleanup`. No abrieron corrección para T10c2; quedan como hardening de tests/observabilidad si se toca de nuevo el drain loop.
