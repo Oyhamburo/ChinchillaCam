@@ -18,8 +18,10 @@ Construir la ruta Android desde selección de cámara hasta frames/encoder/metri
 
 - [x] T6: apertura `CameraDevice` acotada detrás de seam testeable. Abrir solo ID seleccionado que siga siendo `DirectOpenCandidate` y solo con permiso real concedido; errores tipados para sin selección, físico-only/stale, permiso faltante y fallo del opener; `StateCallback` maneja `onOpened`, `onDisconnected`, `onError`; cerrar recursos en stop/cancel; callbacks stale no activan cámara después de deselección. Sin sesión de captura, sin `ImageReader`, sin frames, sin encoder, sin streaming externo y sin pruebas físicas.
 - [x] T7: sesión de captura preview/frame source con recursos cerrables; no encoder aún.
-- [ ] T8: `MediaCodec` H.264/AVC MVP con state machine/fakes; producir chunks codificados o errores tipados.
-- [ ] T9: métricas Android de captura/encode visibles: FPS, dropped frames, latencia encode y estado.
+- [x] T8: `MediaCodec` H.264/AVC MVP con state machine/fakes; producir chunks codificados o errores tipados.
+- [ ] T8b: orquestador local cámara→encoder con fakes. Conectar selección directa actual + permiso `CAMERA` actual + acción explícita Start/Stop visible a la secuencia abrir cámara → configurar encoder Surface → sesión repeating → drenar chunks codificados acotados/tipados → stop/release en fallos y ciclo de vida, sin Activity real todavía. Debe corregir el advisory T7 `R3-stop-failure-cleanup` antes de captura prolongada.
+- [ ] T8c: cableado Activity visible Start/Stop del pipeline local. Integrar el orquestador T8b con `UsbProbeActivity` solo mientras la app está visible; cerrar en `onPause`/`onDestroy`; sin USB/Wi‑Fi/network/storage/FGS ni claim de producto.
+- [ ] T9: métricas Android de captura/encode visibles desde el pipeline real local: FPS, chunks drenados/dropped por backpressure, latencia encode y estado.
 - [ ] T10: foreground service/pantalla bloqueada experimental, con límites honestos y sin claims hasta prueba física.
 
 ## T6 límites de aceptación
@@ -153,3 +155,17 @@ T8 agrega un seam `MediaCodec` H.264/AVC con entrada por `Surface` propia del en
 - Lineage: `review-20f6156759bd8f98`.
 - Resultado: corrección validada, aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes del reviewer: `R3-002`, `R3-003`, `R3-004`, `R3-005`. No abrieron corrección para T8; quedan como hardening futuro antes de conectar pipeline prolongado real.
+
+
+## Reconciliación M2 después de T8
+
+La lectura estructural posterior a T8 confirmó que `UsbProbeActivity` no referencia todavía los seams de T6 (`CameraDeviceOpenBoundary`), T7 (`CameraCaptureSessionBoundary`) ni T8 (`H264EncoderBoundary`). Por eso T9 no puede inventar métricas sintéticas y T10 no debe construir un foreground service sin captura real. Se inserta trabajo reviewable entre T8 y T9:
+
+- **T8b — Orquestador local cámara→encoder.** Unidad pura/fake-first para coordinar selección directa actual, permiso `CAMERA` actual, apertura Camera2, arranque del encoder, sesión repeating al `EncoderInputSurface`, drain acotado de chunks y stop/release ante fallos. Sin `Activity`, USB, Wi‑Fi, storage, wire protocol, FGS ni pruebas físicas. Esta unidad debe corregir en el mismo límite el advisory T7 `R3-stop-failure-cleanup`: si `stopRepeating` falla, la sesión igualmente debe intentar cerrar recursos y reportar error tipado.
+- **T8c — Cableado Activity visible.** Unidad separada si T8b + UI excede el tamaño reviewable: agregar acción explícita Start/Stop en español a `UsbProbeActivity`, usar selección directa persistida y permiso actual, arrancar/parar solo mientras visible y cerrar en lifecycle. Sin transporte externo ni claims.
+
+T9 solo puede contar métricas a partir de estados/chunks/eventos del pipeline local de T8b/T8c. T10 solo puede evaluar FGS después de que el pipeline local esté cableado y cerrado de forma confiable.
+
+## Nota T10 — foreground service de cámara
+
+Para T10, la documentación oficial de Android indica que en API 34 el servicio con cámara debe declarar `foregroundServiceType="camera"`, permiso `FOREGROUND_SERVICE_CAMERA`, permiso genérico de foreground service y permiso runtime `CAMERA`. La restricción de permisos "while-in-use" implica que el FGS de cámara debe iniciarse mientras la Activity está visible; no basta con que `checkSelfPermission` diga concedido si el arranque ocurre desde background, pantalla bloqueada o callback tardío. T10 debe mantener notificación y acción de parada visible, y la continuidad con pantalla bloqueada queda sin claim hasta validación física.

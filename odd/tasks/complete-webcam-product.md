@@ -92,10 +92,12 @@ Para cada unidad de trabajo:
 ### M2 — Captura Android y encoder local
 
 5. **T6 — Apertura CameraDevice acotada.** Abrir solo ID directo seleccionado con fakes/adapter seam; errores tipados; sin streaming externo.
-6. **T7 — Sesión de captura preview/frame source.** Crear boundary para frames de video; cerrar recursos; no encoder aún.
-7. **T8 — MediaCodec encoder H.264/AVC MVP.** Encapsular encoder con tests de state machine/fakes; producir frames codificados o errores tipados.
-8. **T9 — Métricas Android de captura/encode.** FPS reales, frames dropped, encoder latency y estado visible.
-9. **T10 — Foreground service y pantalla bloqueada experimental.** Implementar servicio/notificación si necesario, con límites honestos; no declarar soporte hasta prueba física.
+6. **T7 — Sesión de captura preview/frame source.** Crear boundary para sesión Camera2 repeating hacia `Surface` inyectada; cerrar recursos; no encoder aún.
+7. **T8 — MediaCodec encoder H.264/AVC MVP.** Encapsular encoder con tests de state machine/fakes; producir chunks codificados o errores tipados.
+8. **T8b — Orquestador local cámara→encoder.** Conectar seams T6/T7/T8 con selección directa actual, permiso `CAMERA` actual y acción explícita Start/Stop; drenar chunks acotados/tipados y cerrar ante fallos/lifecycle; sin Activity real si se separa en T8c; sin USB/Wi‑Fi/network/storage. Corregir antes de captura prolongada el advisory T7 `R3-stop-failure-cleanup`.
+9. **T8c — Cableado Activity visible del pipeline local.** Integrar Start/Stop español en Android visible, cerrar en lifecycle y mantener cero transporte externo/FGS/claims; separar de T8b si el lote sería demasiado grande.
+10. **T9 — Métricas Android de captura/encode.** FPS reales, chunks drenados/dropped por backpressure, encoder latency y estado visible desde el pipeline local, no métricas sintéticas.
+11. **T10 — Foreground service y pantalla bloqueada experimental.** Implementar servicio/notificación si necesario, con límites honestos; no declarar soporte hasta prueba física.
 
 ### M3 — Pairing, autoridad local y framing de sesión
 
@@ -147,14 +149,15 @@ Para cada unidad de trabajo:
 
 ## Próxima unidad autorizada
 
-La próxima unidad de código recomendada es **M1/T2 — Adapter real CameraManager sin abrir cámara**.
+La próxima unidad de código recomendada en la rama actual es **M2/T8b — Orquestador local cámara→encoder**. T6, T7 y T8 existen como seams independientes; antes de métricas o foreground service se debe conectarlos con fakes y límites reviewables.
 
-Antes de escribir source para T2 se debe:
+Antes de escribir source para T8b se debe:
 
-- actualizar `odd/tasks/android-camera-catalog.md` con T2 detallado;
+- actualizar `odd/tasks/android-camera-capture.md` con el alcance T8b/T8c;
 - espejar en Engram;
-- escribir tests RED contra el adapter;
-- mantener superficies estrechas, probablemente `CameraCapabilityCatalog.kt`, nuevo test de adapter y ODD.
+- escribir tests RED del orquestador cámara→encoder;
+- mantener separado el cableado `UsbProbeActivity` si el lote excede tamaño reviewable;
+- mantener sin USB/Wi‑Fi/network/storage/FGS/pruebas físicas ni claims.
 
 ## Decisiones humanas inevitables conocidas
 
