@@ -474,3 +474,10 @@ T10b transfiere el ownership del pipeline local cámara→encoder desde `UsbProb
 - `VisibleCameraForegroundServicePipelineOwner` no requiere referencia a Activity; envuelve el pipeline y drain loop propios del service.
 - La Activity muestra estado honesto de servicio solicitado/activo en español y delega el stop explícito al service.
 - No se agrega USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims de compatibilidad/pantalla bloqueada.
+
+### Revisión nativa RDD T10b
+
+- Candidato: `bdceec7` contra base `ea3394c`.
+- Lineage: `review-f79a78cb39273bd6`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-activity-recreation-ownership`, `R3-drain-stop-race`. No abrieron corrección para T10b; quedan para T10c/hardening de binding UI y carreras finas de drain.
