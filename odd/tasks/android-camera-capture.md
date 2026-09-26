@@ -481,3 +481,17 @@ T10b transfiere el ownership del pipeline local cámara→encoder desde `UsbProb
 - Lineage: `review-f79a78cb39273bd6`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes del reviewer: `R3-activity-recreation-ownership`, `R3-drain-stop-race`. No abrieron corrección para T10b; quedan para T10c/hardening de binding UI y carreras finas de drain.
+
+## Diseño T10c1 — corregir deadlock de arranque FGS/cámara
+
+T10c1 corrige un blocker funcional detectado por readback estructural en T10b: `VisibleCameraForegroundService.onStartCommand` corre en main thread y llama sincrónicamente a `pipelineOwner.handleStartCommand`; el pipeline usa `AndroidVisibleCameraPipelineLauncher` con `waitForOpen`/`waitForCapture`, mientras los callbacks Camera2 se enrutan al `mainHandler`. En dispositivo real, el main thread queda bloqueado esperando callbacks que no pueden ejecutarse, por lo que la captura puede timeoutear siempre o acercarse a ANR. T10c1 debe eliminar esa posibilidad antes de M2/M3.
+
+Alcance T10c1:
+
+- `onStartCommand(ACTION_START)` debe llamar `startForeground` pronto en main cuando el intent visible explícito es estructuralmente válido, pero no debe abrir cámara ni esperar captura en main thread.
+- La apertura/configuración de cámara debe ejecutarse fuera del main thread.
+- Los callbacks Camera2 usados por el pipeline del service deben usar un `HandlerThread`/handler independiente del main looper, no `Handler(Looper.getMainLooper())`.
+- STOP/destrucción durante arranque pendiente debe cancelar por generación, volver pronto y cerrar recursos tardíos; no debe quedar bloqueado por locks largos.
+- Si `startForeground` lanza `SecurityException` o `ForegroundServiceStartNotAllowedException` por token visible stale/política Android, el service debe fallar seguro: no abrir cámara, detenerse y no reclamar soporte.
+- Tests RED: comando start no invoca pipeline start sincrónicamente en main; stop puede ejecutarse mientras start background está bloqueado; callbacks no usan main handler en service factory; foreground exception evita abrir cámara.
+- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
