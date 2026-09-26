@@ -144,3 +144,12 @@ T8 agrega un seam `MediaCodec` H.264/AVC con entrada por `Surface` propia del en
 - `stop` y `cancel` son idempotentes y devuelven errores tipados de cierre/release.
 - `AndroidH264EncoderGateway` compila contra `MediaCodec.createEncoderByType`, `MediaFormat`, `configure`, `createInputSurface`, `start`, `dequeueOutputBuffer`, `getOutputBuffer` y `releaseOutputBuffer`.
 - No hay audio, almacenamiento, formato wire, transporte USB/Wi‑Fi, integración Activity, foreground service, prueba física ni claim de producto funcional.
+
+### Revisión nativa RDD T8
+
+- Candidato inicial: `a0fc849` contra base `4f9a6f4`.
+- Hallazgo bloqueante corregido: `R3-001`; `MediaCodec.createEncoderByType` puede lanzar `java.io.IOException`, y el adapter debía devolver `H264EncoderStartOutcome.Failed` en lugar de escapar el contrato tipado.
+- Corrección local: `430668e` (`fix: map encoder IO startup failure`) agrega manejo explícito de `java.io.IOException` como `encoder unavailable`.
+- Lineage: `review-20f6156759bd8f98`.
+- Resultado: corrección validada, aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-002`, `R3-003`, `R3-004`, `R3-005`. No abrieron corrección para T8; quedan como hardening futuro antes de conectar pipeline prolongado real.
