@@ -44,6 +44,37 @@ class CameraCatalogUiPlannerTest {
         assertFalse(ui.rows[1].selected)
     }
 
+
+    @Test
+    fun requestedDirectCandidateCanBeSelectedAmongMultipleDirectCameras() {
+        val snapshot = CameraCatalogSnapshot(
+            entries = listOf(
+                CameraCatalogEntry(
+                    id = "0",
+                    role = CameraIdRole.DirectOpenCandidate,
+                    facing = CapabilityState.Known(CameraFacing.Back),
+                    outputSizes = CapabilityState.Unknown("not needed"),
+                    fpsRanges = CapabilityState.Unknown("not needed"),
+                    controls = CapabilityState.Unknown("not needed"),
+                ),
+                CameraCatalogEntry(
+                    id = "1",
+                    role = CameraIdRole.DirectOpenCandidate,
+                    facing = CapabilityState.Known(CameraFacing.Front),
+                    outputSizes = CapabilityState.Unknown("not needed"),
+                    fpsRanges = CapabilityState.Unknown("not needed"),
+                    controls = CapabilityState.Unknown("not needed"),
+                ),
+            ),
+        )
+
+        val ui = CameraCatalogUiPlanner.plan(snapshot = snapshot, requestedSelectionId = "1")
+
+        assertEquals("1", ui.selectedCameraId)
+        assertFalse(ui.rows[0].selected)
+        assertTrue(ui.rows[1].selected)
+    }
+
     @Test
     fun spanishCatalogUiExplainsWhenThereAreNoDirectCandidatesWithoutHardwareClaim() {
         val snapshot = CameraCatalogSnapshot(entries = emptyList())

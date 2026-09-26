@@ -24,6 +24,7 @@ class UsbProbeActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var safety: TextView
     private lateinit var cameraCatalog: TextView
+    private lateinit var cameraRows: LinearLayout
     private lateinit var action: Button
     private var selectedCameraId: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -77,6 +78,7 @@ class UsbProbeActivity : Activity() {
         status = TextView(this).apply { textSize = 16f }
         safety = TextView(this).apply { textSize = 14f }
         cameraCatalog = TextView(this).apply { textSize = 14f }
+        cameraRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         action = Button(this)
 
         val layout = LinearLayout(this).apply {
@@ -88,6 +90,7 @@ class UsbProbeActivity : Activity() {
             addView(action, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(safety, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(cameraCatalog, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(cameraRows, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
         setContentView(layout)
     }
@@ -114,7 +117,29 @@ class UsbProbeActivity : Activity() {
         ).snapshot()
         val ui = CameraCatalogUiPlanner.plan(snapshot = snapshot, requestedSelectionId = selectedCameraId)
         selectedCameraId = ui.selectedCameraId
-        cameraCatalog.text = ui.toDisplayText()
+        cameraCatalog.text = "${ui.title}\n${ui.summary}"
+        cameraRows.removeAllViews()
+        ui.rows.forEach { row ->
+            cameraRows.addView(cameraRowView(row), ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    private fun cameraRowView(row: CameraCatalogUiRow): TextView = if (row.selectable) {
+        Button(this).apply {
+            text = "${row.title}\n${row.status}"
+            isAllCaps = false
+            isEnabled = true
+            setOnClickListener {
+                selectedCameraId = row.cameraId
+                renderCameraCatalog()
+            }
+        }
+    } else {
+        TextView(this).apply {
+            text = "${row.title}\n${row.status}"
+            textSize = 14f
+            isEnabled = false
+        }
     }
 
     private fun requestPermissionFromUserAction() {
