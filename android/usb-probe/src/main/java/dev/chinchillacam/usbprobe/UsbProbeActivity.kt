@@ -233,7 +233,7 @@ class UsbProbeActivity : Activity() {
 
     private fun renderLocalCameraPipeline() {
         val ui = localCameraController.currentState()
-        localCameraStatus.text = "${ui.title}\n${ui.detail}"
+        localCameraStatus.text = "${ui.title}\n${ui.detail}\n${ui.metricsText}"
         localCameraAction.text = ui.primaryAction
         localCameraAction.isEnabled = ui.primaryActionEnabled
     }
@@ -252,11 +252,10 @@ class UsbProbeActivity : Activity() {
         val snapshot = currentCameraCatalogSnapshot()
         val selected = selectedCameraId ?: cameraSelectionPreference.restoreSelection(snapshot)
         val permissionGranted = currentCameraPermissionState() == CameraPermissionUiModel.Granted
-        localCameraStatus.text = "Cámara local\nIniciando cámara local visible…"
-        localCameraAction.text = "Detener cámara local"
-        localCameraAction.isEnabled = true
+        val startToken = localCameraController.prepareStart() ?: return
+        renderLocalCameraPipeline()
         Thread {
-            localCameraController.start(snapshot, selected, permissionGranted)
+            localCameraController.completeStart(startToken, snapshot, selected, permissionGranted)
             localCameraDrainActive = localCameraController.currentState().status == VisibleCameraPipelineStatus.Running
             runOnUiThread { renderLocalCameraPipeline() }
             drainLocalCameraWhileRunning()

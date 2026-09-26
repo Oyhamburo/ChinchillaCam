@@ -3,6 +3,7 @@ package dev.chinchillacam.usbprobe
 class VisibleCameraPipelineController(
     private val launcher: VisibleCameraPipelineLauncher,
     private val encoderConfig: H264EncoderConfig,
+    private val metrics: LocalPipelineMetricsTracker = LocalPipelineMetricsTracker(SystemPipelineMetricsClock()),
 ) {
     private var state: VisibleCameraPipelineUiState = VisibleCameraPipelineUiState(
         status = VisibleCameraPipelineStatus.Idle,
@@ -10,6 +11,7 @@ class VisibleCameraPipelineController(
         detail = "Lista para iniciar una prueba local visible.",
         primaryAction = "Iniciar cámara local",
         primaryActionEnabled = true,
+        metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
     )
     private var handle: VisibleCameraPipelineHandle? = null
     private var startGeneration: Int = 0
@@ -27,6 +29,7 @@ class VisibleCameraPipelineController(
             detail = "Iniciando cámara local visible…",
             primaryAction = "Detener cámara local",
             primaryActionEnabled = true,
+            metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
         )
         return startGeneration
     }
@@ -48,6 +51,7 @@ class VisibleCameraPipelineController(
         cameraPermissionGranted: Boolean,
     ): VisibleCameraPipelineUiState {
         if (token != startGeneration || state.status != VisibleCameraPipelineStatus.Starting) return state
+        metrics.reset()
         if (!cameraPermissionGranted) return setError("Permiso de cámara requerido antes de iniciar.")
         if (selectedCameraId == null || !snapshot.isDirectCandidate(selectedCameraId)) {
             return setError("Selecciona una cámara directa antes de iniciar.")
@@ -72,7 +76,9 @@ class VisibleCameraPipelineController(
     @Synchronized
     fun drainOnce(maxOutputs: Int): VisibleCameraPipelineUiState {
         val running = handle ?: return state
-        return when (val drained = running.drainEncoded(maxOutputs)) {
+        val drained = running.drainEncoded(maxOutputs)
+        metrics.recordDrain(drained)
+        return when (drained) {
             is H264DrainResult.Chunks -> {
                 running.consumeEncoded(drained.chunks.size)
                 setRunning("Cámara local activa. ${drained.chunks.size} chunks codificados descartados en memoria.")
@@ -108,6 +114,7 @@ class VisibleCameraPipelineController(
                 detail = successMessage,
                 primaryAction = "Iniciar cámara local",
                 primaryActionEnabled = true,
+                metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
             )
             return state
         }
@@ -119,6 +126,7 @@ class VisibleCameraPipelineController(
                 detail = successMessage,
                 primaryAction = "Iniciar cámara local",
                 primaryActionEnabled = true,
+                metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
             )
             is CameraEncoderPipelineStopResult.Failed -> VisibleCameraPipelineUiState(
                 status = VisibleCameraPipelineStatus.Error,
@@ -126,6 +134,7 @@ class VisibleCameraPipelineController(
                 detail = "La cámara se detuvo con errores: ${stopped.reasons.joinToString()}",
                 primaryAction = "Iniciar cámara local",
                 primaryActionEnabled = true,
+                metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
             )
         }
         return state
@@ -138,6 +147,7 @@ class VisibleCameraPipelineController(
             detail = detail,
             primaryAction = "Detener cámara local",
             primaryActionEnabled = true,
+            metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
         )
         return state
     }
@@ -150,6 +160,7 @@ class VisibleCameraPipelineController(
             detail = detail,
             primaryAction = "Iniciar cámara local",
             primaryActionEnabled = true,
+            metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
         )
         return state
     }
@@ -165,6 +176,7 @@ data class VisibleCameraPipelineUiState(
     val detail: String,
     val primaryAction: String,
     val primaryActionEnabled: Boolean,
+    val metricsText: String = "",
 )
 
 enum class VisibleCameraPipelineStatus {

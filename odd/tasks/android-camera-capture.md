@@ -21,7 +21,7 @@ Construir la ruta Android desde selección de cámara hasta frames/encoder/metri
 - [x] T8: `MediaCodec` H.264/AVC MVP con state machine/fakes; producir chunks codificados o errores tipados.
 - [x] T8b: orquestador local cámara→encoder con fakes. Conectar selección directa actual + permiso `CAMERA` actual + acción explícita Start/Stop visible a la secuencia abrir cámara → configurar encoder Surface → sesión repeating → drenar chunks codificados acotados/tipados → stop/release en fallos y ciclo de vida, sin Activity real todavía. Debe corregir el advisory T7 `R3-stop-failure-cleanup` antes de captura prolongada.
 - [x] T8c: cableado Activity visible Start/Stop del pipeline local. Integrar el orquestador T8b con `UsbProbeActivity` solo mientras la app está visible; cerrar en `onPause`/`onDestroy`; sin USB/Wi‑Fi/network/storage/FGS ni claim de producto.
-- [ ] T9: métricas Android de captura/encode visibles desde el pipeline real local: FPS, chunks drenados/dropped por backpressure, latencia encode y estado.
+- [x] T9: métricas Android de captura/encode visibles desde el pipeline real local: FPS, chunks drenados/dropped por backpressure, latencia encode y estado.
 - [ ] T10: foreground service/pantalla bloqueada experimental, con límites honestos y sin claims hasta prueba física.
 
 ## T6 límites de aceptación
@@ -271,3 +271,27 @@ Límites T9:
 ## Puerta T8d antes de T10
 
 El advisory `R3-start-lock-blocks-ui-stop` de T8c queda como puerta de privacidad/seguridad antes de T10: si el arranque está pendiente, Stop/onStop debe cancelar pronto y cerrar cualquier recurso tardío. Si T9 no lo resuelve explícitamente, debe hacerse como T8d con RED/GREEN y revisión nativa antes de cualquier FGS o pantalla bloqueada. No se debe auto-resumir captura tras cambios de ciclo de vida.
+
+## Verificación T9
+
+T9 agrega métricas visibles desde eventos reales del pipeline local: chunks codificados drenados/descartados, bytes descartados, drops por backpressure y FPS de chunks codificados. No agrega transporte, storage ni calidad de red.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `LocalPipelineMetricsTracker`, `PipelineMetricsClock`, `MetricValue`, `MetricEstimate`, `LocalPipelineMetricsFormatter` y `metricsText` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date en la corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+
+### Límites y decisiones T9
+
+- `LocalPipelineMetricsTracker` usa `PipelineMetricsClock` inyectado para tests deterministas y `SystemPipelineMetricsClock` en producción.
+- `encodedFps` empieza como `Unknown`/"sin muestras aún" y solo reporta `0.0` después de una ventana observada sin muestras vigentes.
+- Los chunks drenados se cuentan como descartados en memoria junto con bytes; `BackpressureExceeded` incrementa drops de backpressure local.
+- La latencia encode se muestra como estimación y solo cuando `presentationTimeUs` no está en el futuro respecto del reloj local; si los relojes no son comparables queda `Unknown`.
+- `VisibleCameraPipelineController` actualiza `metricsText` desde resultados reales de `drainEncoded`; `UsbProbeActivity` muestra esas métricas en la sección de cámara local.
+- No se introduce calidad de red, transporte USB/Wi‑Fi, storage, audio, wire protocol, FGS, prueba física ni claim de producto funcional.
