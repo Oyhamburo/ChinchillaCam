@@ -389,3 +389,18 @@ T9b corrige las métricas visibles para que el texto no sobredeclare FPS ni late
 - Lineage: `review-14346f5071aab802`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes del reviewer: `R3-batching-dependent-fps`, `R3-restart-test-gap`. No abrieron corrección para T9b; quedan como hardening posterior si se requiere mayor precisión temporal o cobertura de reinicio end-to-end.
+
+## Diseño T10 — servicio foreground de cámara visible
+
+T10 mueve la captura local visible a un contrato de foreground service de cámara sin hacer claims de persistencia con pantalla bloqueada ni soporte físico. La activación sigue siendo sólo por acción explícita del usuario con la Activity visible.
+
+Alcance T10:
+
+- Manifest declara permisos `FOREGROUND_SERVICE` y `FOREGROUND_SERVICE_CAMERA`, además del `CAMERA` existente.
+- Manifest declara un `Service` no exportado con `android:foregroundServiceType="camera"`.
+- El arranque del servicio se permite sólo desde flujo visible de la Activity después de re-leer permiso runtime CAMERA y selección directa actual; no hay auto-start por resume, permiso callback, boot, USB ni recreación.
+- El servicio debe publicar notificación foreground con texto honesto: prueba local visible; video codificado descartado en memoria; no transmite ni graba.
+- Stop de usuario y `onStop` de Activity deben detener la captura local y/o pedir al servicio que se detenga; la notificación también debe ofrecer detener.
+- Debido a restricciones de permiso while-in-use, T10 no promete comenzar cámara desde background/lock; si la app ya no está visible antes de start foreground, el flujo debe fallar seguro.
+- Tests RED iniciales: permisos/manifest/type, start planner sólo visible+permiso+selección directa, bloqueo de start no visible, stop action detiene servicio/controlador, texto de notificación sin claims de transmisión/grabación/pantalla bloqueada.
+- Sin Wi‑Fi/USB/network/storage/audio/wire protocol, pruebas físicas ni claims Samsung/Windows/macOS.
