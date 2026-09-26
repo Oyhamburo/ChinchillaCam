@@ -19,7 +19,7 @@ class CameraEncoderPipelineTest {
 
         val result = pipeline.start(sampleSnapshot(), selectedCameraId = "camera-1", cameraPermissionGranted = true, encoderConfig = sampleEncoderConfig())
 
-        assertTrue(result is CameraEncoderPipelineStartResult.Started)
+        assertTrue(result is CameraEncoderPipelineStartResult.ConfiguringCapture)
         assertEquals(listOf("camera-1"), openGateway.requestedCameraIds)
         assertEquals(listOf(sampleEncoderConfig()), encoderGateway.configs)
         assertEquals(listOf("camera-1:encoder-input"), captureGateway.requests)
@@ -38,7 +38,7 @@ class CameraEncoderPipelineTest {
         opening.openSession.callbacks.onOpened(CloseTrackingPipelineCamera("camera-1"))
         val continued = opening.continueAfterCameraOpened()
 
-        assertTrue(continued is CameraEncoderPipelineStartResult.Started)
+        assertTrue(continued is CameraEncoderPipelineStartResult.ConfiguringCapture)
         assertEquals(listOf("camera-1:encoder-input"), captureGateway.requests)
     }
 
@@ -89,15 +89,39 @@ class CameraEncoderPipelineTest {
     }
 
     @Test
+    fun asynchronousCaptureConfigureFailureStopsEncoderAndCameraBeforeStarted() {
+        val cameraDevice = CloseTrackingPipelineCamera("camera-1")
+        val encoderSurface = PipelineEncoderSurface("encoder-input")
+        val codec = PipelineCodecSession(encoderSurface)
+        val captureGateway = RecordingCaptureGateway(CaptureSessionRequestOutcome.Submitted)
+        val configuring = pipeline(
+            openGateway = RecordingOpenGateway { _, callbacks -> callbacks.onOpened(cameraDevice) },
+            encoderGateway = RecordingEncoderGateway(H264EncoderStartOutcome.Started(encoderSurface, codec)),
+            captureGateway = captureGateway,
+        ).start(sampleSnapshot(), "camera-1", true, sampleEncoderConfig()) as CameraEncoderPipelineStartResult.ConfiguringCapture
+
+        captureGateway.callbacks.single().onConfigureFailed(CloseTrackingPipelineRepeatingSession("camera-1"))
+        val result = configuring.continueAfterCaptureConfigured()
+
+        assertEquals(CameraEncoderPipelineStartResult.Failed("capture configuration failed"), result)
+        assertEquals(1, codec.stopCount)
+        assertEquals(1, codec.releaseCount)
+        assertEquals(1, cameraDevice.closeCount)
+    }
+
+    @Test
     fun drainReturnsEncodedChunksFromStartedPipeline() {
         val encoderSurface = PipelineEncoderSurface("encoder-input")
         val codec = PipelineCodecSession(encoderSurface)
         codec.outputs += H264CodecOutput.Buffer(7, ByteBuffer.wrap(byteArrayOf(9, 1, 2, 3, 9)), H264BufferInfo(1, 3, 123L, H264BufferFlags.KEY_FRAME))
-        val started = pipeline(
+        val captureGateway = RecordingCaptureGateway(CaptureSessionRequestOutcome.Submitted)
+        val configuring = pipeline(
             openGateway = RecordingOpenGateway { _, callbacks -> callbacks.onOpened(CloseTrackingPipelineCamera("camera-1")) },
             encoderGateway = RecordingEncoderGateway(H264EncoderStartOutcome.Started(encoderSurface, codec)),
-            captureGateway = RecordingCaptureGateway(CaptureSessionRequestOutcome.Submitted),
-        ).start(sampleSnapshot(), "camera-1", cameraPermissionGranted = true, encoderConfig = sampleEncoderConfig()) as CameraEncoderPipelineStartResult.Started
+            captureGateway = captureGateway,
+        ).start(sampleSnapshot(), "camera-1", cameraPermissionGranted = true, encoderConfig = sampleEncoderConfig()) as CameraEncoderPipelineStartResult.ConfiguringCapture
+        captureGateway.callbacks.single().onConfigured(CloseTrackingPipelineRepeatingSession("camera-1"))
+        val started = configuring.continueAfterCaptureConfigured() as CameraEncoderPipelineStartResult.Started
 
         val drained = started.session.drainEncoded(maxOutputs = 1) as H264DrainResult.Chunks
 
@@ -113,13 +137,14 @@ class CameraEncoderPipelineTest {
         val encoderSurface = PipelineEncoderSurface("encoder-input")
         val codec = PipelineCodecSession(encoderSurface)
         val captureGateway = RecordingCaptureGateway(CaptureSessionRequestOutcome.Submitted)
-        val started = pipeline(
+        val configuring = pipeline(
             openGateway = RecordingOpenGateway { _, callbacks -> callbacks.onOpened(cameraDevice) },
             encoderGateway = RecordingEncoderGateway(H264EncoderStartOutcome.Started(encoderSurface, codec)),
             captureGateway = captureGateway,
-        ).start(sampleSnapshot(), "camera-1", true, sampleEncoderConfig()) as CameraEncoderPipelineStartResult.Started
+        ).start(sampleSnapshot(), "camera-1", true, sampleEncoderConfig()) as CameraEncoderPipelineStartResult.ConfiguringCapture
         val repeatingSession = CloseTrackingPipelineRepeatingSession("camera-1")
         captureGateway.callbacks.single().onConfigured(repeatingSession)
+        val started = configuring.continueAfterCaptureConfigured() as CameraEncoderPipelineStartResult.Started
 
         val stopResult = started.session.stop()
 

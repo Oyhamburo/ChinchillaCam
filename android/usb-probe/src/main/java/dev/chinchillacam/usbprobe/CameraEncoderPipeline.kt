@@ -40,6 +40,13 @@ sealed class CameraEncoderPipelineStartResult {
         fun cancel(): CameraEncoderPipelineStopResult = pendingStart.cancel()
     }
 
+    data class ConfiguringCapture(
+        private val pendingCapture: PendingCameraEncoderCaptureStart,
+    ) : CameraEncoderPipelineStartResult() {
+        fun continueAfterCaptureConfigured(): CameraEncoderPipelineStartResult = pendingCapture.continueAfterCaptureConfigured()
+        fun cancel(): CameraEncoderPipelineStopResult = pendingCapture.cancel()
+    }
+
     data class Started(val session: CameraEncoderPipelineSession) : CameraEncoderPipelineStartResult()
     data class Failed(val reason: String) : CameraEncoderPipelineStartResult()
 }
@@ -94,14 +101,63 @@ class PendingCameraEncoderPipelineStart internal constructor(
                 stopEncoderAndCamera(encoderStarted.session, openSession)
                 CameraEncoderPipelineStartResult.Failed(captureResult.reason)
             }
-            is CameraCaptureStartResult.ConfigurationSubmitted -> CameraEncoderPipelineStartResult.Started(
-                CameraEncoderPipelineSession(
+            is CameraCaptureStartResult.ConfigurationSubmitted -> CameraEncoderPipelineStartResult.ConfiguringCapture(
+                PendingCameraEncoderCaptureStart(
                     openSession = openSession,
                     encoderSession = encoderStarted.session,
                     captureSession = captureResult.session,
                 ),
             )
         }
+    }
+}
+
+class PendingCameraEncoderCaptureStart internal constructor(
+    private val openSession: CameraOpenSession,
+    private val encoderSession: H264EncoderSession,
+    private val captureSession: RepeatingCaptureSession,
+) {
+    private var completed: Boolean = false
+
+    @Synchronized
+    fun continueAfterCaptureConfigured(): CameraEncoderPipelineStartResult {
+        if (completed) return CameraEncoderPipelineStartResult.Failed("capture start already completed")
+        return when {
+            captureSession.isRepeating -> {
+                completed = true
+                CameraEncoderPipelineStartResult.Started(
+                    CameraEncoderPipelineSession(
+                        openSession = openSession,
+                        encoderSession = encoderSession,
+                        captureSession = captureSession,
+                    ),
+                )
+            }
+            captureSession.isClosed -> {
+                completed = true
+                stopEncoderAndCamera(encoderSession, openSession)
+                CameraEncoderPipelineStartResult.Failed("capture configuration failed")
+            }
+            else -> CameraEncoderPipelineStartResult.ConfiguringCapture(this)
+        }
+    }
+
+    @Synchronized
+    fun cancel(): CameraEncoderPipelineStopResult {
+        if (completed) return CameraEncoderPipelineStopResult.AlreadyStopped
+        completed = true
+        val failures = mutableListOf<String>()
+        when (val captureStop = captureSession.stop()) {
+            RepeatingCaptureStopResult.Stopped,
+            RepeatingCaptureStopResult.AlreadyStopped -> Unit
+            is RepeatingCaptureStopResult.Failed -> failures += captureStop.reasons
+        }
+        when (val stopped = stopEncoderAndCamera(encoderSession, openSession)) {
+            CameraEncoderPipelineStopResult.Stopped,
+            CameraEncoderPipelineStopResult.AlreadyStopped -> Unit
+            is CameraEncoderPipelineStopResult.Failed -> failures += stopped.reasons
+        }
+        return if (failures.isEmpty()) CameraEncoderPipelineStopResult.Stopped else CameraEncoderPipelineStopResult.Failed(failures)
     }
 }
 
