@@ -11,6 +11,7 @@ import java.io.OutputStream
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.UUID
 import java.util.concurrent.TimeoutException
 
 @JvmInline
@@ -232,6 +233,140 @@ object AccessoryPermissionPlanner {
     )
 }
 
+@JvmInline
+value class PermissionRequestToken(val value: String) {
+    init {
+        require(value.isNotBlank()) { "permission request token must not be blank" }
+    }
+
+    companion object {
+        fun newRandom(): PermissionRequestToken = PermissionRequestToken(UUID.randomUUID().toString())
+    }
+}
+
+/**
+ * Stable app-local identity used to bind a permission callback to the user-selected accessory.
+ * Android does not promise parcel/object identity stability across the requestPermission callback,
+ * so the app compares the fields exposed by UsbAccessory. Blank/null framework fields are kept as
+ * empty strings; this is sufficient for deterministic JVM fakes and callback matching but cannot
+ * prove physical hardware identity when a device exposes non-unique or missing descriptors.
+ */
+data class AccessoryFingerprint(
+    val manufacturer: String,
+    val model: String,
+    val description: String,
+    val version: String,
+    val uri: String,
+    val serial: String,
+) {
+    fun stableString(): String = listOf(manufacturer, model, description, version, uri, serial)
+        .joinToString(separator = "\u001f") { it.replace("\u001f", "\\u001f") }
+
+    companion object {
+        fun fromFields(
+            manufacturer: String?,
+            model: String?,
+            description: String?,
+            version: String?,
+            uri: String?,
+            serial: String?,
+        ): AccessoryFingerprint = AccessoryFingerprint(
+            manufacturer = manufacturer.orEmpty(),
+            model = model.orEmpty(),
+            description = description.orEmpty(),
+            version = version.orEmpty(),
+            uri = uri.orEmpty(),
+            serial = serial.orEmpty(),
+        )
+
+        fun fromStableString(value: String?): AccessoryFingerprint? {
+            val parts = value?.split('\u001f') ?: return null
+            if (parts.size != 6) return null
+            return AccessoryFingerprint(
+                manufacturer = parts[0],
+                model = parts[1],
+                description = parts[2],
+                version = parts[3],
+                uri = parts[4],
+                serial = parts[5],
+            )
+        }
+
+        fun fromUsbAccessory(accessory: UsbAccessory): AccessoryFingerprint = fromFields(
+            manufacturer = accessory.manufacturer,
+            model = accessory.model,
+            description = accessory.description,
+            version = accessory.version,
+            uri = accessory.uri,
+            serial = accessory.serial,
+        )
+    }
+}
+
+data class PendingAccessoryPermissionRequest(
+    val token: PermissionRequestToken,
+    val fingerprint: AccessoryFingerprint,
+    val expiresAtMillis: Long,
+    val consumed: Boolean = false,
+)
+
+sealed class PermissionCallbackDecision {
+    data class Valid(val callback: AccessoryPermissionCallback) : PermissionCallbackDecision()
+    object WrongAccessory : PermissionCallbackDecision()
+    object DuplicateOrConsumed : PermissionCallbackDecision()
+    object StaleOrMissingRequest : PermissionCallbackDecision()
+}
+
+class AccessoryPermissionRequestGate(
+    private val timeoutMillis: Long,
+) {
+    init {
+        require(timeoutMillis > 0) { "timeoutMillis must be positive" }
+    }
+
+    private var current: PendingAccessoryPermissionRequest? = null
+
+    fun beginRequest(
+        fingerprint: AccessoryFingerprint,
+        nowMillis: Long,
+        token: PermissionRequestToken = PermissionRequestToken.newRandom(),
+    ): PendingAccessoryPermissionRequest {
+        val request = PendingAccessoryPermissionRequest(
+            token = token,
+            fingerprint = fingerprint,
+            expiresAtMillis = nowMillis + timeoutMillis,
+        )
+        current = request
+        return request
+    }
+
+    fun retireExpired(nowMillis: Long) {
+        val request = current ?: return
+        if (!request.consumed && nowMillis >= request.expiresAtMillis) {
+            current = null
+        }
+    }
+
+    fun classifyCallback(
+        token: PermissionRequestToken?,
+        fingerprint: AccessoryFingerprint?,
+        callback: AccessoryPermissionCallback,
+        nowMillis: Long,
+    ): PermissionCallbackDecision {
+        val request = current ?: return PermissionCallbackDecision.StaleOrMissingRequest
+        if (token == null || token != request.token || nowMillis >= request.expiresAtMillis) {
+            if (!request.consumed && nowMillis >= request.expiresAtMillis) current = null
+            return PermissionCallbackDecision.StaleOrMissingRequest
+        }
+        if (request.consumed) return PermissionCallbackDecision.DuplicateOrConsumed
+        if (fingerprint != null && fingerprint != request.fingerprint) return PermissionCallbackDecision.WrongAccessory
+        if (fingerprint == null && callback == AccessoryPermissionCallback.Granted) return PermissionCallbackDecision.WrongAccessory
+
+        current = request.copy(consumed = true)
+        return PermissionCallbackDecision.Valid(callback)
+    }
+}
+
 data class UsbProbeUiState(
     val title: String,
     val statusText: String,
@@ -268,6 +403,7 @@ sealed class AccessoryPermissionCallback {
 sealed class AccessoryPermissionEvent {
     object Requested : AccessoryPermissionEvent()
     data class Callback(val callback: AccessoryPermissionCallback) : AccessoryPermissionEvent()
+    data class CallbackDecision(val decision: PermissionCallbackDecision) : AccessoryPermissionEvent()
     object CallbackTimedOut : AccessoryPermissionEvent()
 }
 
@@ -279,6 +415,9 @@ sealed class AccessoryPermissionUiModel {
     object MissingAccessory : AccessoryPermissionUiModel()
     object MissingPermissionResult : AccessoryPermissionUiModel()
     object CallbackMissingOrCanceled : AccessoryPermissionUiModel()
+    object RejectedWrongAccessory : AccessoryPermissionUiModel()
+    object RejectedDuplicateOrConsumed : AccessoryPermissionUiModel()
+    object RejectedStaleOrMissingRequest : AccessoryPermissionUiModel()
 }
 
 object AccessoryPermissionLifecycleReducer {
@@ -289,12 +428,20 @@ object AccessoryPermissionLifecycleReducer {
         } else {
             current
         }
-        is AccessoryPermissionEvent.Callback -> when (event.callback) {
-            AccessoryPermissionCallback.Granted -> AccessoryPermissionUiModel.Granted
-            AccessoryPermissionCallback.Denied -> AccessoryPermissionUiModel.Denied
-            AccessoryPermissionCallback.MissingAccessory -> AccessoryPermissionUiModel.MissingAccessory
-            AccessoryPermissionCallback.MissingPermissionResult -> AccessoryPermissionUiModel.MissingPermissionResult
+        is AccessoryPermissionEvent.Callback -> resolveCallback(event.callback)
+        is AccessoryPermissionEvent.CallbackDecision -> when (val decision = event.decision) {
+            is PermissionCallbackDecision.Valid -> resolveCallback(decision.callback)
+            PermissionCallbackDecision.WrongAccessory -> AccessoryPermissionUiModel.RejectedWrongAccessory
+            PermissionCallbackDecision.DuplicateOrConsumed -> AccessoryPermissionUiModel.RejectedDuplicateOrConsumed
+            PermissionCallbackDecision.StaleOrMissingRequest -> AccessoryPermissionUiModel.RejectedStaleOrMissingRequest
         }
+    }
+
+    private fun resolveCallback(callback: AccessoryPermissionCallback): AccessoryPermissionUiModel = when (callback) {
+        AccessoryPermissionCallback.Granted -> AccessoryPermissionUiModel.Granted
+        AccessoryPermissionCallback.Denied -> AccessoryPermissionUiModel.Denied
+        AccessoryPermissionCallback.MissingAccessory -> AccessoryPermissionUiModel.MissingAccessory
+        AccessoryPermissionCallback.MissingPermissionResult -> AccessoryPermissionUiModel.MissingPermissionResult
     }
 }
 
@@ -349,6 +496,9 @@ object UsbProbeScreenPlanner {
             permissionState == AccessoryPermissionUiModel.MissingAccessory -> "Android aprobó el permiso, pero no devolvió el accesorio."
             permissionState == AccessoryPermissionUiModel.MissingPermissionResult -> "Android devolvió un callback de permiso incompleto; podés intentar de nuevo."
             permissionState == AccessoryPermissionUiModel.CallbackMissingOrCanceled -> "Android no devolvió el resultado de permiso; podés intentar de nuevo."
+            permissionState == AccessoryPermissionUiModel.RejectedWrongAccessory -> "Se rechazó el permiso porque corresponde a otro accesorio USB; podés intentar de nuevo."
+            permissionState == AccessoryPermissionUiModel.RejectedDuplicateOrConsumed -> "Se rechazó un callback de permiso duplicado o ya consumido; no se inició otra prueba."
+            permissionState == AccessoryPermissionUiModel.RejectedStaleOrMissingRequest -> "Se rechazó un resultado de permiso vencido o sin token; podés intentar de nuevo."
             accessoryAvailable -> "Accesorio USB detectado. Tocá el botón para pedir permiso."
             else -> "Conectá el accesorio USB para iniciar la prueba."
         }

@@ -9,6 +9,7 @@ import android.hardware.usb.UsbManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import java.util.concurrent.Executors
 import android.view.Gravity
 import android.view.ViewGroup
@@ -24,6 +25,7 @@ class UsbProbeActivity : Activity() {
     private lateinit var action: Button
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionState: AccessoryPermissionUiModel = AccessoryPermissionUiModel.Idle
+    private var permissionGate = AccessoryPermissionRequestGate(PERMISSION_CALLBACK_TIMEOUT_MILLIS)
     private var busy: Boolean = false
     private var lastResult: String? = null
 
@@ -97,11 +99,17 @@ class UsbProbeActivity : Activity() {
             packageName = packageName,
             receiverClassName = UsbAccessoryPermissionReceiver::class.java.name,
         )
+        val request = permissionGate.beginRequest(
+            fingerprint = AccessoryFingerprint.fromUsbAccessory(accessory),
+            nowMillis = SystemClock.elapsedRealtime(),
+        )
         val intent = Intent(plan.action).apply {
             setClassName(plan.packageName, plan.receiverClassName)
             putExtra(UsbAccessoryPermissionReceiver.EXTRA_PACKAGE_NAME, packageName)
+            putExtra(UsbAccessoryPermissionReceiver.EXTRA_PERMISSION_TOKEN, request.token.value)
+            putExtra(UsbAccessoryPermissionReceiver.EXTRA_ACCESSORY_FINGERPRINT, request.fingerprint.stableString())
         }
-        val pendingIntent = PendingIntent.getBroadcast(this, 0, intent, plan.pendingIntentFlags)
+        val pendingIntent = PendingIntent.getBroadcast(this, request.token.value.hashCode(), intent, plan.pendingIntentFlags)
         permissionState = AccessoryPermissionLifecycleReducer.reduce(permissionState, AccessoryPermissionEvent.Requested)
         lastResult = null
         render()
@@ -144,11 +152,18 @@ class UsbProbeActivity : Activity() {
     }
 
     private fun handlePermissionCallbackIntent(intent: Intent?) {
-        val callback = permissionCallbackFromExtra(intent?.getStringExtra(UsbAccessoryPermissionReceiver.EXTRA_PERMISSION_CALLBACK)) ?: return
-        permissionState = AccessoryPermissionLifecycleReducer.reduce(permissionState, AccessoryPermissionEvent.Callback(callback))
+        val callbackIntent = intent ?: return
+        val callback = permissionCallbackFromExtra(callbackIntent.getStringExtra(UsbAccessoryPermissionReceiver.EXTRA_PERMISSION_CALLBACK)) ?: return
+        val decision = permissionGate.classifyCallback(
+            token = callbackIntent.getStringExtra(UsbAccessoryPermissionReceiver.EXTRA_PERMISSION_TOKEN)?.let(::PermissionRequestToken),
+            fingerprint = AccessoryFingerprint.fromStableString(callbackIntent.getStringExtra(UsbAccessoryPermissionReceiver.EXTRA_ACCESSORY_FINGERPRINT)),
+            callback = callback,
+            nowMillis = SystemClock.elapsedRealtime(),
+        )
+        permissionState = AccessoryPermissionLifecycleReducer.reduce(permissionState, AccessoryPermissionEvent.CallbackDecision(decision))
         lastResult = null
-        if (callback == AccessoryPermissionCallback.Granted) {
-            currentAccessory()?.let { runApprovedAccessory(it) } ?: run {
+        if (decision == PermissionCallbackDecision.Valid(AccessoryPermissionCallback.Granted)) {
+            callbackAccessory(callbackIntent)?.let { runApprovedAccessory(it) } ?: run {
                 permissionState = AccessoryPermissionUiModel.MissingAccessory
             }
         }
@@ -158,6 +173,7 @@ class UsbProbeActivity : Activity() {
         mainHandler.postDelayed({
             val next = AccessoryPermissionLifecycleReducer.reduce(permissionState, AccessoryPermissionEvent.CallbackTimedOut)
             if (next != permissionState) {
+                permissionGate.retireExpired(SystemClock.elapsedRealtime())
                 permissionState = next
                 lastResult = null
                 render()
@@ -172,6 +188,9 @@ class UsbProbeActivity : Activity() {
     }
 
     private fun currentAccessory(): UsbAccessory? = usbManager.accessoryList?.firstOrNull()
+
+    @Suppress("DEPRECATION")
+    private fun callbackAccessory(intent: Intent): UsbAccessory? = intent.getParcelableExtra(UsbManager.EXTRA_ACCESSORY)
 
     private companion object {
         const val MAX_PAYLOAD_BYTES = 64 * 1024

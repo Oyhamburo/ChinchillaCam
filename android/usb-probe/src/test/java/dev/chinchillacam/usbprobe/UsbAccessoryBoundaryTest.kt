@@ -291,6 +291,140 @@ class UsbAccessoryBoundaryTest {
     }
 
     @Test
+    fun validPermissionGrantActivatesOnceAndRejectsDuplicateReplay() {
+        val phone = AccessoryFingerprint.fromFields(
+            manufacturer = "ChinchillaCam",
+            model = "USB Probe",
+            description = "AOA feasibility boundary",
+            version = "0.1.0",
+            uri = "https://example.invalid/chinchillacam",
+            serial = "phone-1",
+        )
+        val gate = AccessoryPermissionRequestGate(timeoutMillis = 1_000)
+        val request = gate.beginRequest(phone, nowMillis = 10, token = PermissionRequestToken("token-1"))
+
+        val first = gate.classifyCallback(
+            token = request.token,
+            fingerprint = phone,
+            callback = AccessoryPermissionCallback.Granted,
+            nowMillis = 20,
+        )
+        val duplicate = gate.classifyCallback(
+            token = request.token,
+            fingerprint = phone,
+            callback = AccessoryPermissionCallback.Granted,
+            nowMillis = 30,
+        )
+
+        assertEquals(PermissionCallbackDecision.Valid(AccessoryPermissionCallback.Granted), first)
+        assertEquals(PermissionCallbackDecision.DuplicateOrConsumed, duplicate)
+    }
+
+    @Test
+    fun wrongAccessoryPermissionCallbackIsRejectedWithoutActivation() {
+        val requested = AccessoryFingerprint.fromFields("ChinchillaCam", "USB Probe", "AOA", "0.1.0", "", "phone-1")
+        val other = requested.copy(serial = "phone-2")
+        val gate = AccessoryPermissionRequestGate(timeoutMillis = 1_000)
+        val request = gate.beginRequest(requested, nowMillis = 10, token = PermissionRequestToken("token-1"))
+
+        val decision = gate.classifyCallback(
+            token = request.token,
+            fingerprint = other,
+            callback = AccessoryPermissionCallback.Granted,
+            nowMillis = 20,
+        )
+
+        assertEquals(PermissionCallbackDecision.WrongAccessory, decision)
+    }
+
+    @Test
+    fun lateOrMissingPermissionTokenIsRejectedAfterTimeout() {
+        val phone = AccessoryFingerprint.fromFields("ChinchillaCam", "USB Probe", "AOA", "0.1.0", "", "phone-1")
+        val gate = AccessoryPermissionRequestGate(timeoutMillis = 50)
+        val request = gate.beginRequest(phone, nowMillis = 10, token = PermissionRequestToken("token-1"))
+
+        assertEquals(PermissionCallbackDecision.StaleOrMissingRequest, gate.classifyCallback(
+            token = null,
+            fingerprint = phone,
+            callback = AccessoryPermissionCallback.Granted,
+            nowMillis = 20,
+        ))
+        gate.retireExpired(nowMillis = 61)
+        assertEquals(PermissionCallbackDecision.StaleOrMissingRequest, gate.classifyCallback(
+            token = request.token,
+            fingerprint = phone,
+            callback = AccessoryPermissionCallback.Granted,
+            nowMillis = 62,
+        ))
+    }
+
+    @Test
+    fun deniedPermissionCallbackResolvesVisiblyAndAllowsRetry() {
+        val phone = AccessoryFingerprint.fromFields("ChinchillaCam", "USB Probe", "AOA", "0.1.0", "", "phone-1")
+        val gate = AccessoryPermissionRequestGate(timeoutMillis = 1_000)
+        val first = gate.beginRequest(phone, nowMillis = 10, token = PermissionRequestToken("token-1"))
+
+        val denied = gate.classifyCallback(first.token, phone, AccessoryPermissionCallback.Denied, nowMillis = 20)
+        val deniedUi = AccessoryPermissionLifecycleReducer.reduce(
+            AccessoryPermissionUiModel.WaitingForCallback,
+            AccessoryPermissionEvent.CallbackDecision(denied),
+        )
+        val retry = gate.beginRequest(phone, nowMillis = 30, token = PermissionRequestToken("token-2"))
+        val granted = gate.classifyCallback(retry.token, phone, AccessoryPermissionCallback.Granted, nowMillis = 40)
+
+        assertEquals(AccessoryPermissionUiModel.Denied, deniedUi)
+        assertEquals(PermissionCallbackDecision.Valid(AccessoryPermissionCallback.Granted), granted)
+    }
+
+    @Test
+    fun missingAccessoryCallbackWithMatchingTokenResolvesVisiblyWithoutActivation() {
+        val phone = AccessoryFingerprint.fromFields("ChinchillaCam", "USB Probe", "AOA", "0.1.0", "", "phone-1")
+        val gate = AccessoryPermissionRequestGate(timeoutMillis = 1_000)
+        val request = gate.beginRequest(phone, nowMillis = 10, token = PermissionRequestToken("token-1"))
+
+        val decision = gate.classifyCallback(
+            token = request.token,
+            fingerprint = null,
+            callback = AccessoryPermissionCallback.MissingAccessory,
+            nowMillis = 20,
+        )
+
+        assertEquals(PermissionCallbackDecision.Valid(AccessoryPermissionCallback.MissingAccessory), decision)
+        assertEquals(
+            AccessoryPermissionUiModel.MissingAccessory,
+            AccessoryPermissionLifecycleReducer.reduce(
+                AccessoryPermissionUiModel.WaitingForCallback,
+                AccessoryPermissionEvent.CallbackDecision(decision),
+            ),
+        )
+    }
+
+    @Test
+    fun rejectedPermissionCallbacksHaveVisibleUiStates() {
+        assertEquals(
+            AccessoryPermissionUiModel.RejectedWrongAccessory,
+            AccessoryPermissionLifecycleReducer.reduce(
+                AccessoryPermissionUiModel.WaitingForCallback,
+                AccessoryPermissionEvent.CallbackDecision(PermissionCallbackDecision.WrongAccessory),
+            ),
+        )
+        assertEquals(
+            AccessoryPermissionUiModel.RejectedDuplicateOrConsumed,
+            AccessoryPermissionLifecycleReducer.reduce(
+                AccessoryPermissionUiModel.Granted,
+                AccessoryPermissionEvent.CallbackDecision(PermissionCallbackDecision.DuplicateOrConsumed),
+            ),
+        )
+        assertEquals(
+            AccessoryPermissionUiModel.RejectedStaleOrMissingRequest,
+            AccessoryPermissionLifecycleReducer.reduce(
+                AccessoryPermissionUiModel.WaitingForCallback,
+                AccessoryPermissionEvent.CallbackDecision(PermissionCallbackDecision.StaleOrMissingRequest),
+            ),
+        )
+    }
+
+    @Test
     fun boundedSmokeSessionTimesOutClosesSessionAndReportsCancellationLimit() {
         val closeable = RecordingCloseable()
         val session = AccessoryIoSession(
