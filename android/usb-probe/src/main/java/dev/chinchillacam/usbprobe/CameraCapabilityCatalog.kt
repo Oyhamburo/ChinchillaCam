@@ -305,3 +305,86 @@ class AndroidCameraManagerFacadeImpl(
     private fun streamConfiguration(cameraId: String): StreamConfigurationMap? = characteristics(cameraId)
         .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
 }
+
+data class CameraCatalogUiState(
+    val title: String,
+    val summary: String,
+    val selectedCameraId: String?,
+    val rows: List<CameraCatalogUiRow>,
+) {
+    fun toDisplayText(): String = buildString {
+        appendLine(title)
+        appendLine(summary)
+        rows.forEach { row ->
+            appendLine("- ${row.title}")
+            appendLine("  ${row.status}")
+        }
+    }.trimEnd()
+}
+
+data class CameraCatalogUiRow(
+    val cameraId: String,
+    val title: String,
+    val status: String,
+    val selectable: Boolean,
+    val selected: Boolean,
+)
+
+object CameraCatalogUiPlanner {
+    fun plan(
+        snapshot: CameraCatalogSnapshot,
+        requestedSelectionId: String?,
+    ): CameraCatalogUiState {
+        val directRows = snapshot.entries.filter { it.role is CameraIdRole.DirectOpenCandidate }
+        val selectedId = requestedSelectionId
+            ?.takeIf { requested -> directRows.any { it.id == requested } }
+            ?: directRows.firstOrNull()?.id
+        val physicalOnlyCount = snapshot.entries.count { it.role is CameraIdRole.PhysicalOnlyChild }
+        val summary = when {
+            snapshot.entries.isEmpty() -> "No hay cámaras direccionables para listar todavía."
+            directRows.isEmpty() -> "No hay cámaras direccionables; ${physicalOnlyCount} físico no abrible directamente."
+            else -> "${directRows.size} ${cameraWord(directRows.size)} seleccionable; $physicalOnlyCount ${physicalWord(physicalOnlyCount)} no abrible directamente."
+        }
+        return CameraCatalogUiState(
+            title = "Cámaras del teléfono",
+            summary = summary,
+            selectedCameraId = selectedId,
+            rows = snapshot.entries.map { entry -> rowFor(entry, selectedId) },
+        )
+    }
+
+    private fun rowFor(entry: CameraCatalogEntry, selectedId: String?): CameraCatalogUiRow {
+        val selectable = entry.role.canAttemptOpenDirectly
+        val selected = selectable && entry.id == selectedId
+        val titlePrefix = when (val role = entry.role) {
+            CameraIdRole.DirectOpenCandidate -> "Cámara ${entry.id}"
+            is CameraIdRole.PhysicalOnlyChild -> "Físico ${entry.id} de ${role.parentId}"
+        }
+        val status = when {
+            selected -> "Seleccionada · direccionable por Android; la apertura real se validará después."
+            selectable -> "Disponible para seleccionar; la apertura real se validará después."
+            else -> "No abrible directamente; se muestra solo como información del grupo lógico."
+        }
+        return CameraCatalogUiRow(
+            cameraId = entry.id,
+            title = "$titlePrefix · ${entry.facing.toSpanishLabel()}",
+            status = status,
+            selectable = selectable,
+            selected = selected,
+        )
+    }
+
+    private fun CapabilityState<CameraFacing>.toSpanishLabel(): String = when (this) {
+        is CapabilityState.Known -> when (value) {
+            CameraFacing.Front -> "frontal"
+            CameraFacing.Back -> "trasera"
+            CameraFacing.External -> "externa"
+        }
+        is CapabilityState.Unknown -> "orientación desconocida"
+        is CapabilityState.Unavailable -> "orientación no disponible"
+    }
+
+    private fun cameraWord(count: Int): String = if (count == 1) "cámara" else "cámaras"
+
+    private fun physicalWord(count: Int): String = if (count == 1) "físico" else "físicos"
+}

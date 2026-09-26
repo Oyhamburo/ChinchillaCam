@@ -72,7 +72,7 @@ Estos advisories de T5d3 son conocidos y no deben iniciar un bucle automático i
 - [x] T1b: endurecer catálogo ante fallos parciales y orden no determinista. Commit `9558ca3` (`fix: harden Android camera catalog snapshots`) resolvió `R3-characteristics-failure-aborts-snapshot` y `R3-nondeterministic-physical-order`: una excepción/fallo de características de una cámara produce entrada parcial `Unknown` sin abortar otras cámaras; los IDs direct-open-candidate y físicos child salen en orden determinista estable. Incorporó la nuance de `getCameraIdList()`: un ID listado es candidato direccionable, no garantía de apertura exitosa. Sin `CameraDevice.open`, sin captura, sin UI y sin claims hardware. Revisión nativa RDD aprobada y reconocida en lineage `review-2237faf927784644`.
 - [x] T2: adapter real `CameraManager`/`CameraCharacteristics` con guards de API para IDs lógicos/físicos, tamaños/FPS/controles y estados `Unknown`/`Unavailable` claros; compile/build tests, sin abrir cámara. Commit `3b902bf` (`feat: add Android CameraManager catalog adapter`); revisión nativa RDD aprobada y reconocida en lineage `review-086573489e2dd009`. Conserva la nuance de `getCameraIdList()`: ID listado es `DirectOpenCandidate`, no apertura garantizada. Los IDs físicos solo se consultan directamente con guard API 29+; si no, quedan `Unknown` sin crash. `SecurityException`, `CameraAccessException` u omisiones de claves restringidas se degradan a `Unknown`/`Unavailable`, nunca a crash del catálogo completo.
 - [x] T2b: endurecer adapter antes de UI por advisories `R3-missing-control-metadata-reported-false` y `R3-overbroad-run-catching`: controles sin metadata quedan `Unknown` en vez de `Known(false)`; valores conocidos `false` siguen siendo `Known(false)`; el gateway/adapter atrapa solo fallos esperados de API/permisos/cámara, no cualquier excepción inesperada. Sin abrir cámara, sin captura, sin UI y sin pruebas físicas.
-- [ ] T3: UI española para listar/seleccionar solo IDs direccionables; físicos-only se muestran como no abribles. Sin prometer selección de lentes Samsung sin soporte de API.
+- [x] T3: UI española para listar/seleccionar solo IDs direccionables; físicos-only se muestran como no abribles. Sin prometer selección de lentes Samsung sin soporte de API. Alcance: planner JVM puro para texto/estado de catálogo, integración Activity pasiva que solo enumera catálogo con `CameraManager`; selección inicial en memoria de UI si hay candidatos directos, sin persistencia (T5), sin permiso de cámara (T4), sin `CameraDevice.open`, sin captura ni pruebas físicas.
 
 ## Verificación T1
 
@@ -195,3 +195,27 @@ T2b endureció el adapter antes de UI para resolver los advisories no bloqueante
 - Lineage: `review-9cf10dfe34dfadbd`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgo advisory no bloqueante del reviewer: `R3-missing-control-facade-coverage`. No abrió corrección para T2b; queda como posible hardening futuro del wrapper real si se prioriza antes de captura.
+
+## Verificación T3
+
+T3 agrega presentación UI española del catálogo de cámaras sin cambiar permisos ni abrir cámara.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `CameraCatalogUiPlanner` y `CameraCatalogUiRow` antes de existir.
+- Una corrida intermedia falló en `:android:usb-probe:compileDebugKotlin` por exhaustividad del `when` de `CapabilityState.Known`; se corrigió antes de la verificación GREEN.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date en la corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+- Verificación independiente read-only inicial: FAIL solo porque esta sección de RED aún no estaba registrada; confirmó por inspección y pruebas que el alcance funcional T3 estaba satisfecho, sin `openCamera`, captura, manifest CAMERA, persistencia, QR/Wi-Fi ni claims hardware.
+
+### Límites y decisiones T3
+
+- `CameraCatalogUiPlanner` es JVM puro y produce texto español testeable para título, resumen, selección y filas.
+- Solo `CameraIdRole.DirectOpenCandidate` es seleccionable; si se solicita seleccionar un físico-only, la selección cae al primer candidato directo disponible.
+- `CameraIdRole.PhysicalOnlyChild` se muestra como información del grupo lógico y explícitamente no abrible directamente.
+- `UsbProbeActivity` integra el catálogo de forma pasiva mediante el adapter `CameraManager` existente y muestra el texto; no persiste la selección, no solicita permiso de cámara y no abre la cámara.

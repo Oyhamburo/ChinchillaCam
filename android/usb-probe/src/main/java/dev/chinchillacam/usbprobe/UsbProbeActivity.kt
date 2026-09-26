@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.hardware.camera2.CameraManager
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.os.Bundle
@@ -22,7 +23,9 @@ class UsbProbeActivity : Activity() {
     private lateinit var title: TextView
     private lateinit var status: TextView
     private lateinit var safety: TextView
+    private lateinit var cameraCatalog: TextView
     private lateinit var action: Button
+    private var selectedCameraId: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionState: AccessoryPermissionUiModel = AccessoryPermissionUiModel.Idle
     private var permissionGate = AccessoryPermissionRequestGate(PERMISSION_CALLBACK_TIMEOUT_MILLIS)
@@ -73,6 +76,7 @@ class UsbProbeActivity : Activity() {
         title = TextView(this).apply { textSize = 22f }
         status = TextView(this).apply { textSize = 16f }
         safety = TextView(this).apply { textSize = 14f }
+        cameraCatalog = TextView(this).apply { textSize = 14f }
         action = Button(this)
 
         val layout = LinearLayout(this).apply {
@@ -83,6 +87,7 @@ class UsbProbeActivity : Activity() {
             addView(status, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(action, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(safety, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(cameraCatalog, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
         setContentView(layout)
     }
@@ -99,6 +104,17 @@ class UsbProbeActivity : Activity() {
         safety.text = ui.safetyNotice
         action.text = ui.primaryActionLabel
         action.isEnabled = ui.primaryActionEnabled
+        renderCameraCatalog()
+    }
+
+    private fun renderCameraCatalog() {
+        val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val snapshot = CameraCapabilityCatalog(
+            AndroidCameraManagerGateway(AndroidCameraManagerFacadeImpl(cameraManager)),
+        ).snapshot()
+        val ui = CameraCatalogUiPlanner.plan(snapshot = snapshot, requestedSelectionId = selectedCameraId)
+        selectedCameraId = ui.selectedCameraId
+        cameraCatalog.text = ui.toDisplayText()
     }
 
     private fun requestPermissionFromUserAction() {
