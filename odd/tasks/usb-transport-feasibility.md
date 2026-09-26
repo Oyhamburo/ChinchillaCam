@@ -97,7 +97,7 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 14. `fix: select AOA accessory bulk interface` — corregir selector por PID/interfaz AOA, ignorar ADB interface 1 solo en `18d1:2d01`, fallar cerrado sin configuración activa verificada y mantener alt setting 0. Commit `b95fe3f`; revisión nativa aprobada y reconocida en lineage `review-6b6ba648ae04ade0`.
 15. `feat: wire live AOA bulk frame CLI` — CLI live conectada al handle AOA vinculado, claim bulk validado y `FramedUsbStream` acotado para un frame mínimo; pruebas/fakes/docs en el mismo work unit. Commit `143445f`; revisión nativa aprobada y reconocida en lineage `review-0c15605242c3fdcb`.
 16. `feat: add Android accessory smoke APK` — APK Android mínimo instalable con UI visible en español, permiso de accesorio aprobado por el sistema, lectura de frame `u32 LE stream_id + u32 LE payload_len + payload`, respuesta ACK framed con el mismo protocolo y pruebas JVM automatizadas; commits `62795ea`, `9857589`, `dd736db`; revisión nativa aprobada y reconocida en lineage `review-e7808067fd67c3b1`.
-17. `fix: bound Android accessory smoke readiness` — resolver los advisories `R3-permission-state-never-resolved` y `R3-unbounded-accessory-read` con reducer/receiver liviano y sesión smoke acotada por timeout antes de uso físico; sin instalación/dispositivo. Commit pendiente por instrucción explícita del usuario de no commitear.
+17. `fix: bound Android accessory smoke readiness` — resolver los advisories `R3-permission-state-never-resolved` y `R3-unbounded-accessory-read` con reducer/receiver liviano y sesión smoke acotada por timeout antes de uso físico; sin instalación/dispositivo. Commit `a0641b0`; revisión nativa aprobada y reconocida en lineage `review-8345144ca6a9ee5b`.
 18. T5e previsto: `docs: define host phone USB smoke procedure` — comandos host↔phone, ruta Windows si es factible y validación hardware marcada pendiente.
 
 
@@ -120,7 +120,14 @@ La verificación local de T5d1 endurece el APK smoke antes de uso físico. No se
 - El `BroadcastReceiver` ahora solo clasifica el callback de permiso (`granted`, `denied`, permiso faltante o accesorio faltante), lanza la Activity con ese estado y retorna; no usa `goAsync()` ni hace I/O USB.
 - La Activity mantiene estado de permiso explícito, programa timeout de callback de permiso y vuelve a habilitar reintento si Android no devuelve resultado.
 - La lectura/escritura smoke queda en una sesión propiedad de la Activity, fuera del hilo principal, con timeout app-level de 10s, `session.close()` al vencer y mensaje honesto: no se garantiza que el SO interrumpa todo `stream.read` bloqueado.
-- La corrección está lista para commit/revisión nativa después de verificación independiente.
+- Commit `a0641b0` (`fix: bound Android accessory smoke readiness`) contiene esta corrección y fue aprobado/reconocido por revisión nativa RDD.
+
+### Revisión nativa RDD T5d1
+
+- Candidato: `a0641b0` contra base `9ac4de2`.
+- Lineage: `review-8345144ca6a9ee5b`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-accessory-identity-discarded`, `R3-permission-callback-replayed` y `R3-stale-permission-timeout`. No abrieron corrección para T5d1; quedan como trabajo futuro si se endurece identidad/callback antes de la guía smoke.
 
 ## Verificación T5d
 
