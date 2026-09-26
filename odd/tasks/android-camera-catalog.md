@@ -67,7 +67,7 @@ Estos advisories de T5d3 son conocidos y no deben iniciar un bucle automático i
 
 ## Progreso
 
-- [x] T1 candidato: agregar dominio `CameraCapabilityCatalog` con gateway fake y pruebas JVM. Implementado en `CameraCapabilityCatalog.kt` y `CameraCapabilityCatalogTest.kt`; revisión nativa RDD pendiente.
+- [x] T1: agregar dominio `CameraCapabilityCatalog` con gateway fake y pruebas JVM. Commit `d75495b` (`feat: add Android camera capability catalog`) implementó `CameraCapabilityCatalog.kt` y `CameraCapabilityCatalogTest.kt`; revisión nativa RDD aprobada y reconocida en lineage `review-ff86e4f59c053d11`.
 
 ## Verificación T1
 
@@ -82,6 +82,13 @@ Estos advisories de T5d3 son conocidos y no deben iniciar un bucle automático i
 - `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
 - `git diff --check`: pasó sin salida.
 - Verificación independiente read-only: PASS; confirmó gateway inyectable, pruebas fake, separación standalone/openable vs physical-only child, estados Known/Unknown/Unavailable y ausencia de CameraDevice open/capture, UI integration, manifest edits, hardcoding Samsung o claims de soporte hardware.
+
+### Revisión nativa RDD T1
+
+- Candidato: `d75495b` contra base `0586792`.
+- Lineage: `review-ff86e4f59c053d11`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-characteristics-failure-aborts-snapshot` y `R3-nondeterministic-physical-order`. No abrieron corrección para T1; quedan como hardening previo a integración si se decide antes de UI/uso real.
 
 ### Límites y decisiones T1
 
