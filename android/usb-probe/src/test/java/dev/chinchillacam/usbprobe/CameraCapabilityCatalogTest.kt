@@ -7,7 +7,7 @@ import org.junit.Test
 
 class CameraCapabilityCatalogTest {
     @Test
-    fun catalogsStandaloneOpenableAndPhysicalOnlyChildIdsSeparately() {
+    fun catalogsDirectOpenCandidateAndPhysicalOnlyChildIdsSeparately() {
         val gateway = FakeCameraCapabilityGateway(
             openableIds = listOf("0", "1"),
             characteristics = mapOf(
@@ -39,19 +39,19 @@ class CameraCapabilityCatalogTest {
 
         val catalog = CameraCapabilityCatalog(gateway).snapshot()
 
-        assertEquals(listOf("0", "1", "0-wide", "0-tele"), catalog.entries.map { it.id })
-        assertEquals(CameraIdRole.StandaloneOpenable, catalog.entry("0").role)
-        assertEquals(CameraIdRole.StandaloneOpenable, catalog.entry("1").role)
+        assertEquals(listOf("0", "1", "0-tele", "0-wide"), catalog.entries.map { it.id })
+        assertEquals(CameraIdRole.DirectOpenCandidate, catalog.entry("0").role)
+        assertEquals(CameraIdRole.DirectOpenCandidate, catalog.entry("1").role)
         assertEquals(CameraIdRole.PhysicalOnlyChild(parentId = "0"), catalog.entry("0-wide").role)
         assertEquals(CameraIdRole.PhysicalOnlyChild(parentId = "0"), catalog.entry("0-tele").role)
         assertEquals(CapabilityState.Known(CameraFacing.Back), catalog.entry("0-wide").facing)
         assertEquals(CapabilityState.Known(listOf(CameraOutputSize(width = 1280, height = 720))), catalog.entry("0-wide").outputSizes)
         assertEquals(CapabilityState.Unknown("physical camera controls not exposed"), catalog.entry("0-tele").controls)
-        assertFalse(catalog.entry("0-wide").role.isOpenable)
+        assertFalse(catalog.entry("0-wide").role.canAttemptOpenDirectly)
     }
 
     @Test
-    fun physicalIdAlsoReturnedByCameraIdListRemainsStandaloneOpenable() {
+    fun physicalIdAlsoReturnedByCameraIdListRemainsDirectOpenCandidate() {
         val gateway = FakeCameraCapabilityGateway(
             openableIds = listOf("logical", "wide"),
             characteristics = mapOf(
@@ -66,10 +66,55 @@ class CameraCapabilityCatalogTest {
 
         val catalog = CameraCapabilityCatalog(gateway).snapshot()
 
-        assertEquals(CameraIdRole.StandaloneOpenable, catalog.entry("wide").role)
+        assertEquals(CameraIdRole.DirectOpenCandidate, catalog.entry("wide").role)
         assertEquals(CameraIdRole.PhysicalOnlyChild(parentId = "logical"), catalog.entry("tele").role)
-        assertTrue(catalog.entry("wide").role.isOpenable)
-        assertFalse(catalog.entry("tele").role.isOpenable)
+        assertTrue(catalog.entry("wide").role.canAttemptOpenDirectly)
+        assertFalse(catalog.entry("tele").role.canAttemptOpenDirectly)
+    }
+
+
+    @Test
+    fun characteristicsFailureCreatesPartialUnknownEntryAndDoesNotAbortOtherCameras() {
+        val gateway = FakeCameraCapabilityGateway(
+            openableIds = listOf("broken", "healthy"),
+            characteristics = mapOf(
+                "healthy" to FakeCameraCharacteristics(
+                    facing = CapabilityState.Known(CameraFacing.Back),
+                    outputSizes = CapabilityState.Known(listOf(CameraOutputSize(width = 640, height = 480))),
+                ),
+            ),
+            failingIds = setOf("broken"),
+        )
+
+        val catalog = CameraCapabilityCatalog(gateway).snapshot()
+
+        assertEquals(listOf("broken", "healthy"), catalog.entries.map { it.id })
+        assertEquals(CameraIdRole.DirectOpenCandidate, catalog.entry("broken").role)
+        assertEquals(CapabilityState.Unknown("characteristics unavailable for broken"), catalog.entry("broken").facing)
+        assertEquals(CapabilityState.Known(CameraFacing.Back), catalog.entry("healthy").facing)
+        assertEquals(CapabilityState.Known(listOf(CameraOutputSize(width = 640, height = 480))), catalog.entry("healthy").outputSizes)
+    }
+
+    @Test
+    fun cameraIdsAndPhysicalChildrenAreDeterministicallySorted() {
+        val gateway = FakeCameraCapabilityGateway(
+            openableIds = listOf("2", "0", "1"),
+            characteristics = mapOf(
+                "2" to FakeCameraCharacteristics(physicalCameraIds = setOf("2-tele", "2-wide")),
+                "0" to FakeCameraCharacteristics(physicalCameraIds = setOf("0-ultra", "0-wide")),
+                "1" to FakeCameraCharacteristics(),
+                "2-wide" to FakeCameraCharacteristics(),
+                "2-tele" to FakeCameraCharacteristics(),
+                "0-wide" to FakeCameraCharacteristics(),
+                "0-ultra" to FakeCameraCharacteristics(),
+            ),
+        )
+
+        val catalog = CameraCapabilityCatalog(gateway).snapshot()
+
+        assertEquals(listOf("0", "1", "2", "0-ultra", "0-wide", "2-tele", "2-wide"), catalog.entries.map { it.id })
+        assertEquals(CameraIdRole.PhysicalOnlyChild(parentId = "0"), catalog.entry("0-ultra").role)
+        assertEquals(CameraIdRole.PhysicalOnlyChild(parentId = "2"), catalog.entry("2-tele").role)
     }
 
     @Test
@@ -81,7 +126,7 @@ class CameraCapabilityCatalogTest {
 
         val entry = CameraCapabilityCatalog(gateway).snapshot().entry("0")
 
-        assertEquals(CameraIdRole.StandaloneOpenable, entry.role)
+        assertEquals(CameraIdRole.DirectOpenCandidate, entry.role)
         assertEquals(CapabilityState.Unknown("characteristics unavailable for 0"), entry.facing)
         assertEquals(CapabilityState.Unknown("characteristics unavailable for 0"), entry.outputSizes)
         assertEquals(CapabilityState.Unknown("characteristics unavailable for 0"), entry.fpsRanges)
@@ -124,11 +169,13 @@ private data class FakeCameraCharacteristics(
 private class FakeCameraCapabilityGateway(
     private val openableIds: List<String>,
     private val characteristics: Map<String, FakeCameraCharacteristics>,
+    private val failingIds: Set<String> = emptySet(),
 ) : CameraCapabilityGateway {
     override fun getOpenableCameraIds(): List<String> = openableIds
 
-    override fun getCharacteristics(cameraId: String): CameraCapabilityCharacteristics? =
-        characteristics[cameraId]?.let {
+    override fun getCharacteristics(cameraId: String): CameraCapabilityCharacteristics? {
+        if (cameraId in failingIds) error("camera characteristics unavailable")
+        return characteristics[cameraId]?.let {
             CameraCapabilityCharacteristics(
                 facing = it.facing,
                 physicalCameraIds = it.physicalCameraIds,
@@ -137,4 +184,5 @@ private class FakeCameraCapabilityGateway(
                 controls = it.controls,
             )
         }
+    }
 }

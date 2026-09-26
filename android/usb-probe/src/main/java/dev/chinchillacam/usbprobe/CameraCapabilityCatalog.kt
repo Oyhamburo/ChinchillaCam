@@ -4,20 +4,21 @@ class CameraCapabilityCatalog(
     private val gateway: CameraCapabilityGateway,
 ) {
     fun snapshot(): CameraCatalogSnapshot {
-        val openableIds = gateway.getOpenableCameraIds()
-        val openableSet = openableIds.toSet()
+        val directCandidateIds = gateway.getOpenableCameraIds().distinct().sorted()
+        val directCandidateSet = directCandidateIds.toSet()
         val entries = mutableListOf<CameraCatalogEntry>()
-        val physicalOnlyChildren = linkedMapOf<String, String>()
+        val physicalOnlyChildren = sortedMapOf<String, String>()
 
-        for (cameraId in openableIds) {
-            val characteristics = gateway.getCharacteristics(cameraId)
+        for (cameraId in directCandidateIds) {
+            val characteristics = safeCharacteristics(cameraId)
             entries += entryFor(
                 cameraId = cameraId,
-                role = CameraIdRole.StandaloneOpenable,
+                role = CameraIdRole.DirectOpenCandidate,
                 characteristics = characteristics,
             )
             characteristics?.physicalCameraIds.orEmpty()
-                .filterNot { it in openableSet }
+                .sorted()
+                .filterNot { it in directCandidateSet }
                 .forEach { childId -> physicalOnlyChildren.putIfAbsent(childId, cameraId) }
         }
 
@@ -25,12 +26,15 @@ class CameraCapabilityCatalog(
             entries += entryFor(
                 cameraId = childId,
                 role = CameraIdRole.PhysicalOnlyChild(parentId),
-                characteristics = gateway.getCharacteristics(childId),
+                characteristics = safeCharacteristics(childId),
             )
         }
 
         return CameraCatalogSnapshot(entries)
     }
+
+    private fun safeCharacteristics(cameraId: String): CameraCapabilityCharacteristics? =
+        runCatching { gateway.getCharacteristics(cameraId) }.getOrNull()
 
     private fun entryFor(
         cameraId: String,
@@ -76,14 +80,19 @@ data class CameraCatalogEntry(
 )
 
 sealed class CameraIdRole {
-    abstract val isOpenable: Boolean
+    /**
+     * True when the ID is listed by CameraManager as directly addressable. This is only an
+     * open attempt candidate: openCamera can still fail because of permissions, disconnects,
+     * concurrent camera use, or other runtime conditions.
+     */
+    abstract val canAttemptOpenDirectly: Boolean
 
-    object StandaloneOpenable : CameraIdRole() {
-        override val isOpenable: Boolean = true
+    object DirectOpenCandidate : CameraIdRole() {
+        override val canAttemptOpenDirectly: Boolean = true
     }
 
     data class PhysicalOnlyChild(val parentId: String) : CameraIdRole() {
-        override val isOpenable: Boolean = false
+        override val canAttemptOpenDirectly: Boolean = false
     }
 }
 

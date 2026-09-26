@@ -1,6 +1,6 @@
 # Android camera catalog capability task
 
-> Estado: T1 en preparación. Rama local `feat/android-camera-catalog` creada desde el HEAD limpio real `0586792` de `proto/usb-bulk-tdd-retry`. Commits locales autorizados; sin push, PR ni merge.
+> Estado: T1 completo; T1b en progreso. Rama local `feat/android-camera-catalog` creada desde el HEAD limpio real `0586792` de `proto/usb-bulk-tdd-retry`. HEAD actual limpio antes de T1b: `9378559`. Commits locales autorizados; sin push, PR ni merge.
 
 ## Alcance
 
@@ -25,7 +25,8 @@ Fuente indicada por el usuario: Android Developers `CameraManager` / Camera2.
 
 Hechos a reflejar en el dominio:
 
-- `CameraManager.getCameraIdList()` lista cámaras standalone/openable y puede excluir lentes que existen solo como cámaras físicas dentro de una cámara lógica.
+- `CameraManager.getCameraIdList()` lista cámaras directamente direccionables por ID y puede excluir lentes que existen solo como cámaras físicas dentro de una cámara lógica.
+- La presencia de un ID en `getCameraIdList()` no garantiza que `openCamera` vaya a tener éxito: puede fallar por desconexión, uso por otra app, permisos u otra condición operativa. El catálogo solo puede marcar un ID como candidato direccionable/listado, no como apertura garantizada.
 - `CameraCharacteristics.getPhysicalCameraIds()` puede revelar IDs físicos agrupados bajo una cámara lógica.
 - Desde API 29, `getCameraCharacteristics(String)` puede consultar características de IDs físicos, pero esos IDs físicos no necesariamente se pueden abrir directamente.
 
@@ -33,7 +34,7 @@ Hechos a reflejar en el dominio:
 
 Objetivo: producir una función de catálogo que reciba un gateway inyectable y devuelva:
 
-- IDs standalone/openable reportados por `getCameraIdList()`;
+- IDs standalone/direct-open-candidate reportados por `getCameraIdList()`, con disponibilidad operativa desconocida;
 - IDs physical-only child asociados a un logical camera parent cuando aparecen en `physicalCameraIds` pero no en la lista standalone;
 - facing;
 - tamaños disponibles;
@@ -65,9 +66,12 @@ Estos advisories de T5d3 son conocidos y no deben iniciar un bucle automático i
 - `R3-recreation-restarts-timeout`
 - `R3-waiting-state-without-request`
 
-## Progreso
+## Plan secuencial
 
 - [x] T1: agregar dominio `CameraCapabilityCatalog` con gateway fake y pruebas JVM. Commit `d75495b` (`feat: add Android camera capability catalog`) implementó `CameraCapabilityCatalog.kt` y `CameraCapabilityCatalogTest.kt`; revisión nativa RDD aprobada y reconocida en lineage `review-ff86e4f59c053d11`.
+- [x] T1b candidato: endurecer catálogo ante fallos parciales y orden no determinista. Resolvió `R3-characteristics-failure-aborts-snapshot` y `R3-nondeterministic-physical-order`: una excepción/fallo de características de una cámara produce entrada parcial `Unknown` sin abortar otras cámaras; los IDs direct-open-candidate y físicos child salen en orden determinista estable. Incorporó la nuance de `getCameraIdList()`: un ID listado es candidato direccionable, no garantía de apertura exitosa. Sin `CameraDevice.open`, sin captura, sin UI y sin claims hardware. Revisión nativa RDD pendiente.
+- [ ] T2: adapter real `CameraManager`/`CameraCharacteristics` con guards de API para IDs lógicos/físicos, tamaños/FPS/controles y estados `Unknown`/`Unavailable` claros; compile/build tests, sin abrir cámara.
+- [ ] T3: UI española para listar/seleccionar solo IDs direccionables; físicos-only se muestran como no abribles. Sin prometer selección de lentes Samsung sin soporte de API.
 
 ## Verificación T1
 
@@ -97,3 +101,26 @@ Estos advisories de T5d3 son conocidos y no deben iniciar un bucle automático i
 - Si un ID físico también aparece en la lista standalone, conserva rol `StandaloneOpenable`; no se degrada a físico-only.
 - `CapabilityState.Known`, `Unknown` y `Unavailable` mantienen separados datos conocidos, datos omitidos/no consultables y capacidades no aplicables.
 - T1 no abre cámara, no crea captura, no integra Activity, no toca manifest/permisos y no promete soporte en dispositivos reales.
+
+
+## Verificación T1b
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` por el cambio de API esperado (`CameraIdRole.DirectOpenCandidate`, `canAttemptOpenDirectly`) todavía inexistente.
+- Después de implementar el rename, una corrida intermedia falló en `CameraCapabilityCatalogTest.kt:42` porque el orden físico aún no coincidía con la expectativa determinista (`0-tele` antes de `0-wide`); se ajustó el test para fijar el orden estable esperado.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: pasó con `BUILD SUCCESSFUL`.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+- Verificación independiente read-only: PASS; confirmó fallos parciales como `Unknown`, orden determinista, wording `DirectOpenCandidate`, físicos-only no abribles y ausencia de open/capture/UI/hardware claims.
+
+### Límites y decisiones T1b
+
+- `CameraIdRole.DirectOpenCandidate` reemplaza el nombre anterior que podía sugerir apertura garantizada. Significa ID listado/direccionable por CameraManager, pero `openCamera` puede fallar por permisos, desconexión, uso concurrente u otra condición operativa.
+- `CameraCapabilityCatalog` captura excepciones al consultar características por ID y conserva una entrada parcial con capabilities `Unknown`, en vez de abortar el snapshot completo.
+- El snapshot ordena IDs directos con `distinct().sorted()` y acumula físicos-only en `sortedMapOf`, para estabilizar salida y pruebas.
+- T1b sigue sin abrir cámara, sin captura, sin UI, sin manifest/permisos y sin prometer selección de lentes físicos Samsung.
