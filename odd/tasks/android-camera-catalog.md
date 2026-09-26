@@ -157,3 +157,10 @@ La verificación local de T2 cubre adapter real `CameraManager`/`CameraCharacter
 - Características de IDs físicos-only se consultan directamente solo con guard API 29+; debajo de API 29 se devuelven capabilities `Unknown` con razón explícita.
 - Tamaños se leen desde `SCALER_STREAM_CONFIGURATION_MAP` para `ImageFormat.YUV_420_888`; FPS desde `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES`; controles desde AF/exposición/zoom disponibles cuando las claves existen.
 - Excepciones o claves restringidas se degradan a `Unknown`; ausencia de tamaños de salida se modela como `Unavailable`.
+
+### Revisión nativa RDD T2
+
+- Candidato: `3b902bf` contra base `4db5cb9`.
+- Lineage: `review-086573489e2dd009`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-missing-control-metadata-reported-false` y `R3-overbroad-run-catching`. No abrieron corrección para T2; quedan como hardening futuro antes de UI/captura si se decide.
