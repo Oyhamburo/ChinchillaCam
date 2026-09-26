@@ -271,7 +271,7 @@ class VisibleCameraForegroundServiceCommandRunner(
             val outcome = owner.handleStartCommand(
                 request = request,
                 cameraPermissionGranted = cameraPermissionGranted,
-                snapshot = snapshotProvider(),
+                snapshotProvider = snapshotProvider,
             )
             if (outcome != VisibleCameraServiceCommandOutcome.Started) stopService()
         }
@@ -311,22 +311,27 @@ class VisibleCameraForegroundServicePipelineOwner(
         request: VisibleCameraServiceStartRequest?,
         cameraPermissionGranted: Boolean,
         snapshot: CameraCatalogSnapshot,
+    ): VisibleCameraServiceCommandOutcome = handleStartCommand(request, cameraPermissionGranted) { snapshot }
+
+    fun handleStartCommand(
+        request: VisibleCameraServiceStartRequest?,
+        cameraPermissionGranted: Boolean,
+        snapshotProvider: () -> CameraCatalogSnapshot,
     ): VisibleCameraServiceCommandOutcome {
         val startRequest = request ?: return VisibleCameraServiceCommandOutcome.IgnoredColdRestart
-        val decision = policy.planStartCommand(startRequest.visibleStartRequested, cameraPermissionGranted, snapshot, startRequest.selectedCameraId)
         val token = synchronized(this) {
-            when (decision) {
-                is VisibleCameraServiceStartDecision.Blocked -> {
-                    generation += 1
-                    stopActiveLocked()
-                    return VisibleCameraServiceCommandOutcome.Blocked
-                }
-                is VisibleCameraServiceStartDecision.Allowed -> {
-                    generation += 1
-                    active = false
-                    generation
-                }
+            generation += 1
+            active = false
+            generation
+        }
+        val snapshot = snapshotProvider()
+        if (synchronized(this) { token != generation }) return VisibleCameraServiceCommandOutcome.Stopped
+        val decision = policy.planStartCommand(startRequest.visibleStartRequested, cameraPermissionGranted, snapshot, startRequest.selectedCameraId)
+        if (decision is VisibleCameraServiceStartDecision.Blocked) {
+            synchronized(this) {
+                if (token == generation) stopActiveLocked()
             }
+            return VisibleCameraServiceCommandOutcome.Blocked
         }
 
         decision as VisibleCameraServiceStartDecision.Allowed

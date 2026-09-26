@@ -70,6 +70,39 @@ class VisibleCameraForegroundServiceThreadingTest {
         assertTrue("a late Running result from a cancelled generation must be stopped", pipeline.stopCalls.get() >= 2)
     }
 
+
+    @Test
+    fun stopBeforeSnapshotCompletesCancelsStartBeforeCameraOpen() {
+        val pipeline = BlockingServicePipeline()
+        val owner = VisibleCameraForegroundServicePipelineOwner(pipeline, VisibleCameraServiceDrainLoop.Noop)
+        val snapshotEntered = CountDownLatch(1)
+        val releaseSnapshot = CountDownLatch(1)
+        val startThread = Thread {
+            owner.handleStartCommand(
+                request = VisibleCameraServiceStartRequest(selectedCameraId = "camera-1", visibleStartRequested = true),
+                cameraPermissionGranted = true,
+                snapshotProvider = {
+                    snapshotEntered.countDown()
+                    assertTrue(releaseSnapshot.await(2, TimeUnit.SECONDS))
+                    sampleSnapshot()
+                },
+            )
+        }
+
+        startThread.start()
+        assertTrue(snapshotEntered.await(1, TimeUnit.SECONDS))
+        val stopThread = Thread { owner.handleStopCommand() }
+        stopThread.start()
+        stopThread.join(250)
+        assertFalse("STOP must not wait for snapshot acquisition", stopThread.isAlive)
+
+        releaseSnapshot.countDown()
+        startThread.join(1_000)
+
+        assertFalse(startThread.isAlive)
+        assertFalse("cancelled pre-snapshot generation must not open camera", pipeline.startEntered.get())
+    }
+
     @Test
     fun serviceCameraCallbackHandlerSpecRequiresDedicatedNonMainThread() {
         val mainSpec = VisibleCameraForegroundServiceCallbackThreadSpec(threadName = "main", callbackLooperIsMain = true)
