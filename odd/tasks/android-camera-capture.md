@@ -253,3 +253,21 @@ T8c agrega cableado visible Start/Stop en `UsbProbeActivity` para una prueba loc
 - Lineage: `review-a092c738d58691bd`.
 - Resultado: corrección validada, aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgo advisory no bloqueante del reviewer: `R3-start-lock-blocks-ui-stop`. No abrió corrección para T8c; queda para hardening antes de captura prolongada o T9/T10.
+
+## Diseño T9 — métricas desde pipeline local real
+
+T9 agrega métricas visibles derivadas de eventos reales del pipeline local T8c, no de datos sintéticos ni de transporte. Las métricas se calculan sobre chunks codificados drenados/descartados en memoria y estados de start/stop/error del controlador.
+
+Límites T9:
+
+- Usar reloj inyectado y determinista en tests; nada de sleeps arbitrarios para probar ventanas.
+- Distinguir `Unknown`/"sin muestras aún" de FPS `0`: cero solo cuando hay una ventana con tiempo y conteo real cero, no al arrancar.
+- Contar chunks codificados drenados y descartados en memoria, bytes descartados y drops por backpressure local acotado.
+- La latencia encode solo puede mostrarse como **estimación** cuando el reloj local y `presentationTimeUs` se pueden comparar de forma coherente; si no, debe ser `Unknown`, no latencia falsa.
+- No inventar calidad de red ni niveles de conexión antes de tener transporte real.
+- Integrar texto español de métricas en la UI local de `UsbProbeActivity` usando estado real del controlador.
+- Sin USB, Wi‑Fi, network, storage, audio, wire protocol, FGS, prueba física ni claim de producto funcional.
+
+## Puerta T8d antes de T10
+
+El advisory `R3-start-lock-blocks-ui-stop` de T8c queda como puerta de privacidad/seguridad antes de T10: si el arranque está pendiente, Stop/onStop debe cancelar pronto y cerrar cualquier recurso tardío. Si T9 no lo resuelve explícitamente, debe hacerse como T8d con RED/GREEN y revisión nativa antes de cualquier FGS o pantalla bloqueada. No se debe auto-resumir captura tras cambios de ciclo de vida.
