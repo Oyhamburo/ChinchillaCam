@@ -427,3 +427,10 @@ Alcance T10:
 - Debido a restricciones de permiso while-in-use, T10 no promete comenzar cámara desde background/lock; si la app ya no está visible antes de start foreground, el flujo debe fallar seguro.
 - Tests RED iniciales: permisos/manifest/type, start planner sólo visible+permiso+selección directa, bloqueo de start no visible, stop action detiene servicio/controlador, texto de notificación sin claims de transmisión/grabación/pantalla bloqueada.
 - Sin Wi‑Fi/USB/network/storage/audio/wire protocol, pruebas físicas ni claims Samsung/Windows/macOS.
+
+### Revisión nativa RDD T10a
+
+- Candidato: `6976832` contra base `22bc71a`.
+- Lineage: `review-b6bff246b4c2347c`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-foreground-start-failure-unhandled`, `R3-notification-stop-does-not-stop-pipeline`. No abrieron corrección para T10a. `R3-notification-stop-does-not-stop-pipeline` confirma que T10a es solo shell; T10b debe transferir ownership real al service antes de claim de pantalla bloqueada.
