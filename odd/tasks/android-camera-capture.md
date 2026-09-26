@@ -22,8 +22,8 @@ Construir la ruta Android desde selección de cámara hasta frames/encoder/metri
 - [x] T8b: orquestador local cámara→encoder con fakes. Conectar selección directa actual + permiso `CAMERA` actual + acción explícita Start/Stop visible a la secuencia abrir cámara → configurar encoder Surface → sesión repeating → drenar chunks codificados acotados/tipados → stop/release en fallos y ciclo de vida, sin Activity real todavía. Debe corregir el advisory T7 `R3-stop-failure-cleanup` antes de captura prolongada.
 - [x] T8c: cableado Activity visible Start/Stop del pipeline local. Integrar el orquestador T8b con `UsbProbeActivity` solo mientras la app está visible; cerrar en `onPause`/`onDestroy`; sin USB/Wi‑Fi/network/storage/FGS ni claim de producto.
 - [x] T9: métricas Android de captura/encode visibles desde el pipeline real local: FPS, chunks drenados/dropped por backpressure, latencia encode y estado.
-- [ ] T10: foreground service/pantalla bloqueada experimental, con límites honestos y sin claims hasta prueba física.
-- [x] T10a: shell seguro de foreground service de cámara visible. Declara permisos/tipo FGS cámara, agrega planner puro para permitir start solo desde Activity visible con permiso `CAMERA` fresco y selección directa actual, publica notificación honesta de prueba local visible descartada en memoria, y mantiene la Activity como dueña del pipeline local: start del shell solo después de `Running`; stop en stop de usuario, `onStop` y `onDestroy`; sin transferencia de ownership, background cold-start, USB/Wi‑Fi/network/storage/audio/wire protocol ni claims de pantalla bloqueada.
+- [ ] T10: foreground service/estado no visible experimental, con límites honestos y sin claims hasta prueba física.
+- [x] T10a: shell seguro de foreground service de cámara visible. Declara permisos/tipo FGS cámara, agrega planner puro para permitir start solo desde Activity visible con permiso `CAMERA` fresco y selección directa actual, publica notificación honesta de prueba local visible descartada en memoria, y mantiene la Activity como dueña del pipeline local: start del shell solo después de `Running`; stop en stop de usuario, `onStop` y `onDestroy`; sin transferencia de ownership, background cold-start, USB/Wi‑Fi/network/storage/audio/wire protocol ni claims de estado no visible.
 - [x] T10b: transferir ownership completo cámara→encoder al foreground service no exportado. El service inicia desde Activity visible con permiso `CAMERA` fresco, selección directa actual y marcador de arranque visible; revalida permiso/snapshot en el service; Activity no retiene la cámara ni la detiene en `onStop` mientras el ownership de service está solicitado/activo; STOP/destrucción del service detienen el pipeline; `START_NOT_STICKY`; sin background cold-start, Activity retenida, tests físicos ni claims de compatibilidad.
 
 ## T6 límites de aceptación
@@ -170,7 +170,7 @@ T9 solo puede contar métricas a partir de estados/chunks/eventos del pipeline l
 
 ## Nota T10 — foreground service de cámara
 
-Para T10, la documentación oficial de Android indica que en API 34 el servicio con cámara debe declarar `foregroundServiceType="camera"`, permiso `FOREGROUND_SERVICE_CAMERA`, permiso genérico de foreground service y permiso runtime `CAMERA`. La restricción de permisos "while-in-use" implica que el FGS de cámara debe iniciarse mientras la Activity está visible; no basta con que `checkSelfPermission` diga concedido si el arranque ocurre desde background, pantalla bloqueada o callback tardío. T10 debe mantener notificación y acción de parada visible, y la continuidad con pantalla bloqueada queda sin claim hasta validación física.
+Para T10, la documentación oficial de Android indica que en API 34 el servicio con cámara debe declarar `foregroundServiceType="camera"`, permiso `FOREGROUND_SERVICE_CAMERA`, permiso genérico de foreground service y permiso runtime `CAMERA`. La restricción de permisos "while-in-use" implica que el FGS de cámara debe iniciarse mientras la Activity está visible; no basta con que `checkSelfPermission` diga concedido si el arranque ocurre desde background, estado no visible o callback tardío. T10 debe mantener notificación y acción de parada visible, y la comportamiento en estado no visible queda sin claim hasta validación física.
 
 ## Verificación T8b
 
@@ -217,9 +217,9 @@ Límites T8c:
 - La ruta Android real debe construir adapters existentes: `AndroidCameraDeviceOpenGateway`, `AndroidH264EncoderGateway` y `AndroidCameraCaptureSessionGateway` cuando el callback `onOpened` entregue el `CameraDevice`.
 - El trabajo de open/encoder/session/drain se orquesta fuera del hilo principal; la UI solo publica estado.
 - Drain acotado descarta chunks en memoria y llama `consumeEncoded`; sin storage, wire format, transporte ni métricas finales todavía.
-- Stop explícito, `onStop` y `onDestroy` cierran captura, encoder y cámara; hasta T10 no se promete continuidad con pantalla bloqueada.
+- Stop explícito, `onStop` y `onDestroy` cierran captura, encoder y cámara; hasta T10 no se promete comportamiento en estado no visible.
 - T8c debe manejar los advisories T8b antes de captura prolongada: exponer/mostrar errores de cleanup de arranque y tratar callback terminal de open como fallo/stop en vez de quedar en estado pendiente.
-- Sin USB, Wi‑Fi, network, audio, storage, FGS, screen-lock claim, pruebas físicas ni claim de producto funcional.
+- Sin USB, Wi‑Fi, network, audio, storage, FGS, lifecycle no visible claim, pruebas físicas ni claim de producto funcional.
 
 ## Verificación T8c
 
@@ -243,7 +243,7 @@ T8c agrega cableado visible Start/Stop en `UsbProbeActivity` para una prueba loc
 - `AndroidVisibleCameraPipelineLauncher` usa adapters reales Android: `AndroidCameraDeviceOpenGateway`, `AndroidH264EncoderGateway` y `AndroidCameraCaptureSessionGateway`.
 - El launcher espera apertura/configuración de captura en hilo de trabajo y trata callback terminal de open como fallo en vez de quedar pendiente.
 - `UsbProbeActivity` agrega botón local Start/Stop, arranca fuera del hilo principal, drena chunks con límite pequeño, descarta en memoria y llama `consumeEncoded`.
-- Stop explícito, `onStop` y `onDestroy` cierran el pipeline; el texto aclara que no continúa con pantalla bloqueada hasta T10.
+- Stop explícito, `onStop` y `onDestroy` cierran el pipeline; el texto aclara que no continúa con estado no visible hasta T10.
 - No hay USB, Wi‑Fi, network, storage, audio, wire protocol, FGS, prueba física ni claim de producto funcional.
 
 
@@ -272,7 +272,7 @@ Límites T9:
 
 ## Puerta T8d antes de T10
 
-El advisory `R3-start-lock-blocks-ui-stop` de T8c queda como puerta de privacidad/seguridad antes de T10: si el arranque está pendiente, Stop/onStop debe cancelar pronto y cerrar cualquier recurso tardío. Si T9 no lo resuelve explícitamente, debe hacerse como T8d con RED/GREEN y revisión nativa antes de cualquier FGS o pantalla bloqueada. No se debe auto-resumir captura tras cambios de ciclo de vida.
+El advisory `R3-start-lock-blocks-ui-stop` de T8c queda como puerta de privacidad/seguridad antes de T10: si el arranque está pendiente, Stop/onStop debe cancelar pronto y cerrar cualquier recurso tardío. Si T9 no lo resuelve explícitamente, debe hacerse como T8d con RED/GREEN y revisión nativa antes de cualquier FGS o estado no visible. No se debe auto-resumir captura tras cambios de ciclo de vida.
 
 ## Verificación T9
 
@@ -409,14 +409,14 @@ T10a agrega un shell seguro de foreground service de cámara visible sin transfe
 
 - Manifest declara `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CAMERA` y `.VisibleCameraForegroundService` no exportado con `foregroundServiceType="camera"`.
 - `VisibleCameraForegroundServicePlanner` permite start solo si la Activity está visible, `CAMERA` está concedido y la selección actual sigue siendo `DirectOpenCandidate`; los bloqueos devuelven mensajes en español.
-- La notificación dice prueba local visible, video codificado descartado en memoria, no transmite y no graba; no hace claim de pantalla bloqueada, USB, Wi‑Fi, red, storage, audio ni protocolo.
+- La notificación dice prueba local visible, video codificado descartado en memoria, no transmite y no graba; no hace claim de estado no visible, USB, Wi‑Fi, red, storage, audio ni protocolo.
 - El servicio expone acciones explícitas START/STOP, devuelve `START_NOT_STICKY`, y STOP llama `stopForeground(true)`/`stopSelf()`.
 - `UsbProbeActivity` inicia el shell solo después de que el pipeline local llega a `Running` y el plan fresco visible+permiso+selección lo permite; sigue deteniendo pipeline y shell en stop de usuario, `onStop` y `onDestroy`.
-- T10a no transfiere ownership de la captura al service, no agrega background cold-start ni valida pantalla bloqueada.
+- T10a no transfiere ownership de la captura al service, no agrega background cold-start ni valida estado no visible.
 
 ## Diseño T10 — servicio foreground de cámara visible
 
-T10 mueve la captura local visible a un contrato de foreground service de cámara sin hacer claims de persistencia con pantalla bloqueada ni soporte físico. La activación sigue siendo sólo por acción explícita del usuario con la Activity visible.
+T10 mueve la captura local visible a un contrato de foreground service de cámara sin hacer claims de persistencia con estado no visible ni soporte físico. La activación sigue siendo sólo por acción explícita del usuario con la Activity visible.
 
 Alcance T10:
 
@@ -425,8 +425,8 @@ Alcance T10:
 - El arranque del servicio se permite sólo desde flujo visible de la Activity después de re-leer permiso runtime CAMERA y selección directa actual; no hay auto-start por resume, permiso callback, boot, USB ni recreación.
 - El servicio debe publicar notificación foreground con texto honesto: prueba local visible; video codificado descartado en memoria; no transmite ni graba.
 - Stop de usuario y `onStop` de Activity deben detener la captura local y/o pedir al servicio que se detenga; la notificación también debe ofrecer detener.
-- Debido a restricciones de permiso while-in-use, T10 no promete comenzar cámara desde background/lock; si la app ya no está visible antes de start foreground, el flujo debe fallar seguro.
-- Tests RED iniciales: permisos/manifest/type, start planner sólo visible+permiso+selección directa, bloqueo de start no visible, stop action detiene servicio/controlador, texto de notificación sin claims de transmisión/grabación/pantalla bloqueada.
+- Debido a restricciones de permiso while-in-use, T10 no promete comenzar cámara desde background/estado no visible; si la app ya no está visible antes de start foreground, el flujo debe fallar seguro.
+- Tests RED iniciales: permisos/manifest/type, start planner sólo visible+permiso+selección directa, bloqueo de start no visible, stop action detiene servicio/controlador, texto de notificación sin claims de transmisión/grabación/estado no visible.
 - Sin Wi‑Fi/USB/network/storage/audio/wire protocol, pruebas físicas ni claims Samsung/Windows/macOS.
 
 ### Revisión nativa RDD T10a
@@ -434,24 +434,24 @@ Alcance T10:
 - Candidato: `6976832` contra base `22bc71a`.
 - Lineage: `review-b6bff246b4c2347c`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
-- Hallazgos advisory no bloqueantes del reviewer: `R3-foreground-start-failure-unhandled`, `R3-notification-stop-does-not-stop-pipeline`. No abrieron corrección para T10a. `R3-notification-stop-does-not-stop-pipeline` confirma que T10a es solo shell; T10b debe transferir ownership real al service antes de claim de pantalla bloqueada.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-foreground-start-failure-unhandled`, `R3-notification-stop-does-not-stop-pipeline`. No abrieron corrección para T10a. `R3-notification-stop-does-not-stop-pipeline` confirma que T10a es solo shell; T10b debe transferir ownership real al service antes de claim de estado no visible.
 
 
 ## Diseño T10b — ownership del pipeline en foreground service
 
-T10b existe porque T10a es sólo shell: mientras `UsbProbeActivity.onStop` detenga siempre el pipeline, la continuidad bajo pantalla bloqueada no puede funcionar. T10b debe mover la propiedad real del pipeline cámara→encoder a un `Service` no exportado, manteniendo el arranque seguro y visible.
+T10b existe porque T10a es sólo shell: mientras `UsbProbeActivity.onStop` detenga siempre el pipeline, la continuidad bajo estado no visible no puede funcionar. T10b debe mover la propiedad real del pipeline cámara→encoder a un `Service` no exportado, manteniendo el arranque seguro y visible.
 
 Alcance T10b:
 
 - La Activity sólo autoriza el inicio mientras está visible, con permiso runtime `CAMERA` fresco y selección actual `DirectOpenCandidate`; no hay start por background, boot, USB, permiso callback, resume automático ni recreación.
 - El `Service` posee y cierra `CameraEncoderPipeline`/handle, drain loop y métricas de sesión; no retiene referencia a Activity ni vistas.
-- Si `onStop`/lock ocurre después de un inicio válido y el service ya posee el pipeline, la Activity no debe detener la captura por lifecycle; sólo debe desasociarse de la UI.
+- Si `onStop`/estado no visible ocurre después de un inicio válido y el service ya posee el pipeline, la Activity no debe detener la captura por lifecycle; sólo debe desasociarse de la UI.
 - Stop explícito de usuario y acción de notificación detienen el pipeline/service; revocación de permiso o destrucción del service cierran recursos.
 - El arranque pendiente debe ser cancelable por stop/notificación/destrucción y debe cerrar handles tardíos, siguiendo la disciplina T8d.
 - El service devuelve `START_NOT_STICKY` y nunca cold-starts cámara en background tras kill/recreate.
 - Si el cambio es demasiado grande, partir en T10b adapter/orquestador service con fakes y T10c binding Activity; no mezclar transportes.
 - Tests RED esperados: service no retiene Activity; inicio bloqueado si no visible/no permiso/no selección directa; Activity `onStop` no llama `controller.stopForLifecycle` cuando el ownership ya fue transferido; notificación STOP detiene pipeline; startup pendiente cancelado cierra recursos tardíos; `START_NOT_STICKY` sin auto-restart.
-- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims Samsung/Windows/macOS/pantalla bloqueada hasta M9.
+- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims Samsung/Windows/macOS/estado no visible hasta M9.
 
 ## Verificación T10b
 
@@ -473,7 +473,7 @@ T10b transfiere el ownership del pipeline local cámara→encoder desde `UsbProb
 - El planner/command policy bloquea selección nula, vacía, stale o physical-only, y reusa el mensaje seguro existente en español.
 - `VisibleCameraForegroundServicePipelineOwner` no requiere referencia a Activity; envuelve el pipeline y drain loop propios del service.
 - La Activity muestra estado honesto de servicio solicitado/activo en español y delega el stop explícito al service.
-- No se agrega USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims de compatibilidad/pantalla bloqueada.
+- No se agrega USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims de compatibilidad/estado no visible.
 
 ### Revisión nativa RDD T10b
 
@@ -494,7 +494,7 @@ Alcance T10c1:
 - STOP/destrucción durante arranque pendiente debe cancelar por generación, volver pronto y cerrar recursos tardíos; no debe quedar bloqueado por locks largos.
 - Si `startForeground` lanza `SecurityException` o `ForegroundServiceStartNotAllowedException` por token visible stale/política Android, el service debe fallar seguro: no abrir cámara, detenerse y no reclamar soporte.
 - Tests RED: comando start no invoca pipeline start sincrónicamente en main; stop puede ejecutarse mientras start background está bloqueado; callbacks no usan main handler en service factory; foreground exception evita abrir cámara.
-- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
+- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/estado no visible.
 
 ## Verificación T10c1
 
@@ -515,7 +515,7 @@ T10c1 corrige el arranque del foreground service para que `onStartCommand` publi
 - `VisibleCameraForegroundServiceCommandRunner` publica foreground para un start visible estructuralmente válido y agenda el start real en un executor; si `startForeground` lanza `SecurityException` o `ForegroundServiceStartNotAllowedException`, detiene el servicio y no agenda apertura.
 - `VisibleCameraForegroundServicePipelineOwner` ya no mantiene un lock durante `pipeline.start`; STOP/destrucción incrementan generación, vuelven pronto durante start bloqueado y fuerzan `pipeline.stop` si un resultado tardío llega después de cancelación.
 - El service crea `AndroidVisibleCameraPipelineLauncher` con `HandlerThread` dedicado (`visible-camera-service-camera-callbacks`) en lugar del handler del main looper.
-- No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims de hardware/pantalla bloqueada.
+- No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims de hardware/estado no visible.
 
 ### Revisión nativa RDD T10c1
 
@@ -539,7 +539,7 @@ Alcance T10c2:
 - Fallos runtime de `drainOnce` deben terminar sólo el job dueño y no filtrar threads.
 - Tests RED: stop+restart no produce doble drain desde loop viejo; interrupción/stop sale; excepción de drain no deja loop vivo.
 - Mantener el arranque FGS no bloqueante de T10c1 y no mezclar Activity recreation/binding en este lote si excede tamaño reviewable.
-- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
+- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/estado no visible.
 
 ## Verificación T10c2
 
@@ -561,7 +561,7 @@ T10c2 reemplaza el drain loop basado en un booleano compartido por un job/genera
 - Cada `start` aceptado crea un `DrainJob` inmutable con generación, pipeline y thread nombrado; un start repetido mientras el job actual sigue activo se ignora.
 - `stop` invalida el job actual bajo lock e interrumpe sólo el thread de esa generación.
 - El loop comprueba que su job sigue siendo actual antes de drenar, después de cada drain `Running`, después de dormir/interrupción y en salida; una excepción de `drainOnce` termina sólo ese job y permite un start posterior.
-- No se cambia binding/recreación de Activity, USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims de hardware/pantalla bloqueada.
+- No se cambia binding/recreación de Activity, USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims de hardware/estado no visible.
 
 ## Diseño T10c3 — binding de Activity a service-owned state
 
@@ -586,7 +586,7 @@ Alcance T10c3:
 - Stop explícito desde Activity recreada debe detener el service/pipeline y limpiar el estado process-local.
 - No confiar en `savedInstanceState` ni en booleanos locales como fuente de verdad de ownership.
 - Tests RED: estado process-local Running/Starting produce UI Stop después de recreación; Start repetido no invoca nuevo start si service ya activo; Stop recreado envía stop y estado vuelve a Stopped; no referencia Activity guardada.
-- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
+- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/estado no visible.
 
 ## Verificación T10c3
 
@@ -607,7 +607,7 @@ T10c3 vincula la UI recreada al estado real process-local del foreground service
 - `UsbProbeActivity.renderLocalCameraPipeline` consulta el store real, no sólo `localCameraServiceOwnershipRequested`; una Activity recreada ve `Starting`/`Running` y muestra Stop habilitado.
 - La acción principal sobre `Starting`/`Running` se mapea a Stop, por lo que un Start repetido desde una Activity recreada no manda otro start/open.
 - Stop explícito limpia el status process-local a `Stopped` y pide detener el service/pipeline.
-- No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
+- No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/estado no visible.
 
 ### Revisión nativa RDD T10c3
 
@@ -627,7 +627,7 @@ Alcance T10c4:
 - Start rápido después de Stop no debe solapar owners si el estado process-local sigue `Stopping`; la acción primaria debe seguir siendo Stop/deshabilitada o no lanzar nuevo START hasta confirmación.
 - `onResume` debe reconciliar desde el estado process-local real, no desde booleanos persistidos/locales.
 - Tests RED: Error del service se renderiza; Stop mantiene `Stopping` hasta confirmación; Stop→Start rápido no invoca start; onResume/render usa status store.
-- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
+- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/estado no visible.
 
 ## Verificación T10c4
 
@@ -649,4 +649,4 @@ T10c4 endurece la verdad visible del estado del foreground service: la Activity 
 - `Stopping` mantiene acción Stop deshabilitada y el mapeo de acción no inicia un nuevo START, protegiendo Stop→Start rápido mientras cierra el owner anterior.
 - `VisibleCameraServiceActivityStopPolicy` diferencia Stop aceptado (`Stopping`) de no-service-active explícito (`Stopped`).
 - `UsbProbeActivity` publica `Stopping` antes de llamar `stopService`; sólo limpia a `Stopped` si Android informa que no había service activo. La confirmación normal sigue viniendo de `VisibleCameraForegroundService`/owner con `clearStopped`.
-- No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
+- No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/estado no visible.

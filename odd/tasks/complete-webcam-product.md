@@ -58,7 +58,7 @@ Estas no son bloqueos de planificación, pero sí puertas de evidencia antes de 
 2. **WinUSB-libusb-Windows11** — `rusb` puede requerir asociación manual WinUSB/libusb; no se automatiza driver/Zadig.
 3. **MediaFoundation-WindowsCamera** — exponer una cámara seleccionable en Windows 11 debe validarse con apps reales.
 4. **OBS-macOS-binding** — el flujo macOS depende de OBS Studio o integración aceptable; no prometer dispositivo nativo `ChinchillaCam` sin prueba.
-5. **ScreenLock-Camera-FGS** — continuidad con pantalla bloqueada y foreground service depende de Android/dispositivo.
+5. **Lifecycle-Camera-FGS** — comportamiento en estado no visible y foreground service depende de Android/dispositivo.
 6. **Samsung-physical-camera-IDs** — IDs físicos Camera2 pueden ser consultables pero no abribles ni seleccionables directamente.
 7. **Android-min-version** — `minSdk` técnico no equivale a versión mínima de producto validada.
 8. **LAN-discovery-firewall** — Wi‑Fi local puede fallar por red invitada, aislamiento de clientes o firewall.
@@ -97,8 +97,8 @@ Para cada unidad de trabajo:
 8. **T8b — Orquestador local cámara→encoder.** Conectar seams T6/T7/T8 con selección directa actual, permiso `CAMERA` actual y acción explícita Start/Stop; drenar chunks acotados/tipados y cerrar ante fallos/lifecycle; sin Activity real si se separa en T8c; sin USB/Wi‑Fi/network/storage. Corregir antes de captura prolongada el advisory T7 `R3-stop-failure-cleanup`.
 9. **T8c — Cableado Activity visible del pipeline local.** Integrar Start/Stop español en Android visible, cerrar en lifecycle y mantener cero transporte externo/FGS/claims; separar de T8b si el lote sería demasiado grande.
 10. **T9 — Métricas Android de captura/encode.** FPS reales, chunks drenados/dropped por backpressure, encoder latency y estado visible desde el pipeline local, no métricas sintéticas.
-11. **T10a — Shell seguro de foreground service de cámara.** Declarar permisos/tipo FGS cámara y notificación honesta desde acción visible, pero mantener la Activity como dueña del pipeline y detener en `onStop`; sin claim de pantalla bloqueada.
-12. **T10b — Transferir ownership del pipeline al service no exportado.** Iniciar solo mientras Activity está visible con permiso `CAMERA` fresco y selección directa actual; el service posee cámara→encoder, continúa bajo notificación persistente después de `onStop`/lock, cancela arranque pendiente, no retiene Activity, usa `START_NOT_STICKY`, se detiene por notificación/usuario/revocación/destrucción; sin background cold-start ni claim de compatibilidad hasta M9.
+11. **T10a — Shell seguro de foreground service de cámara.** Declarar permisos/tipo FGS cámara y notificación honesta desde acción visible, pero mantener la Activity como dueña del pipeline y detener en `onStop`; sin claim de estado no visible.
+12. **T10b — Transferir ownership del pipeline al service no exportado.** Iniciar solo mientras Activity está visible con permiso `CAMERA` fresco y selección directa actual; el service posee cámara→encoder, mantiene ownership del pipeline bajo notificación persistente después de `onStop`; el comportamiento en estados no visibles queda pendiente de validación física, cancela arranque pendiente, no retiene Activity, usa `START_NOT_STICKY`, se detiene por notificación/usuario/revocación/destrucción; sin background cold-start ni claim de compatibilidad hasta M9.
 
 ### M3 — Pairing, autoridad local y framing de sesión
 
@@ -144,13 +144,13 @@ Para cada unidad de trabajo:
 
 32. **T33 — USB physical matrix.** Requiere acceso del usuario a Samsung referencia + Windows 11 + macOS 13+; WinUSB/libusb manual solo si el usuario decide; registrar evidencia.
 33. **T34 — Wi‑Fi LAN matrix.** Requiere redes reales del usuario; firewall/guest isolation, reconnect, latency.
-34. **T35 — Camera and screen-lock matrix.** Requiere Note10/S24+ u otros disponibles; cámaras, resolución/FPS, pantalla bloqueada.
+34. **T35 — Camera and lifecycle no visible matrix.** Requiere Note10/S24+ u otros disponibles; cámaras, resolución/FPS, estado no visible.
 35. **T36 — External app matrix.** Requiere apps reales del usuario; Windows apps seleccionan `ChinchillaCam`; macOS apps seleccionan `OBS Virtual Camera`; documentar fallos.
 36. **T37 — Support declaration pass.** Solo aquí mover hipótesis a soporte real o limitaciones por plataforma/dispositivo, basado en evidencia de T33–T36.
 
 ## Próxima unidad autorizada
 
-La próxima unidad de código recomendada en la rama actual es **M2/T10b — Transferir ownership del pipeline al foreground service no exportado**. T10a solo agregó el shell seguro; no declarar M2 completo ni continuidad con pantalla bloqueada mientras el código siga deteniendo el pipeline en `onStop`.
+La próxima unidad de código recomendada en la rama actual es **M2/T10b — Transferir ownership del pipeline al foreground service no exportado**. T10a solo agregó el shell seguro; no declarar M2 completo ni comportamiento en estado no visible mientras el código siga deteniendo el pipeline en `onStop`.
 
 Antes de escribir source para T8b se debe:
 
