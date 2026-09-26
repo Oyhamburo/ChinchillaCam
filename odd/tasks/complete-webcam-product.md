@@ -1,0 +1,165 @@
+# Complete ChinchillaCam webcam product plan
+
+> Estado: plan paraguas creado en `feat/android-camera-catalog` desde HEAD limpio `2958236`. Este plan coordina el producto completo sin push/PR/merge. Los commits siguen siendo locales. Las pruebas físicas Samsung/Mac/Windows quedan deliberadamente al final.
+
+## Alcance de producto
+
+ChinchillaCam debe permitir usar un teléfono Android Samsung compatible como cámara de video para Windows 11 o macOS 13+ Apple Silicon, con transporte USB y Wi‑Fi local, sin cuentas, sin nube y sin servidores externos.
+
+No objetivos actuales:
+
+- audio;
+- grabación;
+- fotos;
+- nube, cuentas, backend público o analítica remota;
+- múltiples computadoras activas a la vez;
+- soporte prometido para Windows 10, Mac Intel u otros teléfonos antes de evidencia.
+
+## Documentos vinculados
+
+- Producto: `README.md`, `docs/requisitos.md`, `docs/factibilidad.md`, `docs/uso.md`.
+- Definición inicial: `odd/tasks/define-product.md`.
+- USB/AOA: `odd/tasks/usb-transport-feasibility.md`.
+- Catálogo Camera2 Android: `odd/tasks/android-camera-catalog.md`.
+
+## Estado actual resumido
+
+### USB/AOA
+
+Implementado y revisado localmente:
+
+- host Rust `desktop/usb-probe` con dry-run, live-control, re-enumeración, claim bulk y `--live-bulk-smoke`;
+- Android USB accessory smoke APK con permiso explícito, frame bounded y ACK;
+- endurecimientos de callback/timeout/identidad de permiso.
+
+Pendiente:
+
+- `T6` de `odd/tasks/usb-transport-feasibility.md` sigue pendiente hasta pruebas físicas reales en Samsung + Windows + macOS. No se cierra con documentación.
+
+### Camera2 Android
+
+Implementado y revisado localmente:
+
+- dominio `CameraCapabilityCatalog` con gateway inyectable;
+- clasificación de IDs `DirectOpenCandidate` vs `PhysicalOnlyChild`;
+- capacidades `Known`/`Unknown`/`Unavailable`;
+- hardening T1b ante fallo parcial y orden determinista.
+
+Pendiente inmediato:
+
+- T2 adapter real `CameraManager`/`CameraCharacteristics` sin abrir cámara;
+- T3 UI española para listar/seleccionar solo candidatos directos.
+
+## Incertidumbres técnicas nombradas
+
+Estas no son bloqueos de planificación, pero sí puertas de evidencia antes de declarar soporte real:
+
+1. **USB-AOA-Samsung** — AOA y bulk smoke pueden fallar o comportarse distinto en Samsung reales.
+2. **WinUSB-libusb-Windows11** — `rusb` puede requerir asociación manual WinUSB/libusb; no se automatiza driver/Zadig.
+3. **MediaFoundation-WindowsCamera** — exponer una cámara seleccionable en Windows 11 debe validarse con apps reales.
+4. **OBS-macOS-binding** — el flujo macOS depende de OBS Studio o integración aceptable; no prometer dispositivo nativo `ChinchillaCam` sin prueba.
+5. **ScreenLock-Camera-FGS** — continuidad con pantalla bloqueada y foreground service depende de Android/dispositivo.
+6. **Samsung-physical-camera-IDs** — IDs físicos Camera2 pueden ser consultables pero no abribles ni seleccionables directamente.
+7. **Android-min-version** — `minSdk` técnico no equivale a versión mínima de producto validada.
+8. **LAN-discovery-firewall** — Wi‑Fi local puede fallar por red invitada, aislamiento de clientes o firewall.
+9. **Latency-quality-budget** — calidad real depende de captura, encoder, transporte, decode y publicación como cámara.
+10. **Unsigned-installers** — distribución gratuita desde GitHub puede mostrar advertencias de seguridad en Android/Windows/macOS.
+
+## Reglas de ejecución
+
+Para cada unidad de trabajo:
+
+- escribir/actualizar ODD antes de source cuando cambie el plan;
+- TDD estricto: RED observado antes de producción, GREEN después;
+- incluir tests y docs/evidencia en el mismo work unit;
+- commits locales solamente;
+- revisión nativa RDD por candidato cuando aplique;
+- sin push, PR ni merge;
+- sin code-golf para esconder tamaño;
+- rollback por commit local y `git revert`/reset en la rama local si se abandona el candidato;
+- UI y Markdown orientados a usuario en español; código en inglés;
+- no afirmar soporte hardware sin evidencia física.
+
+## Milestones y work units
+
+### M1 — Camera2 catalog real, selección segura y UX mínima Android
+
+1. **T2 — Adapter real CameraManager sin abrir cámara.** Implementar gateway `CameraManager`/`CameraCharacteristics` con guards de API para IDs lógicos/físicos, tamaños, FPS y controles; excepciones como `Unknown`; sin `CameraDevice.open`.
+2. **T3 — UI española de catálogo de cámaras.** Listar `DirectOpenCandidate` seleccionables y `PhysicalOnlyChild` no abribles; explicar que un candidato puede fallar al abrir.
+3. **T4 — Permiso de cámara Android.** Modelar flujo de permiso cámara visible, denegado/otorgado/stale, sin captura aún.
+4. **T5 — Persistencia de preferencia de cámara.** Guardar selección local por ID directo; invalidar si desaparece del catálogo.
+
+### M2 — Captura Android y encoder local
+
+5. **T6 — Apertura CameraDevice acotada.** Abrir solo ID directo seleccionado con fakes/adapter seam; errores tipados; sin streaming externo.
+6. **T7 — Sesión de captura preview/frame source.** Crear boundary para frames de video; cerrar recursos; no encoder aún.
+7. **T8 — MediaCodec encoder H.264/AVC MVP.** Encapsular encoder con tests de state machine/fakes; producir frames codificados o errores tipados.
+8. **T9 — Métricas Android de captura/encode.** FPS reales, frames dropped, encoder latency y estado visible.
+9. **T10 — Foreground service y pantalla bloqueada experimental.** Implementar servicio/notificación si necesario, con límites honestos; no declarar soporte hasta prueba física.
+
+### M3 — Transporte de sesión compartido
+
+10. **T11 — Protocolo de sesión y framing de video.** Extender framing para handshake, stream metadata, video chunks, metrics y control messages.
+11. **T12 — USB video transport sobre AOA bulk.** Reusar claim/framing existente para stream sostenido con backpressure/timeouts; sin prueba física todavía.
+12. **T13 — Wi‑Fi LAN transport MVP.** TCP/UDP local según diseño, conexión directa, timeouts y errores accionables.
+13. **T14 — Transport switch model.** Cambiar USB/Wi‑Fi sin reemparejar; interrupción explícita y estado recuperable.
+
+### M4 — Pairing, autoridad local y una computadora activa
+
+14. **T15 — QR pairing payload.** Diseñar payload local con claves/identificador de PC, expiración y tests.
+15. **T16 — Persistencia de confianza local.** Guardar confianza en Android y desktop; revocación local.
+16. **T17 — One-active-computer enforcement.** Rechazar segunda sesión activa con mensaje claro; handoff explícito.
+17. **T18 — Reconnection and session resume.** Reconectar cable/red sin nuevo QR cuando confianza local siga válida.
+
+### M5 — Desktop receive/decode core
+
+18. **T19 — Desktop receiver session core.** Separar transporte, protocolo, decode y métricas; fakes para USB/Wi‑Fi.
+19. **T20 — Video decode pipeline.** Decodificar frames H.264 con boundary testeable; errores tipados.
+20. **T21 — Desktop metrics.** FPS, latency, dropped frames, active transport quality y causa probable.
+
+### M6 — Cámara seleccionable por plataforma
+
+21. **T22 — Windows 11 virtual camera prototype.** Media Foundation boundary, registro/publicación, pruebas automatizables donde sea posible; validación con app real queda para fase física/manual.
+22. **T23 — macOS OBS integration prototype.** Fuente/flujo OBS documentado o adapter si viable; no prometer cámara nativa propia.
+23. **T24 — Desktop app UX shell.** Pantallas españolas de pairing, transporte, cámara seleccionada, métricas y fallos.
+
+### M7 — Calidad, controles y recuperación
+
+24. **T25 — Controles de cámara/calidad.** Resolución, FPS, cámara, modo automático; degradar si capability `Unavailable`.
+25. **T26 — Error recovery UX.** USB/Wi‑Fi/cámara/encoder/desktop output con acciones claras.
+26. **T27 — Privacy and local-only audit.** Confirmar sin cuentas/nube/backend/audio/recording; docs y tests de configuración.
+
+### M8 — Build, packaging y publicación gratuita
+
+27. **T28 — Android APK product build.** Separar o renombrar probe/product si procede; APK GitHub-ready.
+28. **T29 — Windows package.** Build/install local, advertencias de firma si aplica, sin prometer fricción cero.
+29. **T30 — macOS package.** Build Apple Silicon, OBS dependency docs, advertencias de firma/notarización.
+30. **T31 — CI/local release automation.** Comandos reproducibles para APK/Windows/macOS, checksums y docs.
+
+### M9 — Validación física final
+
+31. **T32 — USB physical matrix.** Samsung referencia + Windows 11 + macOS 13+; WinUSB/libusb manual si el usuario decide; registrar evidencia.
+32. **T33 — Wi‑Fi LAN matrix.** Redes reales, firewall/guest isolation, reconnect, latency.
+33. **T34 — Camera and screen-lock matrix.** Note10/S24+ u otros disponibles, cámaras, resolución/FPS, pantalla bloqueada.
+34. **T35 — External app matrix.** Windows apps seleccionan `ChinchillaCam`; macOS apps seleccionan `OBS Virtual Camera`; documentar fallos.
+35. **T36 — Support declaration pass.** Solo aquí mover hipótesis a soporte real o limitaciones por plataforma/dispositivo.
+
+## Próxima unidad autorizada
+
+La próxima unidad de código recomendada es **M1/T2 — Adapter real CameraManager sin abrir cámara**.
+
+Antes de escribir source para T2 se debe:
+
+- actualizar `odd/tasks/android-camera-catalog.md` con T2 detallado;
+- espejar en Engram;
+- escribir tests RED contra el adapter;
+- mantener superficies estrechas, probablemente `CameraCapabilityCatalog.kt`, nuevo test de adapter y ODD.
+
+## Decisiones humanas inevitables conocidas
+
+No se requiere decisión humana rutinaria para continuar con T2. Las decisiones que probablemente sí serán inevitables más adelante son:
+
+- aceptar o rechazar pasos manuales de driver/WinUSB/libusb en Windows si la validación USB lo exige;
+- elegir si macOS se queda en OBS-only o se invierte en una cámara virtual nativa si OBS UX no alcanza;
+- elegir identificadores/nombres públicos de app/paquetes antes de releases;
+- ejecutar pruebas físicas finales con los dispositivos/plataformas disponibles.
