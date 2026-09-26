@@ -608,3 +608,10 @@ T10c3 vincula la UI recreada al estado real process-local del foreground service
 - La acción principal sobre `Starting`/`Running` se mapea a Stop, por lo que un Start repetido desde una Activity recreada no manda otro start/open.
 - Stop explícito limpia el status process-local a `Stopped` y pide detener el service/pipeline.
 - No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
+
+### Revisión nativa RDD T10c3
+
+- Candidato: `94a87b2` contra base `24b22ca`.
+- Lineage: `review-d1a8af462b5cd580`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes: `R3-error-status-not-rendered`, `R3-stale-service-status`, `R3-stop-test-manufactures-result`. No abrieron corrección para T10c3; quedan para hardening de estado/error si se sigue puliendo la UI del service.
