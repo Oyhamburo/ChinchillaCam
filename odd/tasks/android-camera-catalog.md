@@ -69,7 +69,7 @@ Estos advisories de T5d3 son conocidos y no deben iniciar un bucle automático i
 ## Plan secuencial
 
 - [x] T1: agregar dominio `CameraCapabilityCatalog` con gateway fake y pruebas JVM. Commit `d75495b` (`feat: add Android camera capability catalog`) implementó `CameraCapabilityCatalog.kt` y `CameraCapabilityCatalogTest.kt`; revisión nativa RDD aprobada y reconocida en lineage `review-ff86e4f59c053d11`.
-- [x] T1b candidato: endurecer catálogo ante fallos parciales y orden no determinista. Resolvió `R3-characteristics-failure-aborts-snapshot` y `R3-nondeterministic-physical-order`: una excepción/fallo de características de una cámara produce entrada parcial `Unknown` sin abortar otras cámaras; los IDs direct-open-candidate y físicos child salen en orden determinista estable. Incorporó la nuance de `getCameraIdList()`: un ID listado es candidato direccionable, no garantía de apertura exitosa. Sin `CameraDevice.open`, sin captura, sin UI y sin claims hardware. Revisión nativa RDD pendiente.
+- [x] T1b: endurecer catálogo ante fallos parciales y orden no determinista. Commit `9558ca3` (`fix: harden Android camera catalog snapshots`) resolvió `R3-characteristics-failure-aborts-snapshot` y `R3-nondeterministic-physical-order`: una excepción/fallo de características de una cámara produce entrada parcial `Unknown` sin abortar otras cámaras; los IDs direct-open-candidate y físicos child salen en orden determinista estable. Incorporó la nuance de `getCameraIdList()`: un ID listado es candidato direccionable, no garantía de apertura exitosa. Sin `CameraDevice.open`, sin captura, sin UI y sin claims hardware. Revisión nativa RDD aprobada y reconocida en lineage `review-2237faf927784644`.
 - [ ] T2: adapter real `CameraManager`/`CameraCharacteristics` con guards de API para IDs lógicos/físicos, tamaños/FPS/controles y estados `Unknown`/`Unavailable` claros; compile/build tests, sin abrir cámara.
 - [ ] T3: UI española para listar/seleccionar solo IDs direccionables; físicos-only se muestran como no abribles. Sin prometer selección de lentes Samsung sin soporte de API.
 
@@ -124,3 +124,11 @@ Estos advisories de T5d3 son conocidos y no deben iniciar un bucle automático i
 - `CameraCapabilityCatalog` captura excepciones al consultar características por ID y conserva una entrada parcial con capabilities `Unknown`, en vez de abortar el snapshot completo.
 - El snapshot ordena IDs directos con `distinct().sorted()` y acumula físicos-only en `sortedMapOf`, para estabilizar salida y pruebas.
 - T1b sigue sin abrir cámara, sin captura, sin UI, sin manifest/permisos y sin prometer selección de lentes físicos Samsung.
+
+
+### Revisión nativa RDD T1b
+
+- Candidato: `9558ca3` contra base `9378559`.
+- Lineage: `review-2237faf927784644`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgo advisory no bloqueante del reviewer: `R3-overbroad-throwable-recovery`. No abrió corrección para T1b; queda como hardening futuro si se acota la recuperación de errores del adapter/gateway.
