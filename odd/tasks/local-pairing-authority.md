@@ -24,6 +24,7 @@ Construir el contrato local de sesión entre Android y desktop antes de transpor
   - 2026-09-26: Semántica ajustada: el checksum sin clave solo detecta corrupción accidental y campos extra/desconocidos; no autentica ni resiste manipulación maliciosa.
 - [ ] T13: persistencia de confianza local en Android y desktop con revocación; fakes primero.
   - T13a en este worktree será Android-only/in-memory seam; desktop queda aislado en otro worktree hasta decisión fresca de integración.
+  - 2026-09-26: T13a Android-only/in-memory seam implementado en `TrustedDesktopStore.kt`; tests en `TrustedDesktopStoreTest.kt`. Validado localmente con `testDebugUnitTest --rerun-tasks` antes de actualizar este estado.
 - [ ] T14: una computadora activa. Rechazar segunda sesión activa con mensaje español; handoff explícito como acción separada.
 
 
