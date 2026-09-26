@@ -344,3 +344,16 @@ T8d endurece el arranque visible para que Stop explícito o lifecycle durante un
 - Lineage: `review-a6fa0fe7bb03c30d`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes del reviewer: `R3-001`, `R3-002`. No abrieron corrección para T8d.
+
+## Diseño T9b — métricas honestas antes de FGS
+
+T9b corrige dos riesgos de verdad/lectura de T9 antes de usar métricas en estados más públicos o persistentes.
+
+Alcance T9b:
+
+- El indicador rotulado como FPS no debe contar buffers de configuración H.264 (`isCodecConfig`, SPS/PPS) ni salidas sin timestamp de frame confiable. Es FPS de video codificado observado, no buffers/s.
+- Los contadores de chunks/bytes descartados permanecen separados y siguen contando todos los buffers descartados en memoria, incluidos config buffers, porque reflejan descarte local real.
+- La latencia no se estima desde `System.nanoTime()` contra `presentationTimeUs` salvo que el dominio de reloj esté explícitamente probado. Por ahora debe mostrarse `sin estimación` por defecto; una medición futura podrá usar duración de encode con reloj monotónico inyectado o evidencia de mismo dominio.
+- Stop/restart debe resetear o epoch-bindear métricas para que muestras antiguas no aparezcan como actuales después de detener e iniciar una nueva sesión visible.
+- Tests RED: config buffer + frames cuenta FPS sólo por frames; latencia queda Unknown para PTS aunque parezca comparable; restart no conserva métricas previas visibles.
+- Sin cambios de FGS, transporte, storage, audio, wire protocol, pruebas físicas ni claims.
