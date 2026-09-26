@@ -382,3 +382,10 @@ T9b corrige las métricas visibles para que el texto no sobredeclare FPS ni late
 - La latencia visible queda `sin estimación` hasta que exista medición monotónica propia o evidencia explícita de mismo dominio de reloj.
 - Stop resetea métricas para que la UI detenida/reiniciada no muestre muestras de una sesión previa.
 - No cambia FGS, transporte, storage, audio, wire protocol, pruebas físicas ni claims.
+
+### Revisión nativa RDD T9b
+
+- Candidato: `5219a45` contra base `633dd5a`.
+- Lineage: `review-14346f5071aab802`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-batching-dependent-fps`, `R3-restart-test-gap`. No abrieron corrección para T9b; quedan como hardening posterior si se requiere mayor precisión temporal o cobertura de reinicio end-to-end.
