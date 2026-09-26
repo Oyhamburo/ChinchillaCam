@@ -541,6 +541,28 @@ Alcance T10c2:
 - Mantener el arranque FGS no bloqueante de T10c1 y no mezclar Activity recreation/binding en este lote si excede tamaño reviewable.
 - Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
 
+## Verificación T10c2
+
+T10c2 reemplaza el drain loop basado en un booleano compartido por un job/generación propio por arranque. Stop invalida la generación actual e interrumpe el hilo dueño; loops stale salen antes de drenar de nuevo, después de dormir/interrupción y al terminar por estado no `Running` o excepción.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: falló en:
+  - `VisibleCameraForegroundServiceDrainLoopTest.runtimeExceptionTerminatesOnlyThatGenerationAndAllowsLaterStart` porque una excepción dejaba `active=true` y bloqueaba un start posterior.
+  - `VisibleCameraForegroundServiceDrainLoopTest.stopThenFastRestartDoesNotAllowOldGenerationToDrainRestartedSession` porque el loop viejo podía despertar después del restart y drenar la nueva generación.
+  - `VisibleCameraForegroundServiceDrainLoopTest.stopInterruptsSleepingGenerationSoItExitsPromptly` porque `stop` no interrumpía el sleep del loop.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+
+### Límites y decisiones T10c2
+
+- Cada `start` aceptado crea un `DrainJob` inmutable con generación, pipeline y thread nombrado; un start repetido mientras el job actual sigue activo se ignora.
+- `stop` invalida el job actual bajo lock e interrumpe sólo el thread de esa generación.
+- El loop comprueba que su job sigue siendo actual antes de drenar, después de cada drain `Running`, después de dormir/interrupción y en salida; una excepción de `drainOnce` termina sólo ese job y permite un start posterior.
+- No se cambia binding/recreación de Activity, USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims de hardware/pantalla bloqueada.
+
 ## Diseño T10c3 — binding de Activity a service-owned state
 
 T10c3 queda separado si T10c2 ya ocupa el lote: una Activity recreada debe consultar estado real del service/owner mediante API tipada de sólo lectura o binder/status process-local, mostrar Stop usable si el service está `Starting`/`Running`, y un Start repetido no debe abrir una segunda cámara. No confiar en booleanos guardados de Activity. No declarar M2 completo hasta cubrirlo.

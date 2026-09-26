@@ -393,22 +393,72 @@ class ThreadedVisibleCameraServiceDrainLoop(
     private val maxOutputs: Int = 4,
     private val intervalMillis: Long = 33L,
 ) : VisibleCameraServiceDrainLoop {
-    @Volatile private var active: Boolean = false
+    private val lock = Any()
+    private var nextGeneration: Long = 0L
+    private var currentJob: DrainJob? = null
 
     override fun start(pipeline: VisibleCameraServicePipeline) {
-        if (active) return
-        active = true
-        Thread {
-            while (active) {
-                val status = pipeline.drainOnce(maxOutputs)
-                if (status != VisibleCameraPipelineStatus.Running) active = false
-                Thread.sleep(intervalMillis)
+        val job = synchronized(lock) {
+            val activeJob = currentJob
+            if (activeJob != null && !activeJob.stopRequested) return
+            nextGeneration += 1
+            DrainJob(generation = nextGeneration, pipeline = pipeline).also { newJob ->
+                newJob.thread = Thread({ runDrainLoop(newJob) }, "visible-camera-service-drain-${newJob.generation}")
+                currentJob = newJob
             }
-        }.start()
+        }
+        job.thread.start()
     }
 
     override fun stop() {
-        active = false
+        val jobToStop = synchronized(lock) {
+            currentJob.also { job ->
+                currentJob = null
+                job?.stopRequested = true
+            }
+        }
+        jobToStop?.thread?.interrupt()
+    }
+
+    private fun runDrainLoop(job: DrainJob) {
+        try {
+            while (isCurrent(job)) {
+                val status = try {
+                    job.pipeline.drainOnce(maxOutputs)
+                } catch (exception: RuntimeException) {
+                    return
+                }
+                if (status != VisibleCameraPipelineStatus.Running) return
+                if (!isCurrent(job)) return
+                try {
+                    Thread.sleep(intervalMillis)
+                } catch (exception: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+                if (Thread.currentThread().isInterrupted || !isCurrent(job)) return
+            }
+        } finally {
+            finish(job)
+        }
+    }
+
+    private fun isCurrent(job: DrainJob): Boolean = synchronized(lock) {
+        currentJob === job && !job.stopRequested
+    }
+
+    private fun finish(job: DrainJob) {
+        synchronized(lock) {
+            if (currentJob === job) currentJob = null
+            job.stopRequested = true
+        }
+    }
+
+    private class DrainJob(
+        val generation: Long,
+        val pipeline: VisibleCameraServicePipeline,
+    ) {
+        @Volatile var stopRequested: Boolean = false
+        lateinit var thread: Thread
     }
 }
 
