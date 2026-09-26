@@ -337,3 +337,10 @@ T8d endurece el arranque visible para que Stop explícito o lifecycle durante un
 - Stop/onStop incrementa la generación; si llega un handle tarde con una generación stale, se cierra inmediatamente y el estado detenido no se sobreescribe.
 - Un fallo tardío después de lifecycle Stop tampoco pisa el estado detenido.
 - No cambia FGS, transporte, storage, audio, wire protocol, pruebas físicas ni claims.
+
+### Revisión nativa RDD T8d
+
+- Candidato: `8dd1adb` contra base `00515fe`.
+- Lineage: `review-a6fa0fe7bb03c30d`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-001`, `R3-002`. No abrieron corrección para T8d.
