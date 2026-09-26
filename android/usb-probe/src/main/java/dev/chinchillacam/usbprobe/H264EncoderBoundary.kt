@@ -254,6 +254,8 @@ class AndroidH264EncoderGateway(
                 inputSurface = inputSurface,
                 codecSession = AndroidH264CodecSession(inputSurface, codec, dequeueTimeoutUs),
             )
+        } catch (_: java.io.IOException) {
+            H264EncoderStartOutcome.Failed("encoder unavailable")
         } catch (_: IllegalArgumentException) {
             H264EncoderStartOutcome.Failed("encoder configuration rejected")
         } catch (_: IllegalStateException) {
