@@ -1,0 +1,392 @@
+package dev.chinchillacam.usbprobe
+
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+
+private val SESSION_FRAME_MAGIC = byteArrayOf('C'.code.toByte(), 'C'.code.toByte(), 'S'.code.toByte(), 'F'.code.toByte())
+private const val SUPPORTED_SESSION_FRAME_VERSION = 1
+private const val DEFAULT_MAX_SESSION_FRAME_SIZE = 1024 * 1024
+private const val HEADER_WITHOUT_SESSION_BYTES = 16
+
+data class SessionFrame(
+    val version: Int = SUPPORTED_SESSION_FRAME_VERSION,
+    val sequence: Int,
+    val sessionId: String,
+    val payload: SessionPayload,
+) {
+    val type: SessionFrameType = payload.type
+}
+
+enum class SessionFrameType(val id: Int) {
+    HANDSHAKE_HELLO(1),
+    HANDSHAKE_ACCEPT(2),
+    HANDSHAKE_REJECT(3),
+    STREAM_METADATA(4),
+    VIDEO_CHUNK(5),
+    METRICS_SNAPSHOT(6),
+    CAMERA_CONTROL_COMMAND(7);
+
+    companion object {
+        fun fromId(id: Int): SessionFrameType? = values().firstOrNull { it.id == id }
+    }
+}
+
+sealed class SessionPayload(val type: SessionFrameType) {
+    data class HandshakeHello(
+        val deviceId: String,
+        val appName: String,
+        val capabilities: List<String>,
+    ) : SessionPayload(SessionFrameType.HANDSHAKE_HELLO)
+
+    data class HandshakeAccept(
+        val desktopId: String,
+        val message: String,
+    ) : SessionPayload(SessionFrameType.HANDSHAKE_ACCEPT)
+
+    data class HandshakeReject(
+        val reasonCode: String,
+        val message: String,
+    ) : SessionPayload(SessionFrameType.HANDSHAKE_REJECT)
+
+    data class StreamMetadata(
+        val mimeType: String,
+        val width: Int,
+        val height: Int,
+        val frameRate: Int,
+        val profile: String,
+    ) : SessionPayload(SessionFrameType.STREAM_METADATA)
+
+    data class VideoChunk(
+        val chunkIndex: Int,
+        val presentationTimeUs: Long,
+        val h264Bytes: ByteArray,
+    ) : SessionPayload(SessionFrameType.VIDEO_CHUNK) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is VideoChunk) return false
+            return chunkIndex == other.chunkIndex &&
+                presentationTimeUs == other.presentationTimeUs &&
+                h264Bytes.contentEquals(other.h264Bytes)
+        }
+
+        override fun hashCode(): Int {
+            var result = chunkIndex
+            result = 31 * result + presentationTimeUs.hashCode()
+            result = 31 * result + h264Bytes.contentHashCode()
+            return result
+        }
+    }
+
+    data class MetricsSnapshot(
+        val capturedAtUs: Long,
+        val droppedFrames: Int,
+        val latencyMs: Int,
+        val frameRate: Int,
+    ) : SessionPayload(SessionFrameType.METRICS_SNAPSHOT)
+
+    data class CameraControlCommand(
+        val command: String,
+        val arguments: Map<String, String>,
+    ) : SessionPayload(SessionFrameType.CAMERA_CONTROL_COMMAND)
+}
+
+sealed class SessionFrameDecodeError(message: String) : Exception(message) {
+    data class UnsupportedVersion(val actualVersion: Int) : SessionFrameDecodeError("unsupported session frame version: $actualVersion")
+    data class UnknownType(val actualType: Int) : SessionFrameDecodeError("unknown session frame type: $actualType")
+    data class FrameTooLarge(val actualSize: Int, val maxSize: Int) : SessionFrameDecodeError("session frame size $actualSize exceeds max $maxSize")
+    data class InvalidPayload(val reason: String) : SessionFrameDecodeError("invalid session frame payload: $reason")
+    data class InvalidSequence(val sequence: Int) : SessionFrameDecodeError("invalid session frame sequence: $sequence")
+    object InvalidSessionId : SessionFrameDecodeError("invalid session id")
+    data class TruncatedFrame(val field: String) : SessionFrameDecodeError("truncated session frame: $field")
+}
+
+object SessionFrameCodec {
+    fun encode(frame: SessionFrame): ByteArray {
+        require(frame.version == SUPPORTED_SESSION_FRAME_VERSION) { "unsupported session frame version: ${frame.version}" }
+        require(frame.sequence >= 0) { "sequence must be non-negative" }
+        require(frame.sessionId.isNotEmpty()) { "session id must not be empty" }
+
+        val sessionIdBytes = frame.sessionId.encodeUtf8Field("sessionId")
+        val payloadBytes = PayloadWriter().apply { writePayload(frame.payload) }.toByteArray()
+        require(sessionIdBytes.size <= UShort.MAX_VALUE.toInt()) { "session id is too long" }
+
+        return ByteArrayOutputStream().apply {
+            write(SESSION_FRAME_MAGIC)
+            write(frame.version)
+            write(frame.type.id)
+            writeInt(frame.sequence)
+            writeShort(sessionIdBytes.size)
+            write(sessionIdBytes)
+            writeInt(payloadBytes.size)
+            write(payloadBytes)
+        }.toByteArray()
+    }
+
+    fun decode(bytes: ByteArray, maxFrameSize: Int = DEFAULT_MAX_SESSION_FRAME_SIZE): Result<SessionFrame> {
+        if (bytes.size > maxFrameSize) {
+            return Result.failure(SessionFrameDecodeError.FrameTooLarge(bytes.size, maxFrameSize))
+        }
+        if (bytes.size < HEADER_WITHOUT_SESSION_BYTES) {
+            return Result.failure(SessionFrameDecodeError.TruncatedFrame("header"))
+        }
+
+        val reader = FrameReader(bytes)
+        return try {
+            if (!SESSION_FRAME_MAGIC.contentEquals(reader.readBytes(SESSION_FRAME_MAGIC.size, "magic"))) {
+                return Result.failure(SessionFrameDecodeError.InvalidPayload("magic"))
+            }
+            val version = reader.readUnsignedByte("version")
+            if (version != SUPPORTED_SESSION_FRAME_VERSION) {
+                return Result.failure(SessionFrameDecodeError.UnsupportedVersion(version))
+            }
+            val typeId = reader.readUnsignedByte("type")
+            val type = SessionFrameType.fromId(typeId)
+                ?: return Result.failure(SessionFrameDecodeError.UnknownType(typeId))
+            val sequence = reader.readInt("sequence")
+            if (sequence < 0) {
+                return Result.failure(SessionFrameDecodeError.InvalidSequence(sequence))
+            }
+            val sessionIdLength = reader.readUnsignedShort("sessionIdLength")
+            if (sessionIdLength == 0) {
+                return Result.failure(SessionFrameDecodeError.InvalidSessionId)
+            }
+            val sessionId = reader.readUtf8(sessionIdLength, "sessionId")
+            val payloadLength = reader.readInt("payloadLength")
+            if (payloadLength < 0) {
+                return Result.failure(SessionFrameDecodeError.InvalidPayload("payload length must be non-negative"))
+            }
+            if (payloadLength > maxFrameSize - reader.position) {
+                return Result.failure(SessionFrameDecodeError.FrameTooLarge(payloadLength + reader.position, maxFrameSize))
+            }
+            if (reader.remaining < payloadLength) {
+                return Result.failure(SessionFrameDecodeError.TruncatedFrame("payload"))
+            }
+            val payload = PayloadReader(reader.readBytes(payloadLength, "payload")).readPayload(type)
+            if (reader.remaining != 0) {
+                return Result.failure(SessionFrameDecodeError.InvalidPayload("trailing bytes"))
+            }
+            Result.success(SessionFrame(version, sequence, sessionId, payload))
+        } catch (error: SessionFrameDecodeError) {
+            Result.failure(error)
+        } catch (error: IllegalArgumentException) {
+            Result.failure(SessionFrameDecodeError.InvalidPayload(error.message ?: "invalid value"))
+        }
+    }
+}
+
+private class PayloadWriter {
+    private val output = ByteArrayOutputStream()
+
+    fun writePayload(payload: SessionPayload) {
+        when (payload) {
+            is SessionPayload.HandshakeHello -> {
+                writeString(payload.deviceId)
+                writeString(payload.appName)
+                writeShort(payload.capabilities.size)
+                payload.capabilities.forEach(::writeString)
+            }
+            is SessionPayload.HandshakeAccept -> {
+                writeString(payload.desktopId)
+                writeString(payload.message)
+            }
+            is SessionPayload.HandshakeReject -> {
+                writeString(payload.reasonCode)
+                writeString(payload.message)
+            }
+            is SessionPayload.StreamMetadata -> {
+                require(payload.width > 0) { "stream width must be positive" }
+                require(payload.height > 0) { "stream height must be positive" }
+                require(payload.frameRate > 0) { "stream frame rate must be positive" }
+                writeString(payload.mimeType)
+                writeInt(payload.width)
+                writeInt(payload.height)
+                writeInt(payload.frameRate)
+                writeString(payload.profile)
+            }
+            is SessionPayload.VideoChunk -> {
+                require(payload.chunkIndex >= 0) { "chunk index must be non-negative" }
+                writeInt(payload.chunkIndex)
+                writeLong(payload.presentationTimeUs)
+                writeBytesWithLength(payload.h264Bytes)
+            }
+            is SessionPayload.MetricsSnapshot -> {
+                require(payload.capturedAtUs >= 0) { "metrics timestamp must be non-negative" }
+                require(payload.droppedFrames >= 0) { "dropped frames must be non-negative" }
+                require(payload.latencyMs >= 0) { "latency must be non-negative" }
+                require(payload.frameRate >= 0) { "frame rate must be non-negative" }
+                writeLong(payload.capturedAtUs)
+                writeInt(payload.droppedFrames)
+                writeInt(payload.latencyMs)
+                writeInt(payload.frameRate)
+            }
+            is SessionPayload.CameraControlCommand -> {
+                writeString(payload.command)
+                val sortedArguments = payload.arguments.toSortedMap()
+                writeShort(sortedArguments.size)
+                sortedArguments.forEach { (key, value) ->
+                    writeString(key)
+                    writeString(value)
+                }
+            }
+        }
+    }
+
+    fun toByteArray(): ByteArray = output.toByteArray()
+
+    private fun writeString(value: String) = writeBytesWithLength(value.encodeUtf8Field("string"))
+
+    private fun writeBytesWithLength(bytes: ByteArray) {
+        require(bytes.size <= UShort.MAX_VALUE.toInt()) { "field is too large" }
+        writeShort(bytes.size)
+        output.write(bytes)
+    }
+
+    private fun writeShort(value: Int) = output.writeShort(value)
+    private fun writeInt(value: Int) = output.writeInt(value)
+    private fun writeLong(value: Long) = output.writeLong(value)
+}
+
+private class PayloadReader(private val bytes: ByteArray) {
+    private val reader = FrameReader(bytes)
+
+    fun readPayload(type: SessionFrameType): SessionPayload {
+        val payload = when (type) {
+            SessionFrameType.HANDSHAKE_HELLO -> SessionPayload.HandshakeHello(
+                deviceId = readString("deviceId"),
+                appName = readString("appName"),
+                capabilities = List(reader.readUnsignedShort("capabilityCount")) { readString("capability") },
+            )
+            SessionFrameType.HANDSHAKE_ACCEPT -> SessionPayload.HandshakeAccept(
+                desktopId = readString("desktopId"),
+                message = readString("message"),
+            )
+            SessionFrameType.HANDSHAKE_REJECT -> SessionPayload.HandshakeReject(
+                reasonCode = readString("reasonCode"),
+                message = readString("message"),
+            )
+            SessionFrameType.STREAM_METADATA -> {
+                val mimeType = readString("mimeType")
+                val width = reader.readInt("width")
+                val height = reader.readInt("height")
+                val frameRate = reader.readInt("frameRate")
+                val profile = readString("profile")
+                if (width <= 0) throw SessionFrameDecodeError.InvalidPayload("stream width must be positive")
+                if (height <= 0) throw SessionFrameDecodeError.InvalidPayload("stream height must be positive")
+                if (frameRate <= 0) throw SessionFrameDecodeError.InvalidPayload("stream frame rate must be positive")
+                SessionPayload.StreamMetadata(mimeType, width, height, frameRate, profile)
+            }
+            SessionFrameType.VIDEO_CHUNK -> {
+                val chunkIndex = reader.readInt("chunkIndex")
+                if (chunkIndex < 0) throw SessionFrameDecodeError.InvalidPayload("chunk index must be non-negative")
+                SessionPayload.VideoChunk(
+                    chunkIndex = chunkIndex,
+                    presentationTimeUs = reader.readLong("presentationTimeUs"),
+                    h264Bytes = readBytesWithLength("h264Bytes"),
+                )
+            }
+            SessionFrameType.METRICS_SNAPSHOT -> {
+                val capturedAtUs = reader.readLong("capturedAtUs")
+                val droppedFrames = reader.readInt("droppedFrames")
+                val latencyMs = reader.readInt("latencyMs")
+                val frameRate = reader.readInt("frameRate")
+                if (capturedAtUs < 0) throw SessionFrameDecodeError.InvalidPayload("metrics timestamp must be non-negative")
+                if (droppedFrames < 0) throw SessionFrameDecodeError.InvalidPayload("dropped frames must be non-negative")
+                if (latencyMs < 0) throw SessionFrameDecodeError.InvalidPayload("latency must be non-negative")
+                if (frameRate < 0) throw SessionFrameDecodeError.InvalidPayload("frame rate must be non-negative")
+                SessionPayload.MetricsSnapshot(capturedAtUs, droppedFrames, latencyMs, frameRate)
+            }
+            SessionFrameType.CAMERA_CONTROL_COMMAND -> {
+                val command = readString("command")
+                val argumentCount = reader.readUnsignedShort("argumentCount")
+                val arguments = linkedMapOf<String, String>()
+                repeat(argumentCount) {
+                    arguments[readString("argumentKey")] = readString("argumentValue")
+                }
+                SessionPayload.CameraControlCommand(command, arguments)
+            }
+        }
+        if (reader.remaining != 0) {
+            throw SessionFrameDecodeError.InvalidPayload("trailing payload bytes")
+        }
+        return payload
+    }
+
+    private fun readString(field: String): String = reader.readUtf8(reader.readUnsignedShort("${field}Length"), field)
+    private fun readBytesWithLength(field: String): ByteArray = reader.readBytes(reader.readUnsignedShort("${field}Length"), field)
+}
+
+private class FrameReader(private val bytes: ByteArray) {
+    var position: Int = 0
+        private set
+
+    val remaining: Int
+        get() = bytes.size - position
+
+    fun readUnsignedByte(field: String): Int {
+        ensureAvailable(1, field)
+        return bytes[position++].toInt() and 0xff
+    }
+
+    fun readUnsignedShort(field: String): Int {
+        ensureAvailable(2, field)
+        val value = ByteBuffer.wrap(bytes, position, 2).order(ByteOrder.BIG_ENDIAN).short.toInt() and 0xffff
+        position += 2
+        return value
+    }
+
+    fun readInt(field: String): Int {
+        ensureAvailable(4, field)
+        val value = ByteBuffer.wrap(bytes, position, 4).order(ByteOrder.BIG_ENDIAN).int
+        position += 4
+        return value
+    }
+
+    fun readLong(field: String): Long {
+        ensureAvailable(8, field)
+        val value = ByteBuffer.wrap(bytes, position, 8).order(ByteOrder.BIG_ENDIAN).long
+        position += 8
+        return value
+    }
+
+    fun readBytes(length: Int, field: String): ByteArray {
+        if (length < 0) throw SessionFrameDecodeError.InvalidPayload("$field length must be non-negative")
+        ensureAvailable(length, field)
+        return bytes.copyOfRange(position, position + length).also { position += length }
+    }
+
+    fun readUtf8(length: Int, field: String): String = readBytes(length, field).toString(Charsets.UTF_8)
+
+    private fun ensureAvailable(length: Int, field: String) {
+        if (remaining < length) {
+            throw SessionFrameDecodeError.TruncatedFrame(field)
+        }
+    }
+}
+
+private fun ByteArrayOutputStream.writeShort(value: Int) {
+    write((value ushr 8) and 0xff)
+    write(value and 0xff)
+}
+
+private fun ByteArrayOutputStream.writeInt(value: Int) {
+    write((value ushr 24) and 0xff)
+    write((value ushr 16) and 0xff)
+    write((value ushr 8) and 0xff)
+    write(value and 0xff)
+}
+
+private fun ByteArrayOutputStream.writeLong(value: Long) {
+    write(((value ushr 56) and 0xff).toInt())
+    write(((value ushr 48) and 0xff).toInt())
+    write(((value ushr 40) and 0xff).toInt())
+    write(((value ushr 32) and 0xff).toInt())
+    write(((value ushr 24) and 0xff).toInt())
+    write(((value ushr 16) and 0xff).toInt())
+    write(((value ushr 8) and 0xff).toInt())
+    write((value and 0xff).toInt())
+}
+
+private fun String.encodeUtf8Field(field: String): ByteArray = toByteArray(Charsets.UTF_8).also {
+    require(it.size <= UShort.MAX_VALUE.toInt()) { "$field is too long" }
+}

@@ -17,7 +17,8 @@ Construir el contrato local de sesión entre Android y desktop antes de transpor
 
 ## Plan secuencial
 
-- [ ] T11: framing de sesión tipado. Definir envelopes para handshake, stream metadata, video chunks, métricas y controles; decoder/encoder deterministas con límites de tamaño/versionado; sin transporte real.
+- [x] T11: framing de sesión tipado. Define envelopes para handshake, stream metadata, video chunks, métricas y controles; decoder/encoder deterministas con límites de tamaño/versionado; sin transporte real.
+  - 2026-09-26: Implementación pura añadida en `SessionFrame.kt`; tests en `SessionFrameTest.kt`. Validado localmente con `testDebugUnitTest --rerun-tasks`, `assembleDebug`, APK presente y `git diff --check`.
 - [ ] T12: payload QR local. Incluir identificador de PC, clave pública o material de confianza, expiración y versión; tests de expiración/tamper.
 - [ ] T13: persistencia de confianza local en Android y desktop con revocación; fakes primero.
 - [ ] T14: una computadora activa. Rechazar segunda sesión activa con mensaje español; handoff explícito como acción separada.
