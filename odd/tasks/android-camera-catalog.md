@@ -188,3 +188,10 @@ T2b endureció el adapter antes de UI para resolver los advisories no bloqueante
 - `CameraCapabilityCatalog` y `AndroidCameraManagerGateway` degradan solo `SecurityException`, `CameraAccessException` y `AndroidCameraAccessFailure`. Fallos inesperados, como errores de programación, se propagan para no ocultar bugs.
 - `AndroidCameraManagerFacadeImpl.getControls()` devuelve `null` si falta metadata requerida; el catálogo lo muestra como `CapabilityState.Unknown`. Cuando la metadata existe pero indica que un control no está disponible, se preserva `Known(false)`.
 - No se agregó apertura de cámara, captura, frame stream, UI, permiso de cámara ni prueba física.
+
+### Revisión nativa RDD T2b
+
+- Candidato: `c779c49` contra base `1df8e91`.
+- Lineage: `review-9cf10dfe34dfadbd`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgo advisory no bloqueante del reviewer: `R3-missing-control-facade-coverage`. No abrió corrección para T2b; queda como posible hardening futuro del wrapper real si se prioriza antes de captura.
