@@ -35,3 +35,10 @@ Alcance T11:
 - Límites de tamaño por frame; video chunk puede contener bytes H.264 pero no define transporte/backpressure final.
 - Tests RED para roundtrip, rechazo de versión/tipo/tamaño, orden de secuencia y payloads mínimos.
 - Sin USB/Wi‑Fi listener, red externa, crypto real, QR, persistencia, cámara o desktop decode en este lote.
+
+### Revisión nativa RDD T11
+
+- Candidato: `c19693a` contra base `b3faac8`.
+- Lineage: `review-0321f52b8e7283e3`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgo advisory no bloqueante: `R3-collection-count-overflow` en `SessionFrame.kt:186`. No abrió corrección para T11; queda para hardening cuando se validen límites máximos de colecciones dentro del payload.
