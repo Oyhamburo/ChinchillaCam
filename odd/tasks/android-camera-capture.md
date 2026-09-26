@@ -357,3 +357,28 @@ Alcance T9b:
 - Stop/restart debe resetear o epoch-bindear métricas para que muestras antiguas no aparezcan como actuales después de detener e iniciar una nueva sesión visible.
 - Tests RED: config buffer + frames cuenta FPS sólo por frames; latencia queda Unknown para PTS aunque parezca comparable; restart no conserva métricas previas visibles.
 - Sin cambios de FGS, transporte, storage, audio, wire protocol, pruebas físicas ni claims.
+
+## Verificación T9b
+
+T9b corrige las métricas visibles para que el texto no sobredeclare FPS ni latencia.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló en:
+  - `LocalPipelineMetricsTest.encodedFpsCountsOnlyVideoFrameChunksNotCodecConfigBuffers` porque FPS contaba SPS/PPS como frame.
+  - `LocalPipelineMetricsTest.presentationTimestampDoesNotProduceLatencyWithoutProvenClockDomain` porque PTS aparentemente comparable producía latencia sin prueba de dominio de reloj.
+  - `LocalPipelineMetricsTest.stopClearsMetricsSoStaleSamplesDoNotRemainCurrent` porque Stop conservaba muestras visibles viejas.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date en la corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+
+### Límites y decisiones T9b
+
+- FPS cuenta sólo chunks no-config con `presentationTimeUs >= 0` y timestamps distintos dentro del drain observado; los buffers SPS/PPS siguen contándose sólo en chunks/bytes descartados.
+- La latencia visible queda `sin estimación` hasta que exista medición monotónica propia o evidencia explícita de mismo dominio de reloj.
+- Stop resetea métricas para que la UI detenida/reiniciada no muestre muestras de una sesión previa.
+- No cambia FGS, transporte, storage, audio, wire protocol, pruebas físicas ni claims.

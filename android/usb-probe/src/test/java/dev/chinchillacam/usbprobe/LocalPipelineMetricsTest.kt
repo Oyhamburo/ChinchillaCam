@@ -55,17 +55,64 @@ class LocalPipelineMetricsTest {
     }
 
     @Test
-    fun latencyEstimateRequiresComparablePresentationClock() {
+    fun latencyRemainsUnknownWithoutProvenPresentationClockDomain() {
         val clock = FakeMetricsClock(nowUs = 1_000_000L)
         val metrics = LocalPipelineMetricsTracker(clock)
 
         metrics.recordDrain(H264DrainResult.Chunks(listOf(chunk(900_000L))))
-        val aligned = metrics.snapshot().estimatedEncodeLatencyUs
+        val seeminglyAligned = metrics.snapshot().estimatedEncodeLatencyUs
         metrics.recordDrain(H264DrainResult.Chunks(listOf(chunk(2_000_000L))))
-        val unaligned = metrics.snapshot().estimatedEncodeLatencyUs
+        val futureTimestamp = metrics.snapshot().estimatedEncodeLatencyUs
 
-        assertEquals(MetricEstimate.Estimated(100_000L), aligned)
-        assertEquals(MetricEstimate.Unknown, unaligned)
+        assertEquals(MetricEstimate.Unknown, seeminglyAligned)
+        assertEquals(MetricEstimate.Unknown, futureTimestamp)
+    }
+
+
+    @Test
+    fun encodedFpsCountsOnlyVideoFrameChunksNotCodecConfigBuffers() {
+        val clock = FakeMetricsClock(nowUs = 0L)
+        val metrics = LocalPipelineMetricsTracker(clock)
+
+        metrics.recordDrain(H264DrainResult.Chunks(listOf(
+            codecConfigChunk(0L),
+            chunk(100_000L),
+            chunk(200_000L),
+        )))
+
+        val snapshot = metrics.snapshot()
+
+        assertEquals(MetricValue.Known(2.0), snapshot.encodedFps)
+        assertEquals(3, snapshot.encodedChunksDiscarded)
+        assertEquals(12, snapshot.encodedBytesDiscarded)
+    }
+
+    @Test
+    fun presentationTimestampDoesNotProduceLatencyWithoutProvenClockDomain() {
+        val clock = FakeMetricsClock(nowUs = 1_000_000L)
+        val metrics = LocalPipelineMetricsTracker(clock)
+
+        metrics.recordDrain(H264DrainResult.Chunks(listOf(chunk(900_000L))))
+
+        assertEquals(MetricEstimate.Unknown, metrics.snapshot().estimatedEncodeLatencyUs)
+    }
+
+    @Test
+    fun stopClearsMetricsSoStaleSamplesDoNotRemainCurrent() {
+        val clock = FakeMetricsClock(1_000_000L)
+        val handle = MetricsVisibleHandle(H264DrainResult.Chunks(listOf(chunk(900_000L), chunk(950_000L))))
+        val controller = VisibleCameraPipelineController(
+            launcher = OneShotMetricsLauncher(handle),
+            encoderConfig = H264EncoderConfig(1280, 720, 2_000_000, 30, 2),
+            metrics = LocalPipelineMetricsTracker(clock),
+        )
+        controller.start(sampleSnapshot(), "camera-1", cameraPermissionGranted = true)
+        controller.drainOnce(maxOutputs = 4)
+
+        val stopped = controller.stopFromUser()
+
+        assertTrue(stopped.metricsText.contains("FPS: sin muestras aún"))
+        assertTrue(stopped.metricsText.contains("Chunks descartados: 0"))
     }
 
     @Test
@@ -83,7 +130,7 @@ class LocalPipelineMetricsTest {
 
         assertTrue(state.metricsText.contains("FPS: 2.0"))
         assertTrue(state.metricsText.contains("Chunks descartados: 2"))
-        assertTrue(state.metricsText.contains("Latencia encode estimada: 50 ms"))
+        assertTrue(state.metricsText.contains("Latencia encode estimada: sin estimación"))
         assertEquals(listOf(2), handle.consumed)
     }
 
@@ -91,6 +138,13 @@ class LocalPipelineMetricsTest {
         bytes = byteArrayOf(1, 2, 3, 4),
         presentationTimeUs = presentationTimeUs,
         isCodecConfig = false,
+        isKeyFrame = false,
+    )
+
+    private fun codecConfigChunk(presentationTimeUs: Long): EncodedVideoChunk = EncodedVideoChunk(
+        bytes = byteArrayOf(9, 9, 9, 9),
+        presentationTimeUs = presentationTimeUs,
+        isCodecConfig = true,
         isKeyFrame = false,
     )
 

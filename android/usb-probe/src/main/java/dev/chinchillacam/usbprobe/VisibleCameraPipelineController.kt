@@ -115,6 +115,7 @@ class VisibleCameraPipelineController(
         startGeneration += 1
         val stoppedHandle = handle
         handle = null
+        metrics.reset()
         if (stoppedHandle == null) {
             state = VisibleCameraPipelineUiState(
                 status = VisibleCameraPipelineStatus.Stopped,

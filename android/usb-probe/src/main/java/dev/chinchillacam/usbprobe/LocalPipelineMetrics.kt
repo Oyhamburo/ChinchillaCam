@@ -56,11 +56,17 @@ class LocalPipelineMetricsTracker(
         prune(nowUs)
         when (result) {
             is H264DrainResult.Chunks -> {
-                val count = result.chunks.size
-                samples += Sample(nowUs, count)
-                chunksDiscarded += count
-                bytesDiscarded += result.chunks.sumOf { it.bytes.size.toLong() }
-                latestLatency = estimateLatency(nowUs, result.chunks.lastOrNull()?.presentationTimeUs)
+                val chunks = result.chunks
+                val frameCount = chunks
+                    .asSequence()
+                    .filter { !it.isCodecConfig && it.presentationTimeUs >= 0L }
+                    .map { it.presentationTimeUs }
+                    .distinct()
+                    .count()
+                if (frameCount > 0) samples += Sample(nowUs, frameCount)
+                chunksDiscarded += chunks.size
+                bytesDiscarded += chunks.sumOf { it.bytes.size.toLong() }
+                latestLatency = MetricEstimate.Unknown
             }
             is H264DrainResult.BackpressureExceeded -> backpressureDrops += 1
             is H264DrainResult.Failed,
@@ -92,11 +98,6 @@ class LocalPipelineMetricsTracker(
         samples.removeAll { nowUs - it.atUs > fpsWindowUs }
     }
 
-    private fun estimateLatency(nowUs: Long, presentationTimeUs: Long?): MetricEstimate {
-        val pts = presentationTimeUs ?: return MetricEstimate.Unknown
-        if (pts < 0L || pts > nowUs) return MetricEstimate.Unknown
-        return MetricEstimate.Estimated(nowUs - pts)
-    }
 }
 
 object LocalPipelineMetricsFormatter {
