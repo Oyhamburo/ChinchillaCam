@@ -23,6 +23,19 @@ Construir el contrato local de sesión entre Android y desktop antes de transpor
 - [ ] T13: persistencia de confianza local en Android y desktop con revocación; fakes primero.
 - [ ] T14: una computadora activa. Rechazar segunda sesión activa con mensaje español; handoff explícito como acción separada.
 
+
+## Diseño T12 — payload QR local
+
+T12 define un payload QR puramente local y testeable para iniciar confianza sin abrir listeners de red. No establece transporte, no abre Wi‑Fi y no controla cámara.
+
+Alcance T12:
+
+- Definir `PairingQrPayload` versionado con identificador de PC, nombre visible, clave pública/material de confianza, expiración y nonce.
+- Codificación textual determinista apta para QR y decodificación con errores tipados.
+- Validación de expiración mediante reloj inyectado; rechazo de payload expirado, manipulado, versión desconocida, campos faltantes y material inválido.
+- Pruebas RED para roundtrip, orden determinista, expiración, tamper y límites de tamaño/campo.
+- Sin persistencia de confianza todavía, sin listener LAN, sin USB/Wi‑Fi real, sin crypto handshake completo ni claims físicos.
+
 ## Diseño T11 — framing de sesión tipado
 
 T11 crea un contrato puro y testeable para mensajes de sesión sin transporte real. El objetivo es que USB/Wi‑Fi posteriores transporten bytes ya autenticables/decodificables sin inventar payloads ad hoc.
