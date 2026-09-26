@@ -1,7 +1,9 @@
 package dev.chinchillacam.usbprobe
 
-import java.net.URLDecoder
 import java.net.URLEncoder
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.security.MessageDigest
 import java.util.Base64
 
@@ -112,7 +114,7 @@ object PairingQrPayloadCodec {
             if (bodyWithChecksum.isEmpty()) {
                 return Result.failure(PairingQrPayloadDecodeError.InvalidFormatOrPrefix)
             }
-            val fields = parseFields(bodyWithChecksum)
+            val fields = parseFields(bodyWithChecksum).getOrElse { return Result.failure(it) }
             val canonicalBody = canonicalBodyFromRequiredFields(fields).getOrElse { return Result.failure(it) }
             val expectedChecksum = fields["checksum"] ?: return Result.failure(PairingQrPayloadDecodeError.MissingField("checksum"))
             if (expectedChecksum != checksum(canonicalBody)) {
@@ -131,7 +133,7 @@ object PairingQrPayloadCodec {
             validateByteFieldForDecode(trustMaterial, "trustMaterial", maxTrustMaterialBytes)?.let { return Result.failure(it) }
             validateByteFieldForDecode(nonce, "nonce", maxNonceBytes)?.let { return Result.failure(it) }
             if (expiresAt <= 0) return Result.failure(PairingQrPayloadDecodeError.InvalidField("expiresAt"))
-            if (expiresAt < nowEpochSeconds) {
+            if (expiresAt <= nowEpochSeconds) {
                 return Result.failure(PairingQrPayloadDecodeError.Expired(expiresAt, nowEpochSeconds))
             }
 
@@ -168,18 +170,18 @@ private fun canonicalBody(
     "trustMaterial=${trustMaterial.percentEncode()}",
 ).joinToString("&")
 
-private fun parseFields(body: String): Map<String, String> {
+private fun parseFields(body: String): Result<Map<String, String>> {
     val fields = linkedMapOf<String, String>()
     val allowedFields = setOf("desktopId", "desktopName", "expiresAt", "nonce", "trustMaterial", "checksum")
     body.split('&').forEach { part ->
         val separator = part.indexOf('=')
-        if (separator <= 0) throw IllegalArgumentException("invalid field")
+        if (separator <= 0) return Result.failure(PairingQrPayloadDecodeError.InvalidFormatOrPrefix)
         val key = part.substring(0, separator)
-        if (key !in allowedFields) throw IllegalArgumentException("unknown field")
-        val value = part.substring(separator + 1).percentDecode()
-        if (fields.put(key, value) != null) throw IllegalArgumentException("duplicate field")
+        if (key !in allowedFields) return Result.failure(PairingQrPayloadDecodeError.InvalidFormatOrPrefix)
+        val value = part.substring(separator + 1).percentDecodeStrict().getOrElse { return Result.failure(it) }
+        if (fields.put(key, value) != null) return Result.failure(PairingQrPayloadDecodeError.InvalidFormatOrPrefix)
     }
-    return fields
+    return Result.success(fields)
 }
 
 private fun validateDesktopIdForEncode(value: String, maxBytes: Int) {
@@ -232,7 +234,44 @@ private fun decodeBase64UrlField(value: String, field: String): Result<ByteArray
 private fun ByteArray.toBase64Url(): String = Base64.getUrlEncoder().withoutPadding().encodeToString(this)
 
 private fun String.percentEncode(): String = URLEncoder.encode(this, Charsets.UTF_8.name()).replace("+", "%20")
-private fun String.percentDecode(): String = URLDecoder.decode(this, Charsets.UTF_8.name())
+
+private fun String.percentDecodeStrict(): Result<String> {
+    val bytes = ByteArray(length * 4)
+    var byteCount = 0
+    var index = 0
+    while (index < length) {
+        val char = this[index]
+        if (char == '%') {
+            if (index + 2 >= length) return Result.failure(PairingQrPayloadDecodeError.InvalidField("percentEncoding"))
+            val high = this[index + 1].hexDigitToIntOrNull()
+            val low = this[index + 2].hexDigitToIntOrNull()
+            if (high == null || low == null) return Result.failure(PairingQrPayloadDecodeError.InvalidField("percentEncoding"))
+            bytes[byteCount++] = ((high shl 4) or low).toByte()
+            index += 3
+        } else {
+            val encodedChar = char.toString().toByteArray(Charsets.UTF_8)
+            encodedChar.copyInto(bytes, destinationOffset = byteCount)
+            byteCount += encodedChar.size
+            index += 1
+        }
+    }
+
+    return try {
+        val decoder = Charsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+        Result.success(decoder.decode(ByteBuffer.wrap(bytes, 0, byteCount)).toString())
+    } catch (_: CharacterCodingException) {
+        Result.failure(PairingQrPayloadDecodeError.InvalidField("percentEncoding"))
+    }
+}
+
+private fun Char.hexDigitToIntOrNull(): Int? = when (this) {
+    in '0'..'9' -> this - '0'
+    in 'a'..'f' -> this - 'a' + 10
+    in 'A'..'F' -> this - 'A' + 10
+    else -> null
+}
 
 private fun checksum(canonicalBody: String): String {
     val digest = MessageDigest.getInstance("SHA-256").digest(canonicalBody.toByteArray(Charsets.UTF_8))

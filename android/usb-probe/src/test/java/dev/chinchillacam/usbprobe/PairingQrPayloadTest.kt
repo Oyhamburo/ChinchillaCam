@@ -48,6 +48,38 @@ class PairingQrPayloadTest {
     }
 
     @Test
+    fun rejectsPayloadAtExpiryBoundary() {
+        val encoded = PairingQrPayloadCodec.encode(payload)
+
+        assertEquals(
+            PairingQrPayloadDecodeError.Expired(expiresAtEpochSeconds = 1_700_000_600L, nowEpochSeconds = 1_700_000_600L),
+            PairingQrPayloadCodec.decode(encoded, nowEpochSeconds = 1_700_000_600L).exceptionOrNull(),
+        )
+    }
+
+    @Test
+    fun rejectsMalformedPercentEncodingWithTypedFieldError() {
+        val encoded = PairingQrPayloadCodec.encode(payload)
+        val malformed = encoded.replace("desktopName=Studio%20Desktop", "desktopName=Studio%2GDesktop")
+
+        assertEquals(
+            PairingQrPayloadDecodeError.InvalidField("percentEncoding"),
+            PairingQrPayloadCodec.decode(malformed, nowEpochSeconds = 1L).exceptionOrNull(),
+        )
+    }
+
+    @Test
+    fun rejectsInvalidUtf8PercentDecodedBytesWithTypedFieldError() {
+        val encoded = PairingQrPayloadCodec.encode(payload)
+        val invalidUtf8 = encoded.replace("desktopName=Studio%20Desktop", "desktopName=%C3%28")
+
+        assertEquals(
+            PairingQrPayloadDecodeError.InvalidField("percentEncoding"),
+            PairingQrPayloadCodec.decode(invalidUtf8, nowEpochSeconds = 1L).exceptionOrNull(),
+        )
+    }
+
+    @Test
     fun rejectsChecksumMismatchFromAccidentalCorruption() {
         val encoded = PairingQrPayloadCodec.encode(payload)
         val corrupted = encoded.replace("desktop-01", "desktop-02")

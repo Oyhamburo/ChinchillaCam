@@ -50,6 +50,8 @@ Criterios de tests futuros:
 - Octetos percent-encoded que no formen UTF-8 válido se rechazan con error tipado.
 - Un QR válido existente sigue roundtripeando.
 
+Estado T12b (2026-09-26): implementado parser hardening QR-only. Expiración en `now == expiresAt` queda rechazada; percent escapes malformed y bytes percent-decoded con UTF-8 inválido devuelven `InvalidField("percentEncoding")`. Validado con `testDebugUnitTest --rerun-tasks` antes de actualizar este estado.
+
 ## Diseño T14 — una computadora activa
 
 T14 debe modelar autoridad de sesión antes de cualquier transporte real. Mientras el review nativo de T12/T11b/T13a siga pendiente, este bloque queda como planificación solamente: no agrega source ni tests nuevos.
