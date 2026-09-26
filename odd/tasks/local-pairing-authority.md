@@ -104,3 +104,11 @@ Alcance T11:
 - Lineage: `review-0321f52b8e7283e3`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgo advisory no bloqueante: `R3-collection-count-overflow` en `SessionFrame.kt:186`. No abrió corrección para T11; queda para hardening cuando se validen límites máximos de colecciones dentro del payload.
+
+### Revisión nativa RDD T12/T11b/T13a
+
+- Candidato: `f8504a9` contra base `7d1332e`.
+- Lineage: `review-1a21ff7d946cbfa5`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Nota de disciplina: este candidato fue demasiado amplio para una unidad de review ideal; agrupó T12, T11b, T13a y planificación T14. Las siguientes revisiones deben volver a cortes por unidad.
+- Hallazgos advisory no bloqueantes: `R3-expiry-boundary` en `PairingQrPayload.kt:134` y `R3-malformed-percent-utf8` en `PairingQrPayload.kt:235`. No abrieron corrección para este candidato.
