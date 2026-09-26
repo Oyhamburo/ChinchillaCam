@@ -97,3 +97,10 @@ T7 agrega un boundary de sesión Camera2 de repetición hacia una `Surface` inye
 - `RepeatingCaptureSession` cierra recursos en stop/cancel/configure-failed y evita activar callbacks stale si la sesión fue cancelada antes de `onConfigured`.
 - `AndroidCameraCaptureSessionGateway` compila contra `CameraDevice.createCaptureSession`, `CameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)` y `CameraCaptureSession.setRepeatingRequest` hacia una `AndroidCaptureTargetSurface`.
 - No se crea `ImageReader`, no se leen frames/YUV, no hay encoder, no hay transporte externo, no hay integración Activity y no hay prueba física.
+
+### Revisión nativa RDD T7
+
+- Candidato: `a13495d` contra base `c960d7f`.
+- Lineage: `review-ffd0a9367006b39d`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgo advisory no bloqueante del reviewer: `R3-stop-failure-cleanup`. No abrió corrección para T7; queda como hardening futuro antes de integrar captura real prolongada.
