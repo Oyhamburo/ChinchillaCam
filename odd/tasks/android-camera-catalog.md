@@ -73,6 +73,7 @@ Estos advisories de T5d3 son conocidos y no deben iniciar un bucle automático i
 - [x] T2: adapter real `CameraManager`/`CameraCharacteristics` con guards de API para IDs lógicos/físicos, tamaños/FPS/controles y estados `Unknown`/`Unavailable` claros; compile/build tests, sin abrir cámara. Commit `3b902bf` (`feat: add Android CameraManager catalog adapter`); revisión nativa RDD aprobada y reconocida en lineage `review-086573489e2dd009`. Conserva la nuance de `getCameraIdList()`: ID listado es `DirectOpenCandidate`, no apertura garantizada. Los IDs físicos solo se consultan directamente con guard API 29+; si no, quedan `Unknown` sin crash. `SecurityException`, `CameraAccessException` u omisiones de claves restringidas se degradan a `Unknown`/`Unavailable`, nunca a crash del catálogo completo.
 - [x] T2b: endurecer adapter antes de UI por advisories `R3-missing-control-metadata-reported-false` y `R3-overbroad-run-catching`: controles sin metadata quedan `Unknown` en vez de `Known(false)`; valores conocidos `false` siguen siendo `Known(false)`; el gateway/adapter atrapa solo fallos esperados de API/permisos/cámara, no cualquier excepción inesperada. Sin abrir cámara, sin captura, sin UI y sin pruebas físicas.
 - [x] T3: UI española para listar/seleccionar solo IDs direccionables; físicos-only se muestran como no abribles. Sin prometer selección de lentes Samsung sin soporte de API. Alcance: planner JVM puro para texto/estado de catálogo, integración Activity pasiva que solo enumera catálogo con `CameraManager`; selección inicial en memoria de UI si hay candidatos directos, sin persistencia (T5), sin permiso de cámara (T4), sin `CameraDevice.open`, sin captura ni pruebas físicas.
+- [x] T4: gate de permiso de cámara en UI española: declarar permiso Android y solicitarlo solo por acción explícita del usuario; mostrar estados concedido/denegado/no solicitado. Sin `CameraDevice.open`, sin captura, sin stream, sin persistencia de selección (T5) y sin pruebas físicas.
 
 ## Verificación T1
 
@@ -227,3 +228,29 @@ T3 agrega presentación UI española del catálogo de cámaras sin cambiar permi
 - Corrección local: `7fe967a` (`fix: make camera catalog rows selectable`) convierte filas directas en botones que actualizan `selectedCameraId` y re-renderizan; filas físico-only siguen visibles y no seleccionables.
 - Lineage: `review-a54c8d59de90f2fb`.
 - Resultado: corrección validada, aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+
+## Verificación T4
+
+T4 agrega el gate de permiso runtime de cámara sin abrir cámara ni iniciar captura.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `CameraPermissionUiPlanner` y `CameraPermissionUiModel` antes de existir.
+- Una corrida intermedia falló en `:android:usb-probe:compileDebugKotlin` por un literal multilinea mal formado en `UsbProbeActivity`; se corrigió antes de la verificación GREEN.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date en la corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+- Verificación independiente read-only inicial: FAIL solo porque esta sección de RED aún no estaba registrada; confirmó por inspección y pruebas que el alcance funcional T4 estaba satisfecho, sin apertura/captura/persistencia/QR/Wi‑Fi ni claims hardware.
+
+### Límites y decisiones T4
+
+- `CameraPermissionUiPlanner` modela estados españoles `NotRequested`, `Granted`, `Denied` y `UnknownResult`; todos mantienen `openCameraAllowed = false`.
+- `UsbProbeActivity` solicita `android.permission.CAMERA` solo desde el botón explícito de permiso de cámara.
+- El callback de permiso actualiza estado visible y re-renderiza la pantalla, por lo que el catálogo se vuelve a consultar después de un grant.
+- El flujo de prueba USB queda separado y utilizable aunque el permiso de cámara esté denegado.
+- El manifest declara `android.permission.CAMERA` y `android.hardware.camera.any` como opcional (`required=false`).
+- No se agregó `CameraDevice.open`, `openCamera`, captura, sesión, `ImageReader`, frame stream, persistencia ni prueba física.

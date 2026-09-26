@@ -388,3 +388,51 @@ object CameraCatalogUiPlanner {
 
     private fun physicalWord(count: Int): String = if (count == 1) "físico" else "físicos"
 }
+
+sealed class CameraPermissionUiModel {
+    object NotRequested : CameraPermissionUiModel()
+    object Granted : CameraPermissionUiModel()
+    object Denied : CameraPermissionUiModel()
+    object UnknownResult : CameraPermissionUiModel()
+}
+
+data class CameraPermissionUiState(
+    val title: String,
+    val status: String,
+    val primaryActionLabel: String,
+    val primaryActionEnabled: Boolean,
+    val openCameraAllowed: Boolean,
+)
+
+object CameraPermissionUiPlanner {
+    fun plan(state: CameraPermissionUiModel): CameraPermissionUiState = when (state) {
+        CameraPermissionUiModel.NotRequested -> CameraPermissionUiState(
+            title = "Permiso de cámara",
+            status = "La cámara no se abrirá en este paso. Tocá el botón solo para autorizar futuros pasos.",
+            primaryActionLabel = "Solicitar permiso de cámara",
+            primaryActionEnabled = true,
+            openCameraAllowed = false,
+        )
+        CameraPermissionUiModel.Granted -> CameraPermissionUiState(
+            title = "Permiso de cámara",
+            status = "Permiso de cámara concedido. La apertura real queda para un paso posterior.",
+            primaryActionLabel = "Permiso concedido",
+            primaryActionEnabled = false,
+            openCameraAllowed = false,
+        )
+        CameraPermissionUiModel.Denied -> CameraPermissionUiState(
+            title = "Permiso de cámara",
+            status = "Android denegó el permiso de cámara; podés intentarlo de nuevo.",
+            primaryActionLabel = "Volver a solicitar permiso de cámara",
+            primaryActionEnabled = true,
+            openCameraAllowed = false,
+        )
+        CameraPermissionUiModel.UnknownResult -> CameraPermissionUiState(
+            title = "Permiso de cámara",
+            status = "Android devolvió un resultado de permiso de cámara incompleto; podés intentarlo de nuevo.",
+            primaryActionLabel = "Volver a solicitar permiso de cámara",
+            primaryActionEnabled = true,
+            openCameraAllowed = false,
+        )
+    }
+}

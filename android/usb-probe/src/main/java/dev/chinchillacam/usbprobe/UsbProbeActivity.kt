@@ -1,12 +1,15 @@
 package dev.chinchillacam.usbprobe
 
+import android.Manifest
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.hardware.camera2.CameraManager
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -23,10 +26,13 @@ class UsbProbeActivity : Activity() {
     private lateinit var title: TextView
     private lateinit var status: TextView
     private lateinit var safety: TextView
+    private lateinit var cameraPermissionStatus: TextView
+    private lateinit var cameraPermissionAction: Button
     private lateinit var cameraCatalog: TextView
     private lateinit var cameraRows: LinearLayout
     private lateinit var action: Button
     private var selectedCameraId: String? = null
+    private var cameraPermissionState: CameraPermissionUiModel = CameraPermissionUiModel.NotRequested
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionState: AccessoryPermissionUiModel = AccessoryPermissionUiModel.Idle
     private var permissionGate = AccessoryPermissionRequestGate(PERMISSION_CALLBACK_TIMEOUT_MILLIS)
@@ -36,9 +42,11 @@ class UsbProbeActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+        cameraPermissionState = currentCameraPermissionState()
         restorePermissionRequest(savedInstanceState)
         buildUi()
         action.setOnClickListener { requestPermissionFromUserAction() }
+        cameraPermissionAction.setOnClickListener { requestCameraPermissionFromUserAction() }
         if (permissionState == AccessoryPermissionUiModel.WaitingForCallback) {
             schedulePermissionCallbackTimeout()
         }
@@ -68,6 +76,18 @@ class UsbProbeActivity : Activity() {
         render()
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_CAMERA_PERMISSION) return
+        cameraPermissionState = when {
+            permissions.singleOrNull() != Manifest.permission.CAMERA -> CameraPermissionUiModel.UnknownResult
+            grantResults.singleOrNull() == PackageManager.PERMISSION_GRANTED -> CameraPermissionUiModel.Granted
+            grantResults.singleOrNull() == PackageManager.PERMISSION_DENIED -> CameraPermissionUiModel.Denied
+            else -> CameraPermissionUiModel.UnknownResult
+        }
+        render()
+    }
+
     override fun onResume() {
         super.onResume()
         render()
@@ -77,6 +97,8 @@ class UsbProbeActivity : Activity() {
         title = TextView(this).apply { textSize = 22f }
         status = TextView(this).apply { textSize = 16f }
         safety = TextView(this).apply { textSize = 14f }
+        cameraPermissionStatus = TextView(this).apply { textSize = 14f }
+        cameraPermissionAction = Button(this)
         cameraCatalog = TextView(this).apply { textSize = 14f }
         cameraRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         action = Button(this)
@@ -89,6 +111,8 @@ class UsbProbeActivity : Activity() {
             addView(status, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(action, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(safety, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(cameraPermissionStatus, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(cameraPermissionAction, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(cameraCatalog, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(cameraRows, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
@@ -107,7 +131,32 @@ class UsbProbeActivity : Activity() {
         safety.text = ui.safetyNotice
         action.text = ui.primaryActionLabel
         action.isEnabled = ui.primaryActionEnabled
+        renderCameraPermission()
         renderCameraCatalog()
+    }
+
+    private fun renderCameraPermission() {
+        val ui = CameraPermissionUiPlanner.plan(cameraPermissionState)
+        cameraPermissionStatus.text = "${ui.title}\n${ui.status}"
+        cameraPermissionAction.text = ui.primaryActionLabel
+        cameraPermissionAction.isEnabled = ui.primaryActionEnabled
+    }
+
+    private fun requestCameraPermissionFromUserAction() {
+        if (currentCameraPermissionState() == CameraPermissionUiModel.Granted) {
+            cameraPermissionState = CameraPermissionUiModel.Granted
+            render()
+            return
+        }
+        requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA_PERMISSION)
+    }
+
+    private fun currentCameraPermissionState(): CameraPermissionUiModel = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+        CameraPermissionUiModel.Granted
+    } else if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+        CameraPermissionUiModel.Granted
+    } else {
+        CameraPermissionUiModel.NotRequested
     }
 
     private fun renderCameraCatalog() {
@@ -312,5 +361,6 @@ class UsbProbeActivity : Activity() {
         const val STATE_ACCESSORY_FINGERPRINT = "dev.chinchillacam.usbprobe.state.ACCESSORY_FINGERPRINT"
         const val STATE_PERMISSION_EXPIRES_AT = "dev.chinchillacam.usbprobe.state.PERMISSION_EXPIRES_AT"
         const val STATE_PERMISSION_CONSUMED = "dev.chinchillacam.usbprobe.state.PERMISSION_CONSUMED"
+        const val REQUEST_CAMERA_PERMISSION = 2001
     }
 }
