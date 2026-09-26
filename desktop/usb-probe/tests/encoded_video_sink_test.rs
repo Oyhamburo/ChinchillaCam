@@ -135,3 +135,14 @@ fn encoded_video_sink_queue_rejects_zero_capacity() {
         Err(EncodedVideoSinkError::InvalidQueueCapacity)
     );
 }
+
+#[test]
+fn encoded_video_sink_queue_rejects_extreme_capacity_before_allocation() {
+    assert_eq!(
+        BoundedEncodedVideoQueue::new(usize::MAX),
+        Err(EncodedVideoSinkError::QueueCapacityTooLarge {
+            capacity: usize::MAX,
+            max: BoundedEncodedVideoQueue::MAX_CAPACITY,
+        })
+    );
+}

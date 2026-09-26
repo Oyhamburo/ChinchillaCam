@@ -28,6 +28,7 @@ pub enum EncodedVideoSinkError {
     EmptyPayload,
     PayloadTooLarge { length: usize, max: usize },
     InvalidQueueCapacity,
+    QueueCapacityTooLarge { capacity: usize, max: usize },
     QueueFull { capacity: usize },
 }
 
@@ -125,14 +126,22 @@ pub struct BoundedEncodedVideoQueue {
 }
 
 impl BoundedEncodedVideoQueue {
+    pub const MAX_CAPACITY: usize = 4096;
+
     pub fn new(capacity: usize) -> Result<Self, EncodedVideoSinkError> {
         if capacity == 0 {
             return Err(EncodedVideoSinkError::InvalidQueueCapacity);
         }
+        if capacity > Self::MAX_CAPACITY {
+            return Err(EncodedVideoSinkError::QueueCapacityTooLarge {
+                capacity,
+                max: Self::MAX_CAPACITY,
+            });
+        }
 
         Ok(Self {
             capacity,
-            chunks: VecDeque::with_capacity(capacity),
+            chunks: VecDeque::new(),
         })
     }
 

@@ -6,6 +6,8 @@
 - Worktree: `/Users/jele/Desktop/codes/ChinchillaCam-desktop-video-sink`
 - Base limpia esperada: `b3faac8`
 - Estado inicial: plan creado antes de escribir código fuente.
+- Commit inicial: `d52e088 feat(desktop): add encoded video sink boundary`.
+- T1b hardening autorizado: cerrar advisory `R3-oversized-capacity-panic` sin cambiar transporte/protocolo/decoder.
 
 ## Contexto
 
@@ -43,7 +45,7 @@ Crear un módulo de dominio testeable que acepte chunks de video codificado con 
 - `desktop/usb-probe/tests/encoded_video_sink_test.rs` nuevo
 - `odd/tasks/desktop-encoded-video-sink.md`
 
-## Plan TDD
+## Plan TDD inicial
 
 1. RED: escribir tests de API pública para construir chunks, rechazar inputs inválidos, enviar a sink inyectado y aplicar backpressure en cola acotada.
 2. Ejecutar `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml encoded_video_sink` y observar fallos por símbolos ausentes.
@@ -53,6 +55,14 @@ Crear un módulo de dominio testeable que acepte chunks de video codificado con 
 6. Hacer revisión local independiente del diff.
 7. No iniciar revisión nativa RDD mientras el worktree Android paralelo tenga una transacción activa en el clone común.
 8. Commit local Conventional Commit si las verificaciones cierran.
+
+## Plan TDD T1b hardening
+
+1. RED: agregar test observable para `BoundedEncodedVideoQueue::new(usize::MAX)` o capacidad extrema, exigiendo error tipado sin reserva catastrófica.
+2. GREEN: documentar un máximo razonable de capacidad de cola y rechazar capacidades mayores antes de construir `VecDeque`.
+3. Mantener backpressure y capacidad normal existente.
+4. Reejecutar focused/full cargo tests, `cargo fmt --check`, `git diff --check` e independiente verifier.
+5. Commit local Conventional Commit sin iniciar revisión nativa hasta que el Android peer cierre su lineage activo.
 
 ## Criterios de aceptación
 
@@ -74,4 +84,11 @@ Pendiente de completar durante la ejecución:
 - Revisión independiente: `gentle-ai-verify` PASS; verificó archivos acotados, focused/full tests y `git diff --check`; sin blockers.
 - Revisión nativa RDD: `review-68037388e1cdc56e` aprobada y acknowledged; authority burned; target `sha256:4dec3e6e513feea685dd333c7a9b8af52599656ea7b5a9294bd8881e0b909dde`; consumed revision `sha256:b5611d68bd16b6251e67f416244890eb0f2358a39936def4ded781f171a75de9`.
 - Advisory informativo no bloqueante: `R3-oversized-capacity-panic`. Seguimiento acotado recomendado antes de aceptar capacidad de cola no confiable: limitar o validar capacidades extremadamente grandes para evitar pánico de reserva en `VecDeque::with_capacity`.
-- Commit local: pendiente.
+- Commit local inicial: `d52e088 feat(desktop): add encoded video sink boundary`.
+- T1b RED focused test: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml encoded_video_sink_queue_rejects_extreme_capacity_before_allocation` falló por variante `QueueCapacityTooLarge` y constante `MAX_CAPACITY` ausentes.
+- T1b GREEN focused test: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml encoded_video_sink` pasó con 6 tests del sink.
+- T1b GREEN full crate test: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` pasó con 44 tests existentes + 6 tests del sink + doctests.
+- T1b formato: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` pasó.
+- T1b `git diff --check`: pasó sin salida.
+- T1b revisión independiente: `gentle-ai-verify` PASS; confirmó error tipado antes de reserva catastrófica, backpressure normal, boundary puro y `git diff --check`.
+- T1b commit local: pendiente.
