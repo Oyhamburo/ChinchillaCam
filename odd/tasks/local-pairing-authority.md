@@ -23,8 +23,23 @@ Construir el contrato local de sesión entre Android y desktop antes de transpor
   - 2026-09-26: Implementación pura añadida en `PairingQrPayload.kt`; tests en `PairingQrPayloadTest.kt`. Validado localmente con `testDebugUnitTest --rerun-tasks` y `git diff --check`.
   - 2026-09-26: Semántica ajustada: el checksum sin clave solo detecta corrupción accidental y campos extra/desconocidos; no autentica ni resiste manipulación maliciosa.
 - [ ] T13: persistencia de confianza local en Android y desktop con revocación; fakes primero.
+  - T13a en este worktree será Android-only/in-memory seam; desktop queda aislado en otro worktree hasta decisión fresca de integración.
 - [ ] T14: una computadora activa. Rechazar segunda sesión activa con mensaje español; handoff explícito como acción separada.
 
+
+
+## Diseño T13a — persistencia de confianza local Android
+
+T13 se divide para mantener worktrees aislados: T13a implementa solo el seam Android de confianza local; el lado desktop queda fuera de este worktree y no se integra sin decisión fresca.
+
+Alcance T13a:
+
+- Definir `TrustedDesktopRecord` con `desktopId`, nombre visible, hash/fingerprint del material de confianza, timestamps locales y estado revocable.
+- Definir `TrustedDesktopStore` como interfaz pura con implementación fake/in-memory testeable primero; persistencia Android real solo detrás de seam pequeño si el lote sigue acotado.
+- Validar que una confianza expirada, revocada o con fingerprint distinto no autoriza sesión.
+- Exponer resultado tipado para `Trusted`, `Unknown`, `Revoked`, `Expired` y `FingerprintMismatch`.
+- No abrir transporte, no escuchar LAN, no controlar cámara, no asumir desktop real ni handshake completo.
+- Mantener gate: QR no autentica por sí solo; la autorización final requiere prueba de posesión, nonce single-use/expiry, confirmación explícita y TLS/peer identity antes de T17.
 
 ## Diseño T12 — payload QR local
 
