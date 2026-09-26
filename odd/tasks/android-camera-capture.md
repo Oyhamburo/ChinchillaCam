@@ -650,3 +650,10 @@ T10c4 endurece la verdad visible del estado del foreground service: la Activity 
 - `VisibleCameraServiceActivityStopPolicy` diferencia Stop aceptado (`Stopping`) de no-service-active explícito (`Stopped`).
 - `UsbProbeActivity` publica `Stopping` antes de llamar `stopService`; sólo limpia a `Stopped` si Android informa que no había service activo. La confirmación normal sigue viniendo de `VisibleCameraForegroundService`/owner con `clearStopped`.
 - No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/estado no visible.
+
+### Revisión nativa RDD T10c4
+
+- Candidato: `3086d22` contra base `a35867f`.
+- Lineage: `review-6e4f4e4cec9731cd`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgo advisory no bloqueante: `R3-stop-result-wiring-untested`. No abrió corrección para T10c4; queda para hardening si se agrega test Activity/Android de retorno real de `stopService`.
