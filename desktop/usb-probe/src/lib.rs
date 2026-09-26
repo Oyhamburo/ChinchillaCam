@@ -1,3 +1,10 @@
+mod encoded_video_sink;
+
+pub use encoded_video_sink::{
+    BoundedEncodedVideoQueue, EncodedVideoChunk, EncodedVideoChunkLimits, EncodedVideoFrameKind,
+    EncodedVideoSink, EncodedVideoSinkError, PresentationTimestamp,
+};
+
 use std::{
     collections::VecDeque,
     fmt,
