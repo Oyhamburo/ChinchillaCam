@@ -193,3 +193,12 @@ T8b agrega un orquestador local fake-first para conectar los seams T6/T7/T8 sin 
 - `CameraEncoderPipelineSession.stop` cierra sesión de captura, encoder y cámara, y conserva errores de cierre como resultado tipado.
 - `RepeatingCaptureSession.stop` ahora devuelve `RepeatingCaptureStopResult` y siempre intenta `close` aunque `stopRepeating` falle; esto resuelve el hardening T7 `R3-stop-failure-cleanup` antes de captura prolongada.
 - T8b no integra `UsbProbeActivity`, no agrega UI, no inicia FGS y no define USB/Wi‑Fi/network/wire protocol/storage ni prueba física. Esa integración queda para T8c.
+
+### Revisión nativa RDD T8b
+
+- Candidato inicial: `59eaeca` contra base `19b3fbc`.
+- Hallazgo bloqueante corregido: `R3-premature-capture-start`; el pipeline no debía reportar `Started` con una sesión de captura solo submitted antes de `onConfigured`.
+- Corrección local: `0933fc0` (`fix: wait for capture configuration`) agrega estado `ConfiguringCapture`, avance explícito posterior a `onConfigured`, fallo tipado si `onConfigureFailed` cierra la sesión y test de fallo async de configuración que limpia encoder y cámara.
+- Lineage: `review-a66bdc560529df5b`.
+- Resultado: corrección validada, aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-discarded-startup-cleanup-failures`, `R3-terminal-open-state`. No abrieron corrección para T8b; quedan para hardening antes del cableado Activity/prolongado.
