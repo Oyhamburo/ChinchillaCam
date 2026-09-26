@@ -302,3 +302,16 @@ T9 agrega métricas visibles desde eventos reales del pipeline local: chunks cod
 - Lineage: `review-ba0213606915aefa`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes del reviewer: `R3-latency-clock-domain-not-validated`, `R3-stale-metrics-during-restart`. No abrieron corrección para T9; quedan para hardening antes de métricas públicas más estrictas o captura prolongada.
+
+## Diseño T8d — arranque cancelable antes de FGS
+
+T8d resuelve la puerta de privacidad/seguridad `R3-start-lock-blocks-ui-stop` antes de cualquier T10/FGS. El objetivo es que Stop explícito, `onStop` o `onDestroy` durante arranque pendiente cancelen pronto y cierren recursos tardíos.
+
+Límites T8d:
+
+- Si el usuario detiene mientras el arranque está pendiente, el controlador marca la generación como cancelada y no puede transicionar a `Running` después.
+- Si el launcher devuelve un handle tarde para una generación cancelada/stale, el controlador debe cerrarlo inmediatamente y mantener estado detenido.
+- `onStop` durante arranque debe volver rápido sin esperar apertura/configuración; el trabajo tardío debe ser descartado/cerrado por generación.
+- No auto-resume tras lifecycle ni permiso; el usuario debe tocar Start otra vez.
+- Tests con fakes de carrera: stop durante `Starting`, lifecycle stop durante `Starting`, late handle cerrado, late failure no pisa estado detenido, start nuevo usa nueva generación.
+- Sin cambios de FGS, USB/Wi‑Fi, network, storage, audio, wire protocol, pruebas físicas ni claims.
