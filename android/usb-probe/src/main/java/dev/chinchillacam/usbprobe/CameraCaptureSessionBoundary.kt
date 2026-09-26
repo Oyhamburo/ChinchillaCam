@@ -54,6 +54,12 @@ sealed class CameraCaptureSessionCallbackResult {
     data class StaleIgnored(val cameraId: String) : CameraCaptureSessionCallbackResult()
 }
 
+sealed class RepeatingCaptureStopResult {
+    object Stopped : RepeatingCaptureStopResult()
+    object AlreadyStopped : RepeatingCaptureStopResult()
+    data class Failed(val reasons: List<String>) : RepeatingCaptureStopResult()
+}
+
 interface CloseableRepeatingCaptureSession {
     val cameraId: String
     fun stopRepeating()
@@ -82,15 +88,26 @@ class RepeatingCaptureSession(
         @Synchronized get() = closed
 
     @Synchronized
-    fun stop() {
+    fun stop(): RepeatingCaptureStopResult {
+        if (closed && canceled && repeatingSession == null) return RepeatingCaptureStopResult.AlreadyStopped
         val session = repeatingSession
+        val failures = mutableListOf<String>()
         if (session != null) {
-            session.stopRepeating()
-            session.close()
+            try {
+                session.stopRepeating()
+            } catch (_: RuntimeException) {
+                failures += "stop repeating failed"
+            }
+            try {
+                session.close()
+            } catch (_: RuntimeException) {
+                failures += "capture session close failed"
+            }
         }
         repeatingSession = null
         closed = true
         canceled = true
+        return if (failures.isEmpty()) RepeatingCaptureStopResult.Stopped else RepeatingCaptureStopResult.Failed(failures)
     }
 
     @Synchronized

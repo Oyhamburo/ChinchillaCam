@@ -169,3 +169,27 @@ T9 solo puede contar métricas a partir de estados/chunks/eventos del pipeline l
 ## Nota T10 — foreground service de cámara
 
 Para T10, la documentación oficial de Android indica que en API 34 el servicio con cámara debe declarar `foregroundServiceType="camera"`, permiso `FOREGROUND_SERVICE_CAMERA`, permiso genérico de foreground service y permiso runtime `CAMERA`. La restricción de permisos "while-in-use" implica que el FGS de cámara debe iniciarse mientras la Activity está visible; no basta con que `checkSelfPermission` diga concedido si el arranque ocurre desde background, pantalla bloqueada o callback tardío. T10 debe mantener notificación y acción de parada visible, y la continuidad con pantalla bloqueada queda sin claim hasta validación física.
+
+## Verificación T8b
+
+T8b agrega un orquestador local fake-first para conectar los seams T6/T7/T8 sin cablear todavía la Activity. Coordina selección directa actual, permiso `CAMERA` actual, apertura Camera2, encoder H.264 con `Surface`, sesión repeating y drain de chunks codificados. También endurece el cierre T7 para que un fallo en `stopRepeating` no impida intentar `close`.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `CameraEncoderPipeline`, `CameraEncoderPipelineStartResult`, `CameraEncoderPipelineStopResult` y `RepeatingCaptureStopResult` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 4 ejecutadas y 27 up-to-date en la corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+
+### Límites y decisiones T8b
+
+- `CameraEncoderPipeline` usa `CameraDeviceOpenBoundary`, `H264EncoderBoundary` y `CameraCaptureSessionBoundary`; no abre transportes ni escribe storage.
+- Si la apertura Camera2 queda pendiente, el resultado `Opening` expone un avance explícito para continuar después de `onOpened`; esto permite cubrir callbacks async sin Activity todavía.
+- Si falla encoder o configuración de captura, el orquestador intenta parar/release del encoder y cerrar cámara.
+- `CameraEncoderPipelineSession.stop` cierra sesión de captura, encoder y cámara, y conserva errores de cierre como resultado tipado.
+- `RepeatingCaptureSession.stop` ahora devuelve `RepeatingCaptureStopResult` y siempre intenta `close` aunque `stopRepeating` falle; esto resuelve el hardening T7 `R3-stop-failure-cleanup` antes de captura prolongada.
+- T8b no integra `UsbProbeActivity`, no agrega UI, no inicia FGS y no define USB/Wi‑Fi/network/wire protocol/storage ni prueba física. Esa integración queda para T8c.
