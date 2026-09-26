@@ -20,7 +20,7 @@ Construir la ruta Android desde selección de cámara hasta frames/encoder/metri
 - [x] T7: sesión de captura preview/frame source con recursos cerrables; no encoder aún.
 - [x] T8: `MediaCodec` H.264/AVC MVP con state machine/fakes; producir chunks codificados o errores tipados.
 - [x] T8b: orquestador local cámara→encoder con fakes. Conectar selección directa actual + permiso `CAMERA` actual + acción explícita Start/Stop visible a la secuencia abrir cámara → configurar encoder Surface → sesión repeating → drenar chunks codificados acotados/tipados → stop/release en fallos y ciclo de vida, sin Activity real todavía. Debe corregir el advisory T7 `R3-stop-failure-cleanup` antes de captura prolongada.
-- [ ] T8c: cableado Activity visible Start/Stop del pipeline local. Integrar el orquestador T8b con `UsbProbeActivity` solo mientras la app está visible; cerrar en `onPause`/`onDestroy`; sin USB/Wi‑Fi/network/storage/FGS ni claim de producto.
+- [x] T8c: cableado Activity visible Start/Stop del pipeline local. Integrar el orquestador T8b con `UsbProbeActivity` solo mientras la app está visible; cerrar en `onPause`/`onDestroy`; sin USB/Wi‑Fi/network/storage/FGS ni claim de producto.
 - [ ] T9: métricas Android de captura/encode visibles desde el pipeline real local: FPS, chunks drenados/dropped por backpressure, latencia encode y estado.
 - [ ] T10: foreground service/pantalla bloqueada experimental, con límites honestos y sin claims hasta prueba física.
 
@@ -243,3 +243,13 @@ T8c agrega cableado visible Start/Stop en `UsbProbeActivity` para una prueba loc
 - `UsbProbeActivity` agrega botón local Start/Stop, arranca fuera del hilo principal, drena chunks con límite pequeño, descarta en memoria y llama `consumeEncoded`.
 - Stop explícito, `onStop` y `onDestroy` cierran el pipeline; el texto aclara que no continúa con pantalla bloqueada hasta T10.
 - No hay USB, Wi‑Fi, network, storage, audio, wire protocol, FGS, prueba física ni claim de producto funcional.
+
+
+### Revisión nativa RDD T8c
+
+- Candidato inicial: `ed3c6a8` contra base `2ff48ee`.
+- Hallazgos bloqueantes corregidos: `R3-drain-error-does-not-stop` y `R3-repeated-start-leaks-pipeline`; los fallos de drain/backpressure debían detener el pipeline activo, y un segundo Start no podía reemplazar o perder el handle de una captura ya activa.
+- Corrección local: `bc29567` (`fix: stop local pipeline on drain errors`) agrega bloqueo/generación de start, `prepareStart`/`completeStart`, stop al fallar drain/backpressure y tests de doble start y fallo de drain.
+- Lineage: `review-a092c738d58691bd`.
+- Resultado: corrección validada, aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgo advisory no bloqueante del reviewer: `R3-start-lock-blocks-ui-stop`. No abrió corrección para T8c; queda para hardening antes de captura prolongada o T9/T10.
