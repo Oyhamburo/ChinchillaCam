@@ -219,3 +219,11 @@ T3 agrega presentación UI española del catálogo de cámaras sin cambiar permi
 - Solo `CameraIdRole.DirectOpenCandidate` es seleccionable; si se solicita seleccionar un físico-only, la selección cae al primer candidato directo disponible.
 - `CameraIdRole.PhysicalOnlyChild` se muestra como información del grupo lógico y explícitamente no abrible directamente.
 - `UsbProbeActivity` integra el catálogo de forma pasiva mediante el adapter `CameraManager` existente y muestra el texto; no persiste la selección, no solicita permiso de cámara y no abre la cámara.
+
+### Revisión nativa RDD T3
+
+- Candidato inicial: `f19cb3b` contra base `98f68f7`.
+- Hallazgo bloqueante corregido: `R3-static-catalog-no-selection`; la UI inicial listaba cámaras en texto estático y no permitía elegir entre múltiples candidatos directos.
+- Corrección local: `7fe967a` (`fix: make camera catalog rows selectable`) convierte filas directas en botones que actualizan `selectedCameraId` y re-renderizan; filas físico-only siguen visibles y no seleccionables.
+- Lineage: `review-a54c8d59de90f2fb`.
+- Resultado: corrección validada, aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
