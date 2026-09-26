@@ -628,3 +628,25 @@ Alcance T10c4:
 - `onResume` debe reconciliar desde el estado process-local real, no desde booleanos persistidos/locales.
 - Tests RED: Error del service se renderiza; Stop mantiene `Stopping` hasta confirmación; Stop→Start rápido no invoca start; onResume/render usa status store.
 - Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
+
+## Verificación T10c4
+
+T10c4 endurece la verdad visible del estado del foreground service: la Activity renderiza `Error` del status store como estado autoritativo, mantiene `Stopping` después del Stop aceptado hasta confirmación del service/destrucción, y sólo limpia a `Stopped` ante confirmación explícita o resultado explícito de “no había service activo”.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `VisibleCameraServiceActivityStopPolicy` y `VisibleCameraServiceActivityBindingPolicy.shouldRenderServiceStatus` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date.
+- `git diff --check`: pasó sin salida.
+
+### Límites y decisiones T10c4
+
+- `VisibleCameraServiceActivityBindingPolicy.shouldRenderServiceStatus` trata `Starting`, `Running`, `Stopping` y `Error` como estados autoritativos del service para evitar fallback a UI local stale.
+- `Stopping` mantiene acción Stop deshabilitada y el mapeo de acción no inicia un nuevo START, protegiendo Stop→Start rápido mientras cierra el owner anterior.
+- `VisibleCameraServiceActivityStopPolicy` diferencia Stop aceptado (`Stopping`) de no-service-active explícito (`Stopped`).
+- `UsbProbeActivity` publica `Stopping` antes de llamar `stopService`; sólo limpia a `Stopped` si Android informa que no había service activo. La confirmación normal sigue viniendo de `VisibleCameraForegroundService`/owner con `clearStopped`.
+- No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.

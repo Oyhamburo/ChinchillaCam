@@ -66,7 +66,7 @@ class VisibleCameraForegroundServiceActivityBindingTest {
     }
 
     @Test
-    fun stopFromRecreatedActivityClearsProcessLocalStatus() {
+    fun stopFromRecreatedActivityLeavesStoppingUntilServiceConfirmation() {
         VisibleCameraServiceStatusStore.publish(
             VisibleCameraServiceStatus(state = VisibleCameraServiceState.Running, selectedCameraId = "camera-1"),
         )
@@ -74,11 +74,74 @@ class VisibleCameraForegroundServiceActivityBindingTest {
 
         VisibleCameraServiceActivityBindingPolicy.actionForPrimaryClick(VisibleCameraServiceStatusStore.snapshot())
             .apply(starter, selectedCameraId = "camera-1")
-        VisibleCameraServiceStatusStore.clearStopped()
+        VisibleCameraServiceStatusStore.publish(
+            VisibleCameraServiceActivityStopPolicy.statusAfterStopRequest(stopRequestAccepted = true),
+        )
 
         assertEquals(1, starter.stopCalls)
+        assertEquals(VisibleCameraServiceState.Stopping, VisibleCameraServiceStatusStore.snapshot().state)
+        assertNull(VisibleCameraServiceStatusStore.snapshot().selectedCameraId)
+    }
+
+    @Test
+    fun serviceStopConfirmationCanExplicitlyClearStatusStore() {
+        VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping))
+
+        VisibleCameraServiceStatusStore.clearStopped()
+
         assertEquals(VisibleCameraServiceState.Stopped, VisibleCameraServiceStatusStore.snapshot().state)
         assertNull(VisibleCameraServiceStatusStore.snapshot().selectedCameraId)
+    }
+
+
+    @Test
+    fun serviceErrorRendersSpanishMessageAndStartAction() {
+        val ui = VisibleCameraServiceActivityBindingPolicy.render(
+            VisibleCameraServiceStatus(
+                state = VisibleCameraServiceState.Error,
+                selectedCameraId = "camera-1",
+                message = "Permiso de cámara requerido antes de iniciar.",
+            ),
+        )
+
+        assertEquals("Cámara local", ui.title)
+        assertEquals("Permiso de cámara requerido antes de iniciar.", ui.detail)
+        assertEquals("Iniciar cámara local", ui.primaryAction)
+        assertTrue(ui.primaryActionEnabled)
+    }
+
+    @Test
+    fun serviceErrorStatusIsAuthoritativeForActivityRender() {
+        assertTrue(
+            VisibleCameraServiceActivityBindingPolicy.shouldRenderServiceStatus(
+                VisibleCameraServiceStatus(
+                    state = VisibleCameraServiceState.Error,
+                    message = "Android bloqueó el inicio del servicio visible de cámara.",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun stoppingRenderDisablesActionAndPrimaryClickDoesNotStart() {
+        val status = VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping)
+        val ui = VisibleCameraServiceActivityBindingPolicy.render(status)
+        val starter = RecordingServiceStarter()
+
+        VisibleCameraServiceActivityBindingPolicy.actionForPrimaryClick(status).apply(starter, selectedCameraId = "camera-1")
+
+        assertEquals("Detener cámara local", ui.primaryAction)
+        assertFalse(ui.primaryActionEnabled)
+        assertEquals(0, starter.startCalls)
+        assertEquals(1, starter.stopCalls)
+    }
+
+    @Test
+    fun explicitNoServiceActiveOutcomeClearsStoppingToStopped() {
+        val status = VisibleCameraServiceActivityStopPolicy.statusAfterStopRequest(stopRequestAccepted = false)
+
+        assertEquals(VisibleCameraServiceState.Stopped, status.state)
+        assertEquals("Servicio visible no estaba activo.", status.message)
     }
 
     @Test

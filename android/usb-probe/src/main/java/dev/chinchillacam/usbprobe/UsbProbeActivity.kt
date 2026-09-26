@@ -237,8 +237,8 @@ class UsbProbeActivity : Activity() {
 
     private fun renderLocalCameraPipeline() {
         val serviceStatus = VisibleCameraServiceStatusStore.snapshot()
-        localCameraServiceOwnershipRequested = serviceStatus.isActive
-        if (serviceStatus.isActive || serviceStatus.state == VisibleCameraServiceState.Stopping) {
+        localCameraServiceOwnershipRequested = VisibleCameraServiceActivityBindingPolicy.serviceOwnershipRequested(serviceStatus)
+        if (VisibleCameraServiceActivityBindingPolicy.shouldRenderServiceStatus(serviceStatus)) {
             val serviceUi = VisibleCameraServiceActivityBindingPolicy.render(serviceStatus)
             localCameraStatus.text = "${serviceUi.title}\n${serviceUi.detail}\n"
             localCameraAction.text = serviceUi.primaryAction
@@ -253,7 +253,7 @@ class UsbProbeActivity : Activity() {
 
     private fun handleLocalCameraAction() {
         val serviceStatus = VisibleCameraServiceStatusStore.snapshot()
-        if (serviceStatus.isActive || serviceStatus.state == VisibleCameraServiceState.Stopping) {
+        if (VisibleCameraServiceActivityBindingPolicy.shouldRenderServiceStatus(serviceStatus)) {
             VisibleCameraServiceActivityBindingPolicy.actionForPrimaryClick(serviceStatus).apply(
                 object : VisibleCameraServiceActivityStarter {
                     override fun startVisibleCameraService(selectedCameraId: String) {
@@ -316,10 +316,12 @@ class UsbProbeActivity : Activity() {
     private fun stopLocalCameraFromUser() {
         localCameraDrainActive = false
         localCameraServiceOwnershipRequested = false
-        VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
-        stopVisibleCameraForegroundService()
+        VisibleCameraServiceStatusStore.publish(VisibleCameraServiceActivityStopPolicy.statusAfterStopRequest(stopRequestAccepted = true))
+        val stopRequestAccepted = stopVisibleCameraForegroundService()
+        if (!stopRequestAccepted) {
+            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceActivityStopPolicy.statusAfterStopRequest(stopRequestAccepted = false))
+        }
         localCameraController.stopFromUser()
-        VisibleCameraServiceStatusStore.clearStopped()
         renderLocalCameraPipeline()
     }
 
@@ -343,9 +345,8 @@ class UsbProbeActivity : Activity() {
         }
     }
 
-    private fun stopVisibleCameraForegroundService() {
+    private fun stopVisibleCameraForegroundService(): Boolean =
         stopService(VisibleCameraForegroundService.serviceIntent(this))
-    }
 
     private fun requestPermissionFromUserAction() {
         val accessory = currentAccessory()

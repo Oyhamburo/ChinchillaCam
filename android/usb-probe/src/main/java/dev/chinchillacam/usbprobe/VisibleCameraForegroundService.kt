@@ -293,6 +293,24 @@ sealed class VisibleCameraServiceActivityAction {
 }
 
 object VisibleCameraServiceActivityBindingPolicy {
+    fun shouldRenderServiceStatus(status: VisibleCameraServiceStatus): Boolean = when (status.state) {
+        VisibleCameraServiceState.Starting,
+        VisibleCameraServiceState.Running,
+        VisibleCameraServiceState.Stopping,
+        VisibleCameraServiceState.Error -> true
+        VisibleCameraServiceState.Idle,
+        VisibleCameraServiceState.Stopped -> false
+    }
+
+    fun serviceOwnershipRequested(status: VisibleCameraServiceStatus): Boolean = when (status.state) {
+        VisibleCameraServiceState.Starting,
+        VisibleCameraServiceState.Running,
+        VisibleCameraServiceState.Stopping -> true
+        VisibleCameraServiceState.Idle,
+        VisibleCameraServiceState.Stopped,
+        VisibleCameraServiceState.Error -> false
+    }
+
     fun render(status: VisibleCameraServiceStatus): VisibleCameraServiceActivityUiState = when (status.state) {
         VisibleCameraServiceState.Starting -> VisibleCameraServiceActivityUiState(
             title = "Cámara local",
@@ -334,6 +352,14 @@ object VisibleCameraServiceActivityBindingPolicy {
         VisibleCameraServiceState.Idle,
         VisibleCameraServiceState.Stopped,
         VisibleCameraServiceState.Error -> VisibleCameraServiceActivityAction.Start
+    }
+}
+
+object VisibleCameraServiceActivityStopPolicy {
+    fun statusAfterStopRequest(stopRequestAccepted: Boolean): VisibleCameraServiceStatus = if (stopRequestAccepted) {
+        VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local.")
+    } else {
+        VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopped, message = "Servicio visible no estaba activo.")
     }
 }
 
