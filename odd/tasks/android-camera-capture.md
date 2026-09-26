@@ -495,3 +495,24 @@ Alcance T10c1:
 - Si `startForeground` lanza `SecurityException` o `ForegroundServiceStartNotAllowedException` por token visible stale/política Android, el service debe fallar seguro: no abrir cámara, detenerse y no reclamar soporte.
 - Tests RED: comando start no invoca pipeline start sincrónicamente en main; stop puede ejecutarse mientras start background está bloqueado; callbacks no usan main handler en service factory; foreground exception evita abrir cámara.
 - Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
+
+## Verificación T10c1
+
+T10c1 corrige el arranque del foreground service para que `onStartCommand` publique foreground de forma temprana pero no ejecute apertura/configuración Camera2 en el hilo principal, y para que los callbacks Camera2 del service usen un hilo dedicado.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `VisibleCameraForegroundServiceCommandRunner`, `VisibleCameraForegroundServiceCallbackThreadSpec` y `VisibleCameraForegroundStarter` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date.
+- `git diff --check`: pasó sin salida.
+
+### Límites y decisiones T10c1
+
+- `VisibleCameraForegroundServiceCommandRunner` publica foreground para un start visible estructuralmente válido y agenda el start real en un executor; si `startForeground` lanza `SecurityException` o `ForegroundServiceStartNotAllowedException`, detiene el servicio y no agenda apertura.
+- `VisibleCameraForegroundServicePipelineOwner` ya no mantiene un lock durante `pipeline.start`; STOP/destrucción incrementan generación, vuelven pronto durante start bloqueado y fuerzan `pipeline.stop` si un resultado tardío llega después de cancelación.
+- El service crea `AndroidVisibleCameraPipelineLauncher` con `HandlerThread` dedicado (`visible-camera-service-camera-callbacks`) en lugar del handler del main looper.
+- No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims de hardware/pantalla bloqueada.

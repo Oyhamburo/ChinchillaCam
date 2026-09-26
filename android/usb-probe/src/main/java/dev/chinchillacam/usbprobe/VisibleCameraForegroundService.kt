@@ -9,20 +9,29 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraManager
+import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class VisibleCameraForegroundService : Service() {
     private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
+    private val cameraCallbackThread: HandlerThread by lazy {
+        HandlerThread(VisibleCameraForegroundServiceCallbackThreadSpec.serviceDefault().threadName).also { it.start() }
+    }
+    private val cameraCallbackHandler: Handler by lazy { Handler(cameraCallbackThread.looper) }
+    private val startExecutor: ExecutorService by lazy { Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "visible-camera-service-start") } }
     private val pipelineOwner: VisibleCameraForegroundServicePipelineOwner by lazy {
         VisibleCameraForegroundServicePipelineOwner(
             pipeline = ControllerVisibleCameraServicePipeline(
                 controller = VisibleCameraPipelineController(
                     launcher = AndroidVisibleCameraPipelineLauncher(
                         cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager,
-                        handler = mainHandler,
+                        handler = cameraCallbackHandler,
                     ),
                     encoderConfig = H264EncoderConfig(width = 1280, height = 720, bitrate = 2_000_000, frameRate = 30, iFrameIntervalSeconds = 2),
                 ),
@@ -37,19 +46,20 @@ class VisibleCameraForegroundService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 val request = VisibleCameraServiceStartRequest.fromIntent(intent)
-                if (request?.visibleStartRequested == true && !request.selectedCameraId.isNullOrBlank()) {
-                    startForeground(NOTIFICATION_ID, buildNotification())
-                }
-                val cameraPermissionGranted = currentCameraPermissionGranted()
-                val snapshot = currentCameraCatalogSnapshot()
-                val outcome = pipelineOwner.handleStartCommand(
+                VisibleCameraForegroundServiceCommandRunner(
+                    owner = pipelineOwner,
+                    scheduler = startExecutor,
+                    foreground = object : VisibleCameraForegroundStarter {
+                        override fun startForegroundForVisibleCamera() {
+                            startForeground(NOTIFICATION_ID, buildNotification())
+                        }
+                    },
+                    stopService = { mainHandler.post { stopForegroundAndSelf() } },
+                ).handleStart(
                     request = request,
-                    cameraPermissionGranted = cameraPermissionGranted,
-                    snapshot = snapshot,
+                    cameraPermissionGranted = currentCameraPermissionGranted(),
+                    snapshotProvider = { currentCameraCatalogSnapshot() },
                 )
-                if (outcome != VisibleCameraServiceCommandOutcome.Started) {
-                    stopForegroundAndSelf()
-                }
             }
             ACTION_STOP -> {
                 pipelineOwner.handleStopCommand()
@@ -62,6 +72,8 @@ class VisibleCameraForegroundService : Service() {
 
     override fun onDestroy() {
         pipelineOwner.handleDestroy()
+        startExecutor.shutdownNow()
+        cameraCallbackThread.quitSafely()
         super.onDestroy()
     }
 
@@ -208,6 +220,68 @@ enum class VisibleCameraServiceCommandOutcome {
     IgnoredColdRestart,
 }
 
+interface VisibleCameraForegroundStarter {
+    fun startForegroundForVisibleCamera()
+}
+
+data class VisibleCameraForegroundServiceCallbackThreadSpec(
+    val threadName: String,
+    val callbackLooperIsMain: Boolean,
+) {
+    val isValidForCameraCallbacks: Boolean = !callbackLooperIsMain && threadName != "main"
+
+    companion object {
+        fun serviceDefault(): VisibleCameraForegroundServiceCallbackThreadSpec = VisibleCameraForegroundServiceCallbackThreadSpec(
+            threadName = "visible-camera-service-camera-callbacks",
+            callbackLooperIsMain = false,
+        )
+    }
+}
+
+class VisibleCameraForegroundServiceCommandRunner(
+    private val owner: VisibleCameraForegroundServicePipelineOwner,
+    private val scheduler: Executor,
+    private val foreground: VisibleCameraForegroundStarter,
+    private val stopService: () -> Unit,
+) {
+    fun handleStart(
+        request: VisibleCameraServiceStartRequest?,
+        cameraPermissionGranted: Boolean,
+        snapshot: CameraCatalogSnapshot,
+    ): VisibleCameraServiceCommandOutcome = handleStart(request, cameraPermissionGranted) { snapshot }
+
+    fun handleStart(
+        request: VisibleCameraServiceStartRequest?,
+        cameraPermissionGranted: Boolean,
+        snapshotProvider: () -> CameraCatalogSnapshot,
+    ): VisibleCameraServiceCommandOutcome {
+        if (request == null) return VisibleCameraServiceCommandOutcome.IgnoredColdRestart
+        if (!request.visibleStartRequested || request.selectedCameraId.isNullOrBlank()) {
+            stopService()
+            return VisibleCameraServiceCommandOutcome.Blocked
+        }
+        try {
+            foreground.startForegroundForVisibleCamera()
+        } catch (exception: RuntimeException) {
+            if (!exception.isForegroundStartFailure()) throw exception
+            stopService()
+            return VisibleCameraServiceCommandOutcome.Blocked
+        }
+        scheduler.execute {
+            val outcome = owner.handleStartCommand(
+                request = request,
+                cameraPermissionGranted = cameraPermissionGranted,
+                snapshot = snapshotProvider(),
+            )
+            if (outcome != VisibleCameraServiceCommandOutcome.Started) stopService()
+        }
+        return VisibleCameraServiceCommandOutcome.Started
+    }
+
+    private fun RuntimeException.isForegroundStartFailure(): Boolean = this is SecurityException ||
+        (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && this is android.app.ForegroundServiceStartNotAllowedException)
+}
+
 interface VisibleCameraServicePipeline {
     fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String, cameraPermissionGranted: Boolean): VisibleCameraPipelineStatus
     fun drainOnce(maxOutputs: Int): VisibleCameraPipelineStatus
@@ -231,41 +305,65 @@ class VisibleCameraForegroundServicePipelineOwner(
 ) {
     val requiresActivityReference: Boolean = false
     private var active: Boolean = false
+    private var generation: Int = 0
 
-    @Synchronized
     fun handleStartCommand(
         request: VisibleCameraServiceStartRequest?,
         cameraPermissionGranted: Boolean,
         snapshot: CameraCatalogSnapshot,
     ): VisibleCameraServiceCommandOutcome {
         val startRequest = request ?: return VisibleCameraServiceCommandOutcome.IgnoredColdRestart
-        return when (val decision = policy.planStartCommand(startRequest.visibleStartRequested, cameraPermissionGranted, snapshot, startRequest.selectedCameraId)) {
-            is VisibleCameraServiceStartDecision.Blocked -> {
-                stopActiveLocked()
-                VisibleCameraServiceCommandOutcome.Blocked
-            }
-            is VisibleCameraServiceStartDecision.Allowed -> {
-                val status = pipeline.start(snapshot, decision.cameraId, cameraPermissionGranted)
-                active = status == VisibleCameraPipelineStatus.Running || status == VisibleCameraPipelineStatus.Starting
-                if (active) {
-                    drainLoop.start(pipeline)
-                    VisibleCameraServiceCommandOutcome.Started
-                } else {
-                    VisibleCameraServiceCommandOutcome.Blocked
+        val decision = policy.planStartCommand(startRequest.visibleStartRequested, cameraPermissionGranted, snapshot, startRequest.selectedCameraId)
+        val token = synchronized(this) {
+            when (decision) {
+                is VisibleCameraServiceStartDecision.Blocked -> {
+                    generation += 1
+                    stopActiveLocked()
+                    return VisibleCameraServiceCommandOutcome.Blocked
+                }
+                is VisibleCameraServiceStartDecision.Allowed -> {
+                    generation += 1
+                    active = false
+                    generation
                 }
             }
         }
+
+        decision as VisibleCameraServiceStartDecision.Allowed
+        val status = pipeline.start(snapshot, decision.cameraId, cameraPermissionGranted)
+        val shouldStopLate = synchronized(this) {
+            if (token != generation) {
+                true
+            } else {
+                active = status == VisibleCameraPipelineStatus.Running || status == VisibleCameraPipelineStatus.Starting
+                if (active) drainLoop.start(pipeline)
+                false
+            }
+        }
+        if (shouldStopLate) {
+            pipeline.stop()
+            return VisibleCameraServiceCommandOutcome.Stopped
+        }
+        return if (status == VisibleCameraPipelineStatus.Running || status == VisibleCameraPipelineStatus.Starting) {
+            VisibleCameraServiceCommandOutcome.Started
+        } else {
+            VisibleCameraServiceCommandOutcome.Blocked
+        }
     }
 
-    @Synchronized
     fun handleStopCommand(): VisibleCameraServiceCommandOutcome {
-        stopActiveLocked()
+        synchronized(this) {
+            generation += 1
+            stopActiveLocked()
+        }
         return VisibleCameraServiceCommandOutcome.Stopped
     }
 
-    @Synchronized
     fun handleDestroy() {
-        stopActiveLocked()
+        synchronized(this) {
+            generation += 1
+            stopActiveLocked()
+        }
     }
 
     private fun stopActiveLocked() {
