@@ -55,6 +55,7 @@ class UsbProbeActivity : Activity() {
         )
     }
     @Volatile private var localCameraDrainActive: Boolean = false
+    private var localCameraServiceOwnershipRequested: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -235,6 +236,12 @@ class UsbProbeActivity : Activity() {
 
 
     private fun renderLocalCameraPipeline() {
+        if (localCameraServiceOwnershipRequested) {
+            localCameraStatus.text = "Cámara local\nServicio visible solicitado/activo. La Activity no retiene la cámara; usá Detener para cerrar la prueba local.\n"
+            localCameraAction.text = "Detener cámara local"
+            localCameraAction.isEnabled = true
+            return
+        }
         val ui = localCameraController.currentState()
         localCameraStatus.text = "${ui.title}\n${ui.detail}\n${ui.metricsText}"
         localCameraAction.text = ui.primaryAction
@@ -242,6 +249,10 @@ class UsbProbeActivity : Activity() {
     }
 
     private fun handleLocalCameraAction() {
+        if (localCameraServiceOwnershipRequested) {
+            stopLocalCameraFromUser()
+            return
+        }
         when (localCameraController.currentState().status) {
             VisibleCameraPipelineStatus.Running,
             VisibleCameraPipelineStatus.Starting -> stopLocalCameraFromUser()
@@ -255,19 +266,17 @@ class UsbProbeActivity : Activity() {
         val snapshot = currentCameraCatalogSnapshot()
         val selected = selectedCameraId ?: cameraSelectionPreference.restoreSelection(snapshot)
         val permissionGranted = currentCameraPermissionState() == CameraPermissionUiModel.Granted
-        val startToken = localCameraController.prepareStart() ?: return
-        renderLocalCameraPipeline()
-        Thread {
-            val state = localCameraController.completeStart(startToken, snapshot, selected, permissionGranted)
-            localCameraDrainActive = state.status == VisibleCameraPipelineStatus.Running
-            runOnUiThread {
-                renderLocalCameraPipeline()
-                if (state.status == VisibleCameraPipelineStatus.Running) {
-                    startVisibleCameraForegroundServiceIfAllowed()
-                }
+        when (val plan = VisibleCameraForegroundServicePlanner.planStart(activityVisible, permissionGranted, snapshot, selected)) {
+            is VisibleCameraForegroundServiceStartPlan.Allowed -> {
+                localCameraServiceOwnershipRequested = true
+                startVisibleCameraForegroundService(plan.cameraId)
             }
-            drainLocalCameraWhileRunning()
-        }.start()
+            is VisibleCameraForegroundServiceStartPlan.Blocked -> {
+                localCameraServiceOwnershipRequested = false
+                stopVisibleCameraForegroundService()
+            }
+        }
+        renderLocalCameraPipeline()
     }
 
     private fun drainLocalCameraWhileRunning() {
@@ -283,6 +292,7 @@ class UsbProbeActivity : Activity() {
 
     private fun stopLocalCameraFromUser() {
         localCameraDrainActive = false
+        localCameraServiceOwnershipRequested = false
         stopVisibleCameraForegroundService()
         localCameraController.stopFromUser()
         renderLocalCameraPipeline()
@@ -290,25 +300,21 @@ class UsbProbeActivity : Activity() {
 
     private fun stopLocalCameraForLifecycle() {
         localCameraDrainActive = false
-        stopVisibleCameraForegroundService()
-        localCameraController.stopForLifecycle()
+        when (VisibleCameraActivityLifecyclePolicy.actionForStop(localCameraServiceOwnershipRequested)) {
+            VisibleCameraActivityLifecycleAction.DetachOnly -> renderLocalCameraPipeline()
+            VisibleCameraActivityLifecycleAction.StopPipeline -> {
+                stopVisibleCameraForegroundService()
+                localCameraController.stopForLifecycle()
+            }
+        }
     }
 
-    private fun startVisibleCameraForegroundServiceIfAllowed() {
-        val snapshot = currentCameraCatalogSnapshot()
-        val selected = selectedCameraId ?: cameraSelectionPreference.restoreSelection(snapshot)
-        val permissionGranted = currentCameraPermissionState() == CameraPermissionUiModel.Granted
-        when (VisibleCameraForegroundServicePlanner.planStart(activityVisible, permissionGranted, snapshot, selected)) {
-            is VisibleCameraForegroundServiceStartPlan.Allowed -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(VisibleCameraForegroundService.startIntent(this))
-                } else {
-                    startService(VisibleCameraForegroundService.startIntent(this))
-                }
-            }
-            is VisibleCameraForegroundServiceStartPlan.Blocked -> {
-                stopVisibleCameraForegroundService()
-            }
+    private fun startVisibleCameraForegroundService(selectedCameraId: String) {
+        val intent = VisibleCameraForegroundService.startIntent(this, selectedCameraId)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
         }
     }
 
@@ -505,4 +511,14 @@ class UsbProbeActivity : Activity() {
         const val LOCAL_CAMERA_MAX_DRAIN_OUTPUTS = 4
         const val LOCAL_CAMERA_DRAIN_INTERVAL_MILLIS = 33L
     }
+}
+
+enum class VisibleCameraActivityLifecycleAction {
+    DetachOnly,
+    StopPipeline,
+}
+
+object VisibleCameraActivityLifecyclePolicy {
+    fun actionForStop(servicePipelineOwnershipRequested: Boolean): VisibleCameraActivityLifecycleAction =
+        if (servicePipelineOwnershipRequested) VisibleCameraActivityLifecycleAction.DetachOnly else VisibleCameraActivityLifecycleAction.StopPipeline
 }

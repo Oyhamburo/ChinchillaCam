@@ -93,6 +93,51 @@ class VisibleCameraForegroundServiceContractTest {
         assertEquals("dev.chinchillacam.usbprobe.action.STOP_VISIBLE_CAMERA", VisibleCameraForegroundService.ACTION_STOP)
     }
 
+    @Test
+    fun startIntentCarriesSelectedCameraIdAndVisibleStartMarker() {
+        val spec = VisibleCameraForegroundServiceStartIntentSpec.forVisibleStart("camera-1")
+
+        assertEquals(VisibleCameraForegroundService.ACTION_START, spec.action)
+        assertEquals("camera-1", spec.selectedCameraId)
+        assertTrue(spec.visibleStartRequested)
+    }
+
+    @Test
+    fun commandPolicyRejectsNullEmptyStaleAndPhysicalSelections() {
+        val policy = VisibleCameraForegroundServiceCommandPolicy()
+
+        assertEquals(
+            VisibleCameraServiceStartDecision.Blocked("Selecciona una cámara directa actual antes de iniciar."),
+            policy.planStartCommand(visibleStartRequested = true, cameraPermissionGranted = true, snapshot = sampleSnapshot(), selectedCameraId = null),
+        )
+        assertEquals(
+            VisibleCameraServiceStartDecision.Blocked("Selecciona una cámara directa actual antes de iniciar."),
+            policy.planStartCommand(visibleStartRequested = true, cameraPermissionGranted = true, snapshot = sampleSnapshot(), selectedCameraId = ""),
+        )
+        assertEquals(
+            VisibleCameraServiceStartDecision.Blocked("Selecciona una cámara directa actual antes de iniciar."),
+            policy.planStartCommand(visibleStartRequested = true, cameraPermissionGranted = true, snapshot = sampleSnapshot(), selectedCameraId = "stale"),
+        )
+        assertEquals(
+            VisibleCameraServiceStartDecision.Blocked("Selecciona una cámara directa actual antes de iniciar."),
+            policy.planStartCommand(visibleStartRequested = true, cameraPermissionGranted = true, snapshot = sampleSnapshot(), selectedCameraId = "physical-1"),
+        )
+    }
+
+    @Test
+    fun startNotStickyAndNullIntentDoesNotAutoRestartCamera() {
+        val owner = VisibleCameraForegroundServicePipelineOwner(RecordingServicePipeline(), VisibleCameraServiceDrainLoop.Noop)
+
+        assertEquals(VisibleCameraServiceCommandOutcome.IgnoredColdRestart, owner.handleStartCommand(null, cameraPermissionGranted = true, snapshot = sampleSnapshot()))
+        assertEquals(android.app.Service.START_NOT_STICKY, VisibleCameraForegroundService.restartMode())
+    }
+
+    private class RecordingServicePipeline : VisibleCameraServicePipeline {
+        override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String, cameraPermissionGranted: Boolean): VisibleCameraPipelineStatus = VisibleCameraPipelineStatus.Running
+        override fun drainOnce(maxOutputs: Int): VisibleCameraPipelineStatus = VisibleCameraPipelineStatus.Running
+        override fun stop(): VisibleCameraPipelineStatus = VisibleCameraPipelineStatus.Stopped
+    }
+
     private fun sampleSnapshot(): CameraCatalogSnapshot = CameraCatalogSnapshot(
         entries = listOf(
             CameraCatalogEntry(

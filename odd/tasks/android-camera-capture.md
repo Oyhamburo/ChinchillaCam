@@ -24,7 +24,7 @@ Construir la ruta Android desde selección de cámara hasta frames/encoder/metri
 - [x] T9: métricas Android de captura/encode visibles desde el pipeline real local: FPS, chunks drenados/dropped por backpressure, latencia encode y estado.
 - [ ] T10: foreground service/pantalla bloqueada experimental, con límites honestos y sin claims hasta prueba física.
 - [x] T10a: shell seguro de foreground service de cámara visible. Declara permisos/tipo FGS cámara, agrega planner puro para permitir start solo desde Activity visible con permiso `CAMERA` fresco y selección directa actual, publica notificación honesta de prueba local visible descartada en memoria, y mantiene la Activity como dueña del pipeline local: start del shell solo después de `Running`; stop en stop de usuario, `onStop` y `onDestroy`; sin transferencia de ownership, background cold-start, USB/Wi‑Fi/network/storage/audio/wire protocol ni claims de pantalla bloqueada.
-- [ ] T10b: transferir ownership completo cámara→encoder al foreground service no exportado. El service debe iniciar solo mientras la Activity está visible con permiso `CAMERA` fresco y selección directa actual; continuar bajo notificación persistente después de `onStop`/lock; detener por notificación, usuario, revocación de permiso o destrucción; cancelar arranque pendiente y cerrar recursos tardíos; `START_NOT_STICKY`; sin background cold-start, Activity retenida, tests físicos ni claims de compatibilidad.
+- [x] T10b: transferir ownership completo cámara→encoder al foreground service no exportado. El service inicia desde Activity visible con permiso `CAMERA` fresco, selección directa actual y marcador de arranque visible; revalida permiso/snapshot en el service; Activity no retiene la cámara ni la detiene en `onStop` mientras el ownership de service está solicitado/activo; STOP/destrucción del service detienen el pipeline; `START_NOT_STICKY`; sin background cold-start, Activity retenida, tests físicos ni claims de compatibilidad.
 
 ## T6 límites de aceptación
 
@@ -452,3 +452,25 @@ Alcance T10b:
 - Si el cambio es demasiado grande, partir en T10b adapter/orquestador service con fakes y T10c binding Activity; no mezclar transportes.
 - Tests RED esperados: service no retiene Activity; inicio bloqueado si no visible/no permiso/no selección directa; Activity `onStop` no llama `controller.stopForLifecycle` cuando el ownership ya fue transferido; notificación STOP detiene pipeline; startup pendiente cancelado cierra recursos tardíos; `START_NOT_STICKY` sin auto-restart.
 - Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims Samsung/Windows/macOS/pantalla bloqueada hasta M9.
+
+## Verificación T10b
+
+T10b transfiere el ownership del pipeline local cámara→encoder desde `UsbProbeActivity` hacia `VisibleCameraForegroundService` no exportado. La Activity ahora lanza directamente el FGS con `selectedCameraId` y marcador de arranque visible, sin arrancar antes un pipeline propio; el service revalida permiso `CAMERA` y snapshot actual antes de abrir, posee el controller/drain loop y detiene por STOP/destrucción. Si el ownership de service está solicitado/activo, `onStop`/`onDestroy` de la Activity solo desacoplan UI y no llaman `stopForLifecycle`.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `VisibleCameraForegroundServiceCommandPolicy`, `VisibleCameraServiceStartDecision`, `VisibleCameraForegroundServicePipelineOwner`, `VisibleCameraServiceDrainLoop`, `VisibleCameraServiceCommandOutcome`, `VisibleCameraServiceStartRequest`, `VisibleCameraActivityLifecyclePolicy`, `VisibleCameraActivityLifecycleAction` y `VisibleCameraServicePipeline` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date.
+- `git diff --check`: pasó sin salida.
+
+### Límites y decisiones T10b
+
+- El start intent del service lleva `selectedCameraId` y marcador explícito `visibleStartRequested`; no hay cold-start desde intent nulo/vacío.
+- El planner/command policy bloquea selección nula, vacía, stale o physical-only, y reusa el mensaje seguro existente en español.
+- `VisibleCameraForegroundServicePipelineOwner` no requiere referencia a Activity; envuelve el pipeline y drain loop propios del service.
+- La Activity muestra estado honesto de servicio solicitado/activo en español y delega el stop explícito al service.
+- No se agrega USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims de compatibilidad/pantalla bloqueada.
