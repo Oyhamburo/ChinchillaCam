@@ -615,3 +615,16 @@ T10c3 vincula la UI recreada al estado real process-local del foreground service
 - Lineage: `review-d1a8af462b5cd580`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes: `R3-error-status-not-rendered`, `R3-stale-service-status`, `R3-stop-test-manufactures-result`. No abrieron corrección para T10c3; quedan para hardening de estado/error si se sigue puliendo la UI del service.
+
+## Diseño T10c4 — verdad de estado UI del foreground service
+
+T10c4 corrige dos advisories que afectan la verdad visible antes de cerrar M2: la Activity ignoraba `VisibleCameraServiceState.Error` al renderizar el estado del service y podía mostrar texto local stale; además `stopLocalCameraFromUser` publicaba `Stopping` y luego limpiaba inmediatamente a `Stopped` antes de confirmación real del service, re-habilitando Start mientras el owner anterior podía seguir cerrando.
+
+Alcance T10c4:
+
+- `renderLocalCameraPipeline` debe renderizar también `Error` del service con mensaje español, no sólo `Starting`/`Running`/`Stopping`.
+- Stop explícito desde Activity debe dejar `Stopping` visible hasta que el service confirme stop/destroy o hasta un resultado explícito de “no había service activo”; no limpiar optimistamente antes de confirmación.
+- Start rápido después de Stop no debe solapar owners si el estado process-local sigue `Stopping`; la acción primaria debe seguir siendo Stop/deshabilitada o no lanzar nuevo START hasta confirmación.
+- `onResume` debe reconciliar desde el estado process-local real, no desde booleanos persistidos/locales.
+- Tests RED: Error del service se renderiza; Stop mantiene `Stopping` hasta confirmación; Stop→Start rápido no invoca start; onResume/render usa status store.
+- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
