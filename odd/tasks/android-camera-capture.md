@@ -516,3 +516,12 @@ T10c1 corrige el arranque del foreground service para que `onStartCommand` publi
 - `VisibleCameraForegroundServicePipelineOwner` ya no mantiene un lock durante `pipeline.start`; STOP/destrucción incrementan generación, vuelven pronto durante start bloqueado y fuerzan `pipeline.stop` si un resultado tardío llega después de cancelación.
 - El service crea `AndroidVisibleCameraPipelineLauncher` con `HandlerThread` dedicado (`visible-camera-service-camera-callbacks`) en lugar del handler del main looper.
 - No se agregan USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims de hardware/pantalla bloqueada.
+
+### Revisión nativa RDD T10c1
+
+- Candidato inicial: `4f45ed1` contra base `dd20814`.
+- Lineage: `review-632e3038d3c2a865`.
+- Corrección requerida: `R3-stop-before-start-race` detectó que STOP/destrucción podía ocurrir mientras el worker aún obtenía snapshot antes de registrar generación, y luego abrir cámara tarde.
+- Corrección local: `d0ffcf2` registra generación antes de obtener snapshot y agrega test `stopBeforeSnapshotCompletesCancelsStartBeforeCameraOpen`.
+- Resultado: validación dirigida aprobada y reconocida mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Advisory no bloqueante final: `R3-null-start-not-stopped`.
