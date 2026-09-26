@@ -85,6 +85,20 @@ class CameraDeviceOpenBoundaryTest {
         assertEquals(1, device.closeCount)
     }
 
+
+    @Test
+    fun terminalCallbackBeforeOpenedClosesCallbackDevice() {
+        val gateway = RecordingCameraOpenGateway(CameraDeviceOpenRequestOutcome.Submitted)
+        val result = CameraDeviceOpenBoundary(gateway).requestOpenSelected(snapshotWithDirectAndPhysical(), "1", true)
+        val submitted = result as CameraDeviceOpenResult.OpenRequestSubmitted
+        val device = CloseTrackingCameraDevice("1")
+
+        assertEquals(CameraOpenCallbackResult.Closed("1"), gateway.callbacks.single().onDisconnected(device))
+
+        assertFalse(submitted.session.isActive)
+        assertEquals(1, device.closeCount)
+    }
+
     @Test
     fun cancelBeforeOpenedPreventsStaleCallbackActivationAndClosesLateDevice() {
         val gateway = RecordingCameraOpenGateway(CameraDeviceOpenRequestOutcome.Submitted)

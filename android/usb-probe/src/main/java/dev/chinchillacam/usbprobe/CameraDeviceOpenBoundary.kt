@@ -63,8 +63,8 @@ class CameraOpenCallbacks internal constructor(
     private val session: CameraOpenSession,
 ) {
     fun onOpened(device: CloseableCameraDevice): CameraOpenCallbackResult = session.onOpened(device)
-    fun onDisconnected(): CameraOpenCallbackResult = session.onDisconnectedOrError()
-    fun onError(): CameraOpenCallbackResult = session.onDisconnectedOrError()
+    fun onDisconnected(device: CloseableCameraDevice? = null): CameraOpenCallbackResult = session.onDisconnectedOrError(device)
+    fun onError(device: CloseableCameraDevice? = null): CameraOpenCallbackResult = session.onDisconnectedOrError(device)
 }
 
 class CameraOpenSession(
@@ -95,8 +95,9 @@ class CameraOpenSession(
     }
 
     @Synchronized
-    internal fun onDisconnectedOrError(): CameraOpenCallbackResult {
-        device?.close()
+    internal fun onDisconnectedOrError(terminalDevice: CloseableCameraDevice? = null): CameraOpenCallbackResult {
+        val deviceToClose = device ?: terminalDevice
+        deviceToClose?.close()
         device = null
         canceled = true
         return CameraOpenCallbackResult.Closed(cameraId)
@@ -116,11 +117,11 @@ class AndroidCameraDeviceOpenGateway(
                 }
 
                 override fun onDisconnected(camera: CameraDevice) {
-                    callbacks.onDisconnected()
+                    callbacks.onDisconnected(AndroidCloseableCameraDevice(camera))
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
-                    callbacks.onError()
+                    callbacks.onError(AndroidCloseableCameraDevice(camera))
                 }
             },
             handler,
