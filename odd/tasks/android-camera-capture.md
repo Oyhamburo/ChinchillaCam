@@ -24,6 +24,7 @@ Construir la ruta Android desde selección de cámara hasta frames/encoder/metri
 - [x] T9: métricas Android de captura/encode visibles desde el pipeline real local: FPS, chunks drenados/dropped por backpressure, latencia encode y estado.
 - [ ] T10: foreground service/pantalla bloqueada experimental, con límites honestos y sin claims hasta prueba física.
 - [x] T10a: shell seguro de foreground service de cámara visible. Declara permisos/tipo FGS cámara, agrega planner puro para permitir start solo desde Activity visible con permiso `CAMERA` fresco y selección directa actual, publica notificación honesta de prueba local visible descartada en memoria, y mantiene la Activity como dueña del pipeline local: start del shell solo después de `Running`; stop en stop de usuario, `onStop` y `onDestroy`; sin transferencia de ownership, background cold-start, USB/Wi‑Fi/network/storage/audio/wire protocol ni claims de pantalla bloqueada.
+- [ ] T10b: transferir ownership completo cámara→encoder al foreground service no exportado. El service debe iniciar solo mientras la Activity está visible con permiso `CAMERA` fresco y selección directa actual; continuar bajo notificación persistente después de `onStop`/lock; detener por notificación, usuario, revocación de permiso o destrucción; cancelar arranque pendiente y cerrar recursos tardíos; `START_NOT_STICKY`; sin background cold-start, Activity retenida, tests físicos ni claims de compatibilidad.
 
 ## T6 límites de aceptación
 
@@ -434,3 +435,20 @@ Alcance T10:
 - Lineage: `review-b6bff246b4c2347c`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes del reviewer: `R3-foreground-start-failure-unhandled`, `R3-notification-stop-does-not-stop-pipeline`. No abrieron corrección para T10a. `R3-notification-stop-does-not-stop-pipeline` confirma que T10a es solo shell; T10b debe transferir ownership real al service antes de claim de pantalla bloqueada.
+
+
+## Diseño T10b — ownership del pipeline en foreground service
+
+T10b existe porque T10a es sólo shell: mientras `UsbProbeActivity.onStop` detenga siempre el pipeline, la continuidad bajo pantalla bloqueada no puede funcionar. T10b debe mover la propiedad real del pipeline cámara→encoder a un `Service` no exportado, manteniendo el arranque seguro y visible.
+
+Alcance T10b:
+
+- La Activity sólo autoriza el inicio mientras está visible, con permiso runtime `CAMERA` fresco y selección actual `DirectOpenCandidate`; no hay start por background, boot, USB, permiso callback, resume automático ni recreación.
+- El `Service` posee y cierra `CameraEncoderPipeline`/handle, drain loop y métricas de sesión; no retiene referencia a Activity ni vistas.
+- Si `onStop`/lock ocurre después de un inicio válido y el service ya posee el pipeline, la Activity no debe detener la captura por lifecycle; sólo debe desasociarse de la UI.
+- Stop explícito de usuario y acción de notificación detienen el pipeline/service; revocación de permiso o destrucción del service cierran recursos.
+- El arranque pendiente debe ser cancelable por stop/notificación/destrucción y debe cerrar handles tardíos, siguiendo la disciplina T8d.
+- El service devuelve `START_NOT_STICKY` y nunca cold-starts cámara en background tras kill/recreate.
+- Si el cambio es demasiado grande, partir en T10b adapter/orquestador service con fakes y T10c binding Activity; no mezclar transportes.
+- Tests RED esperados: service no retiene Activity; inicio bloqueado si no visible/no permiso/no selección directa; Activity `onStop` no llama `controller.stopForLifecycle` cuando el ownership ya fue transferido; notificación STOP detiene pipeline; startup pendiente cancelado cierra recursos tardíos; `START_NOT_STICKY` sin auto-restart.
+- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims Samsung/Windows/macOS/pantalla bloqueada hasta M9.

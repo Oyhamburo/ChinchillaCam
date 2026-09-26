@@ -97,7 +97,8 @@ Para cada unidad de trabajo:
 8. **T8b — Orquestador local cámara→encoder.** Conectar seams T6/T7/T8 con selección directa actual, permiso `CAMERA` actual y acción explícita Start/Stop; drenar chunks acotados/tipados y cerrar ante fallos/lifecycle; sin Activity real si se separa en T8c; sin USB/Wi‑Fi/network/storage. Corregir antes de captura prolongada el advisory T7 `R3-stop-failure-cleanup`.
 9. **T8c — Cableado Activity visible del pipeline local.** Integrar Start/Stop español en Android visible, cerrar en lifecycle y mantener cero transporte externo/FGS/claims; separar de T8b si el lote sería demasiado grande.
 10. **T9 — Métricas Android de captura/encode.** FPS reales, chunks drenados/dropped por backpressure, encoder latency y estado visible desde el pipeline local, no métricas sintéticas.
-11. **T10 — Foreground service y pantalla bloqueada experimental.** Implementar servicio/notificación si necesario, con límites honestos; no declarar soporte hasta prueba física.
+11. **T10a — Shell seguro de foreground service de cámara.** Declarar permisos/tipo FGS cámara y notificación honesta desde acción visible, pero mantener la Activity como dueña del pipeline y detener en `onStop`; sin claim de pantalla bloqueada.
+12. **T10b — Transferir ownership del pipeline al service no exportado.** Iniciar solo mientras Activity está visible con permiso `CAMERA` fresco y selección directa actual; el service posee cámara→encoder, continúa bajo notificación persistente después de `onStop`/lock, cancela arranque pendiente, no retiene Activity, usa `START_NOT_STICKY`, se detiene por notificación/usuario/revocación/destrucción; sin background cold-start ni claim de compatibilidad hasta M9.
 
 ### M3 — Pairing, autoridad local y framing de sesión
 
@@ -149,7 +150,7 @@ Para cada unidad de trabajo:
 
 ## Próxima unidad autorizada
 
-La próxima unidad de código recomendada en la rama actual es **M2/T8b — Orquestador local cámara→encoder**. T6, T7 y T8 existen como seams independientes; antes de métricas o foreground service se debe conectarlos con fakes y límites reviewables.
+La próxima unidad de código recomendada en la rama actual es **M2/T10b — Transferir ownership del pipeline al foreground service no exportado**. T10a solo agregó el shell seguro; no declarar M2 completo ni continuidad con pantalla bloqueada mientras el código siga deteniendo el pipeline en `onStop`.
 
 Antes de escribir source para T8b se debe:
 
