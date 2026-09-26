@@ -286,3 +286,10 @@ T5 persiste solo la preferencia de ID directo seleccionado y relee el permiso ru
 - `UsbProbeActivity.onResume()` relee el permiso real `CAMERA`; no se persiste un booleano de permiso runtime.
 - El render del catálogo vuelve a consultar CameraManager y valida la preferencia contra el snapshot actual.
 - No se agregó `CameraDevice.open`, `openCamera`, captura, sesión, `ImageReader`, frame stream ni prueba física.
+
+### Revisión nativa RDD T5
+
+- Candidato: `444d2b4` contra base `d3b6faf`.
+- Lineage: `review-00da3c7774755062`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-permission-denial-reset` y `R3-selection-persistence-integration-unproved`. No abrieron corrección para T5; quedan como hardening futuro antes de captura real si se prioriza.
