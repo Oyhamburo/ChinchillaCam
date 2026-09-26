@@ -525,3 +525,22 @@ T10c1 corrige el arranque del foreground service para que `onStartCommand` publi
 - Corrección local: `d0ffcf2` registra generación antes de obtener snapshot y agrega test `stopBeforeSnapshotCompletesCancelsStartBeforeCameraOpen`.
 - Resultado: validación dirigida aprobada y reconocida mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Advisory no bloqueante final: `R3-null-start-not-stopped`.
+
+## Diseño T10c2 — drain loop con generación propia
+
+T10c2 corrige la carrera remanente de `ThreadedVisibleCameraServiceDrainLoop`: el loop actual usa un único booleano `active` compartido y un thread anónimo; un Stop seguido de Start rápido puede permitir que el loop viejo observe `active=true` de la nueva sesión y drene contra el pipeline nuevo, dejando dos loops vivos o tocando una sesión que no posee.
+
+Alcance T10c2:
+
+- Cada `start` de drain debe crear un job/token/generación inmutable propio.
+- `stop` invalida la generación actual y, si existe, interrumpe/solicita parada del thread de esa generación.
+- Un loop viejo debe salir si su token ya no es el actual antes de drenar, después de dormir/interrupción, y ante resultado no `Running`.
+- Un Start rápido después de Stop no debe permitir que el loop viejo drene la nueva sesión ni reviva usando estado compartido.
+- Fallos runtime de `drainOnce` deben terminar sólo el job dueño y no filtrar threads.
+- Tests RED: stop+restart no produce doble drain desde loop viejo; interrupción/stop sale; excepción de drain no deja loop vivo.
+- Mantener el arranque FGS no bloqueante de T10c1 y no mezclar Activity recreation/binding en este lote si excede tamaño reviewable.
+- Sin USB/Wi‑Fi/network/storage/audio/wire protocol, pruebas físicas ni claims hardware/pantalla bloqueada.
+
+## Diseño T10c3 — binding de Activity a service-owned state
+
+T10c3 queda separado si T10c2 ya ocupa el lote: una Activity recreada debe consultar estado real del service/owner mediante API tipada de sólo lectura o binder/status process-local, mostrar Stop usable si el service está `Starting`/`Running`, y un Start repetido no debe abrir una segunda cámara. No confiar en booleanos guardados de Activity. No declarar M2 completo hasta cubrirlo.
