@@ -12,20 +12,15 @@ class VisibleCameraPipelineController(
         primaryActionEnabled = true,
     )
     private var handle: VisibleCameraPipelineHandle? = null
+    private var startGeneration: Int = 0
 
     @Synchronized
     fun currentState(): VisibleCameraPipelineUiState = state
 
     @Synchronized
-    fun start(
-        snapshot: CameraCatalogSnapshot,
-        selectedCameraId: String?,
-        cameraPermissionGranted: Boolean,
-    ): VisibleCameraPipelineUiState {
-        if (!cameraPermissionGranted) return setError("Permiso de cámara requerido antes de iniciar.")
-        if (selectedCameraId == null || !snapshot.isDirectCandidate(selectedCameraId)) {
-            return setError("Selecciona una cámara directa antes de iniciar.")
-        }
+    fun prepareStart(): Int? {
+        if (state.status == VisibleCameraPipelineStatus.Starting || handle != null) return null
+        startGeneration += 1
         state = VisibleCameraPipelineUiState(
             status = VisibleCameraPipelineStatus.Starting,
             title = "Cámara local",
@@ -33,10 +28,39 @@ class VisibleCameraPipelineController(
             primaryAction = "Detener cámara local",
             primaryActionEnabled = true,
         )
+        return startGeneration
+    }
+
+    fun start(
+        snapshot: CameraCatalogSnapshot,
+        selectedCameraId: String?,
+        cameraPermissionGranted: Boolean,
+    ): VisibleCameraPipelineUiState {
+        val token = prepareStart() ?: return currentState()
+        return completeStart(token, snapshot, selectedCameraId, cameraPermissionGranted)
+    }
+
+    @Synchronized
+    fun completeStart(
+        token: Int,
+        snapshot: CameraCatalogSnapshot,
+        selectedCameraId: String?,
+        cameraPermissionGranted: Boolean,
+    ): VisibleCameraPipelineUiState {
+        if (token != startGeneration || state.status != VisibleCameraPipelineStatus.Starting) return state
+        if (!cameraPermissionGranted) return setError("Permiso de cámara requerido antes de iniciar.")
+        if (selectedCameraId == null || !snapshot.isDirectCandidate(selectedCameraId)) {
+            return setError("Selecciona una cámara directa antes de iniciar.")
+        }
         return when (val result = launcher.start(snapshot, selectedCameraId, cameraPermissionGranted, encoderConfig)) {
             is VisibleCameraPipelineLaunchResult.Running -> {
-                handle = result.handle
-                setRunning("Cámara local activa. Video codificado se descarta en memoria; no se transmite ni se graba.")
+                if (token != startGeneration || state.status != VisibleCameraPipelineStatus.Starting) {
+                    result.handle.stop()
+                    state
+                } else {
+                    handle = result.handle
+                    setRunning("Cámara local activa. Video codificado se descarta en memoria; no se transmite ni se graba.")
+                }
             }
             is VisibleCameraPipelineLaunchResult.Failed -> {
                 handle = null
@@ -55,8 +79,8 @@ class VisibleCameraPipelineController(
             }
             H264DrainResult.TryAgainLater -> setRunning("Cámara local activa. Esperando salida codificada.")
             H264DrainResult.Stopped -> stopWithMessage("La cámara local ya se detuvo.")
-            is H264DrainResult.BackpressureExceeded -> setError("Backpressure local excedido; salida codificada detenida.")
-            is H264DrainResult.Failed -> setError("Error al drenar encoder: ${drained.reason}")
+            is H264DrainResult.BackpressureExceeded -> failAndStop("Backpressure local excedido; salida codificada detenida.")
+            is H264DrainResult.Failed -> failAndStop("Error al drenar encoder: ${drained.reason}")
         }
     }
 
@@ -66,7 +90,15 @@ class VisibleCameraPipelineController(
     @Synchronized
     fun stopForLifecycle(): VisibleCameraPipelineUiState = stopWithMessage("Cámara local detenida al ocultar la app; no continúa con pantalla bloqueada.")
 
+    private fun failAndStop(detail: String): VisibleCameraPipelineUiState {
+        val stoppedHandle = handle
+        handle = null
+        stoppedHandle?.stop()
+        return setError(detail)
+    }
+
     private fun stopWithMessage(successMessage: String): VisibleCameraPipelineUiState {
+        startGeneration += 1
         val stoppedHandle = handle
         handle = null
         if (stoppedHandle == null) {
@@ -111,6 +143,7 @@ class VisibleCameraPipelineController(
     }
 
     private fun setError(detail: String): VisibleCameraPipelineUiState {
+        handle = null
         state = VisibleCameraPipelineUiState(
             status = VisibleCameraPipelineStatus.Error,
             title = "Cámara local",

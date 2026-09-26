@@ -89,6 +89,37 @@ class VisibleCameraPipelineControllerTest {
     }
 
     @Test
+    fun repeatedStartWhileRunningDoesNotLaunchOrReplaceHandle() {
+        val firstHandle = RecordingVisibleHandle()
+        val launcher = QueueVisibleLauncher(
+            VisibleCameraPipelineLaunchResult.Running(firstHandle),
+            VisibleCameraPipelineLaunchResult.Running(RecordingVisibleHandle()),
+        )
+        val controller = VisibleCameraPipelineController(launcher, sampleConfig())
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val state = controller.start(sampleSnapshot(), "camera-1", true)
+
+        assertEquals(1, launcher.starts)
+        assertEquals(VisibleCameraPipelineStatus.Running, state.status)
+        controller.stopFromUser()
+        assertEquals(1, firstHandle.stopCount)
+    }
+
+    @Test
+    fun drainFailureStopsActiveHandleBeforeShowingError() {
+        val handle = RecordingVisibleHandle(drainResult = H264DrainResult.Failed("codec died"))
+        val controller = VisibleCameraPipelineController(RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)), sampleConfig())
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val state = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(1, handle.stopCount)
+        assertEquals(VisibleCameraPipelineStatus.Error, state.status)
+        assertEquals("Error al drenar encoder: codec died", state.detail)
+    }
+
+    @Test
     fun terminalOpenCallbackBecomesFailureInsteadOfPendingForever() {
         val openGateway = VisibleTestOpenGateway { _, callbacks -> callbacks.onDisconnected(VisibleTestCamera("camera-1")) }
         val pipeline = CameraEncoderPipeline(
@@ -184,4 +215,16 @@ private class VisibleTestCamera(
     override val cameraId: String,
 ) : CloseableCameraDevice {
     override fun close() = Unit
+}
+
+
+private class QueueVisibleLauncher(
+    private vararg val results: VisibleCameraPipelineLaunchResult,
+) : VisibleCameraPipelineLauncher {
+    var starts = 0
+    override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String?, cameraPermissionGranted: Boolean, encoderConfig: H264EncoderConfig): VisibleCameraPipelineLaunchResult {
+        val index = starts.coerceAtMost(results.lastIndex)
+        starts += 1
+        return results[index]
+    }
 }
