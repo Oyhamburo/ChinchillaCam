@@ -315,3 +315,25 @@ Límites T8d:
 - No auto-resume tras lifecycle ni permiso; el usuario debe tocar Start otra vez.
 - Tests con fakes de carrera: stop durante `Starting`, lifecycle stop durante `Starting`, late handle cerrado, late failure no pisa estado detenido, start nuevo usa nueva generación.
 - Sin cambios de FGS, USB/Wi‑Fi, network, storage, audio, wire protocol, pruebas físicas ni claims.
+
+## Verificación T8d
+
+T8d endurece el arranque visible para que Stop explícito o lifecycle durante un `Starting` pendiente no bloqueen esperando al launcher y no permitan que recursos tardíos queden activos.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló en `VisibleCameraPipelineControllerTest.lifecycleStopDuringPendingStartReturnsPromptlyAndClosesLateHandle` porque `completeStart` mantenía el lock mientras esperaba al launcher; `stopForLifecycle` no podía volver pronto.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date en la corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+
+### Límites y decisiones T8d
+
+- `completeStart` valida y marca estado bajo lock, pero ejecuta `launcher.start` fuera del lock para que Stop/onStop no espere el arranque Android.
+- Stop/onStop incrementa la generación; si llega un handle tarde con una generación stale, se cierra inmediatamente y el estado detenido no se sobreescribe.
+- Un fallo tardío después de lifecycle Stop tampoco pisa el estado detenido.
+- No cambia FGS, transporte, storage, audio, wire protocol, pruebas físicas ni claims.

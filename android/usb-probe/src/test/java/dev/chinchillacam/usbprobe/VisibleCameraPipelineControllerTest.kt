@@ -4,6 +4,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 class VisibleCameraPipelineControllerTest {
     @Test
@@ -119,6 +122,48 @@ class VisibleCameraPipelineControllerTest {
         assertEquals("Error al drenar encoder: codec died", state.detail)
     }
 
+
+    @Test
+    fun lifecycleStopDuringPendingStartReturnsPromptlyAndClosesLateHandle() {
+        val lateHandle = RecordingVisibleHandle()
+        val launcher = BlockingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(lateHandle))
+        val controller = VisibleCameraPipelineController(launcher, sampleConfig())
+        val token = controller.prepareStart() ?: error("start token expected")
+        val worker = thread {
+            controller.completeStart(token, sampleSnapshot(), "camera-1", true)
+        }
+        assertTrue(launcher.entered.await(1, TimeUnit.SECONDS))
+
+        val beforeStop = System.nanoTime()
+        val stopped = controller.stopForLifecycle()
+        val stopMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - beforeStop)
+        launcher.release.countDown()
+        worker.join(1_000)
+
+        assertTrue("stop should not wait for pending launcher", stopMillis < 200)
+        assertEquals(VisibleCameraPipelineStatus.Stopped, stopped.status)
+        assertEquals(1, lateHandle.stopCount)
+        assertEquals(VisibleCameraPipelineStatus.Stopped, controller.currentState().status)
+    }
+
+    @Test
+    fun lateFailureAfterLifecycleStopDoesNotOverwriteStoppedState() {
+        val launcher = BlockingVisibleLauncher(VisibleCameraPipelineLaunchResult.Failed("late failure"))
+        val controller = VisibleCameraPipelineController(launcher, sampleConfig())
+        val token = controller.prepareStart() ?: error("start token expected")
+        val worker = thread {
+            controller.completeStart(token, sampleSnapshot(), "camera-1", true)
+        }
+        assertTrue(launcher.entered.await(1, TimeUnit.SECONDS))
+        controller.stopForLifecycle()
+
+        launcher.release.countDown()
+        worker.join(1_000)
+
+        assertEquals(VisibleCameraPipelineStatus.Stopped, controller.currentState().status)
+        assertEquals("Cámara local detenida al ocultar la app; no continúa con pantalla bloqueada.", controller.currentState().detail)
+    }
+
     @Test
     fun terminalOpenCallbackBecomesFailureInsteadOfPendingForever() {
         val openGateway = VisibleTestOpenGateway { _, callbacks -> callbacks.onDisconnected(VisibleTestCamera("camera-1")) }
@@ -226,5 +271,18 @@ private class QueueVisibleLauncher(
         val index = starts.coerceAtMost(results.lastIndex)
         starts += 1
         return results[index]
+    }
+}
+
+
+private class BlockingVisibleLauncher(
+    private val result: VisibleCameraPipelineLaunchResult,
+) : VisibleCameraPipelineLauncher {
+    val entered = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String?, cameraPermissionGranted: Boolean, encoderConfig: H264EncoderConfig): VisibleCameraPipelineLaunchResult {
+        entered.countDown()
+        release.await(1, TimeUnit.SECONDS)
+        return result
     }
 }

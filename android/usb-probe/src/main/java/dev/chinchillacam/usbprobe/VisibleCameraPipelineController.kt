@@ -43,32 +43,40 @@ class VisibleCameraPipelineController(
         return completeStart(token, snapshot, selectedCameraId, cameraPermissionGranted)
     }
 
-    @Synchronized
     fun completeStart(
         token: Int,
         snapshot: CameraCatalogSnapshot,
         selectedCameraId: String?,
         cameraPermissionGranted: Boolean,
     ): VisibleCameraPipelineUiState {
-        if (token != startGeneration || state.status != VisibleCameraPipelineStatus.Starting) return state
-        metrics.reset()
-        if (!cameraPermissionGranted) return setError("Permiso de cámara requerido antes de iniciar.")
-        if (selectedCameraId == null || !snapshot.isDirectCandidate(selectedCameraId)) {
-            return setError("Selecciona una cámara directa antes de iniciar.")
-        }
-        return when (val result = launcher.start(snapshot, selectedCameraId, cameraPermissionGranted, encoderConfig)) {
-            is VisibleCameraPipelineLaunchResult.Running -> {
-                if (token != startGeneration || state.status != VisibleCameraPipelineStatus.Starting) {
-                    result.handle.stop()
-                    state
-                } else {
-                    handle = result.handle
-                    setRunning("Cámara local activa. Video codificado se descarta en memoria; no se transmite ni se graba.")
-                }
+        synchronized(this) {
+            if (token != startGeneration || state.status != VisibleCameraPipelineStatus.Starting) return state
+            metrics.reset()
+            if (!cameraPermissionGranted) return setError("Permiso de cámara requerido antes de iniciar.")
+            if (selectedCameraId == null || !snapshot.isDirectCandidate(selectedCameraId)) {
+                return setError("Selecciona una cámara directa antes de iniciar.")
             }
-            is VisibleCameraPipelineLaunchResult.Failed -> {
-                handle = null
-                setError(result.reason)
+        }
+
+        val result = launcher.start(snapshot, selectedCameraId, cameraPermissionGranted, encoderConfig)
+
+        return synchronized(this) {
+            if (token != startGeneration || state.status != VisibleCameraPipelineStatus.Starting) {
+                if (result is VisibleCameraPipelineLaunchResult.Running) {
+                    result.handle.stop()
+                }
+                state
+            } else {
+                when (result) {
+                    is VisibleCameraPipelineLaunchResult.Running -> {
+                        handle = result.handle
+                        setRunning("Cámara local activa. Video codificado se descarta en memoria; no se transmite ni se graba.")
+                    }
+                    is VisibleCameraPipelineLaunchResult.Failed -> {
+                        handle = null
+                        setError(result.reason)
+                    }
+                }
             }
         }
     }
