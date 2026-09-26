@@ -74,6 +74,7 @@ Estos advisories de T5d3 son conocidos y no deben iniciar un bucle automático i
 - [x] T2b: endurecer adapter antes de UI por advisories `R3-missing-control-metadata-reported-false` y `R3-overbroad-run-catching`: controles sin metadata quedan `Unknown` en vez de `Known(false)`; valores conocidos `false` siguen siendo `Known(false)`; el gateway/adapter atrapa solo fallos esperados de API/permisos/cámara, no cualquier excepción inesperada. Sin abrir cámara, sin captura, sin UI y sin pruebas físicas.
 - [x] T3: UI española para listar/seleccionar solo IDs direccionables; físicos-only se muestran como no abribles. Sin prometer selección de lentes Samsung sin soporte de API. Alcance: planner JVM puro para texto/estado de catálogo, integración Activity pasiva que solo enumera catálogo con `CameraManager`; selección inicial en memoria de UI si hay candidatos directos, sin persistencia (T5), sin permiso de cámara (T4), sin `CameraDevice.open`, sin captura ni pruebas físicas.
 - [x] T4: gate de permiso de cámara en UI española: declarar permiso Android y solicitarlo solo por acción explícita del usuario; mostrar estados concedido/denegado/no solicitado. Sin `CameraDevice.open`, sin captura, sin stream, sin persistencia de selección (T5) y sin pruebas físicas.
+- [x] T5: persistir preferencia de cámara seleccionada de forma segura: guardar solo IDs `DirectOpenCandidate`, ignorar físicos-only o stale al reconstruir catálogo, releer el permiso real de Android en recreación/reanudación, sin persistir un booleano stale de permiso. Sin abrir cámara, sin captura, sin prueba física y sin prometer selección de lentes físicos Samsung.
 
 ## Verificación T1
 
@@ -261,3 +262,27 @@ T4 agrega el gate de permiso runtime de cámara sin abrir cámara ni iniciar cap
 - Lineage: `review-8490f15400a70b47`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgo advisory no bloqueante del reviewer: `R3-permission-state-lifecycle`. No abrió corrección para T4; queda como hardening futuro si se persiste/restaura estado de permiso junto con la selección en T5.
+
+## Verificación T5
+
+T5 persiste solo la preferencia de ID directo seleccionado y relee el permiso runtime real en recreación/reanudación, sin persistir un booleano stale de permiso.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `CameraSelectionPreference` y `StringPreferenceStore` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date en la corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+
+### Límites y decisiones T5
+
+- `CameraSelectionPreference` solo restaura y guarda IDs cuyo rol actual sea `DirectOpenCandidate`.
+- Si la preferencia apunta a un físico-only o a un ID stale/removido, se ignora y se limpia.
+- `UsbProbeActivity` persiste la selección únicamente cuando el usuario toca una fila directa seleccionable.
+- `UsbProbeActivity.onResume()` relee el permiso real `CAMERA`; no se persiste un booleano de permiso runtime.
+- El render del catálogo vuelve a consultar CameraManager y valida la preferencia contra el snapshot actual.
+- No se agregó `CameraDevice.open`, `openCamera`, captura, sesión, `ImageReader`, frame stream ni prueba física.

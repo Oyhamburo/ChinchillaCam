@@ -436,3 +436,34 @@ object CameraPermissionUiPlanner {
         )
     }
 }
+
+
+interface StringPreferenceStore {
+    fun get(): String?
+    fun put(value: String)
+    fun clear()
+}
+
+class CameraSelectionPreference(
+    private val store: StringPreferenceStore,
+) {
+    fun restoreSelection(snapshot: CameraCatalogSnapshot): String? {
+        val persisted = store.get() ?: return null
+        return if (snapshot.isDirectOpenCandidate(persisted)) {
+            persisted
+        } else {
+            store.clear()
+            null
+        }
+    }
+
+    fun saveSelection(snapshot: CameraCatalogSnapshot, cameraId: String) {
+        if (snapshot.isDirectOpenCandidate(cameraId)) {
+            store.put(cameraId)
+        }
+    }
+
+    private fun CameraCatalogSnapshot.isDirectOpenCandidate(cameraId: String): Boolean = entries.any { entry ->
+        entry.id == cameraId && entry.role is CameraIdRole.DirectOpenCandidate
+    }
+}

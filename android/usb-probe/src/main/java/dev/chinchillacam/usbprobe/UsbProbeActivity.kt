@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraManager
 import android.hardware.usb.UsbAccessory
@@ -33,6 +34,9 @@ class UsbProbeActivity : Activity() {
     private lateinit var action: Button
     private var selectedCameraId: String? = null
     private var cameraPermissionState: CameraPermissionUiModel = CameraPermissionUiModel.NotRequested
+    private val cameraSelectionPreference: CameraSelectionPreference by lazy {
+        CameraSelectionPreference(SharedPreferencesStringStore(getSharedPreferences(CAMERA_PREFERENCES, Context.MODE_PRIVATE), CAMERA_SELECTION_KEY))
+    }
     private val mainHandler = Handler(Looper.getMainLooper())
     private var permissionState: AccessoryPermissionUiModel = AccessoryPermissionUiModel.Idle
     private var permissionGate = AccessoryPermissionRequestGate(PERMISSION_CALLBACK_TIMEOUT_MILLIS)
@@ -90,6 +94,7 @@ class UsbProbeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        cameraPermissionState = currentCameraPermissionState()
         render()
     }
 
@@ -159,12 +164,9 @@ class UsbProbeActivity : Activity() {
         CameraPermissionUiModel.NotRequested
     }
 
-    private fun renderCameraCatalog() {
-        val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val snapshot = CameraCapabilityCatalog(
-            AndroidCameraManagerGateway(AndroidCameraManagerFacadeImpl(cameraManager)),
-        ).snapshot()
-        val ui = CameraCatalogUiPlanner.plan(snapshot = snapshot, requestedSelectionId = selectedCameraId)
+    private fun renderCameraCatalog(snapshot: CameraCatalogSnapshot = currentCameraCatalogSnapshot()) {
+        val restoredSelection = selectedCameraId ?: cameraSelectionPreference.restoreSelection(snapshot)
+        val ui = CameraCatalogUiPlanner.plan(snapshot = snapshot, requestedSelectionId = restoredSelection)
         selectedCameraId = ui.selectedCameraId
         cameraCatalog.text = "${ui.title}\n${ui.summary}"
         cameraRows.removeAllViews()
@@ -179,8 +181,10 @@ class UsbProbeActivity : Activity() {
             isAllCaps = false
             isEnabled = true
             setOnClickListener {
+                val snapshot = currentCameraCatalogSnapshot()
+                cameraSelectionPreference.saveSelection(snapshot, row.cameraId)
                 selectedCameraId = row.cameraId
-                renderCameraCatalog()
+                renderCameraCatalog(snapshot)
             }
         }
     } else {
@@ -189,6 +193,13 @@ class UsbProbeActivity : Activity() {
             textSize = 14f
             isEnabled = false
         }
+    }
+
+    private fun currentCameraCatalogSnapshot(): CameraCatalogSnapshot {
+        val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        return CameraCapabilityCatalog(
+            AndroidCameraManagerGateway(AndroidCameraManagerFacadeImpl(cameraManager)),
+        ).snapshot()
     }
 
     private fun requestPermissionFromUserAction() {
@@ -353,6 +364,19 @@ class UsbProbeActivity : Activity() {
     @Suppress("DEPRECATION")
     private fun callbackAccessory(intent: Intent): UsbAccessory? = intent.getParcelableExtra(UsbManager.EXTRA_ACCESSORY)
 
+    private class SharedPreferencesStringStore(
+        private val preferences: SharedPreferences,
+        private val key: String,
+    ) : StringPreferenceStore {
+        override fun get(): String? = preferences.getString(key, null)
+        override fun put(value: String) {
+            preferences.edit().putString(key, value).apply()
+        }
+        override fun clear() {
+            preferences.edit().remove(key).apply()
+        }
+    }
+
     private companion object {
         const val MAX_PAYLOAD_BYTES = 64 * 1024
         const val PERMISSION_CALLBACK_TIMEOUT_MILLIS = 10_000L
@@ -362,5 +386,7 @@ class UsbProbeActivity : Activity() {
         const val STATE_PERMISSION_EXPIRES_AT = "dev.chinchillacam.usbprobe.state.PERMISSION_EXPIRES_AT"
         const val STATE_PERMISSION_CONSUMED = "dev.chinchillacam.usbprobe.state.PERMISSION_CONSUMED"
         const val REQUEST_CAMERA_PERMISSION = 2001
+        const val CAMERA_PREFERENCES = "dev.chinchillacam.usbprobe.camera"
+        const val CAMERA_SELECTION_KEY = "selected_direct_camera_id"
     }
 }
