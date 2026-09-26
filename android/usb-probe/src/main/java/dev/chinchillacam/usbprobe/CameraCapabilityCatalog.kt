@@ -1,6 +1,7 @@
 package dev.chinchillacam.usbprobe
 
 import android.graphics.ImageFormat
+import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.params.StreamConfigurationMap
@@ -39,8 +40,15 @@ class CameraCapabilityCatalog(
         return CameraCatalogSnapshot(entries)
     }
 
-    private fun safeCharacteristics(cameraId: String): CameraCapabilityCharacteristics? =
-        runCatching { gateway.getCharacteristics(cameraId) }.getOrNull()
+    private fun safeCharacteristics(cameraId: String): CameraCapabilityCharacteristics? = try {
+        gateway.getCharacteristics(cameraId)
+    } catch (_: SecurityException) {
+        null
+    } catch (_: CameraAccessException) {
+        null
+    } catch (_: AndroidCameraAccessFailure) {
+        null
+    }
 
     private fun entryFor(
         cameraId: String,
@@ -140,6 +148,11 @@ data class CameraControlAvailability(
     val zoomRatio: Boolean,
 )
 
+class AndroidCameraAccessFailure(
+    message: String,
+    cause: Throwable? = null,
+) : RuntimeException(message, cause)
+
 
 enum class AndroidCameraCharacteristicField {
     Facing,
@@ -164,9 +177,15 @@ class AndroidCameraManagerGateway(
 ) : CameraCapabilityGateway {
     private var directCandidateIds: Set<String> = emptySet()
 
-    override fun getOpenableCameraIds(): List<String> = runCatching {
+    override fun getOpenableCameraIds(): List<String> = try {
         facade.getCameraIdList()
-    }.getOrDefault(emptyList()).also { ids ->
+    } catch (_: SecurityException) {
+        emptyList()
+    } catch (_: CameraAccessException) {
+        emptyList()
+    } catch (_: AndroidCameraAccessFailure) {
+        emptyList()
+    }.also { ids ->
         directCandidateIds = ids.toSet()
     }
 
@@ -192,9 +211,15 @@ class AndroidCameraManagerGateway(
         controls = CapabilityState.Unknown(reason),
     )
 
-    private fun safePhysicalCameraIds(cameraId: String): Set<String> = runCatching {
+    private fun safePhysicalCameraIds(cameraId: String): Set<String> = try {
         facade.getPhysicalCameraIds(cameraId)
-    }.getOrDefault(emptySet())
+    } catch (_: SecurityException) {
+        emptySet()
+    } catch (_: CameraAccessException) {
+        emptySet()
+    } catch (_: AndroidCameraAccessFailure) {
+        emptySet()
+    }
 
     private fun sizesFor(cameraId: String): CapabilityState<List<CameraOutputSize>> = try {
         val sizes = facade.getOutputSizes(cameraId)
@@ -202,7 +227,11 @@ class AndroidCameraManagerGateway(
             sizes == null -> CapabilityState.Unavailable("output sizes not advertised for $cameraId")
             else -> CapabilityState.Known(sizes)
         }
-    } catch (_: Exception) {
+    } catch (_: SecurityException) {
+        CapabilityState.Unknown("output sizes unavailable for $cameraId")
+    } catch (_: CameraAccessException) {
+        CapabilityState.Unknown("output sizes unavailable for $cameraId")
+    } catch (_: AndroidCameraAccessFailure) {
         CapabilityState.Unknown("output sizes unavailable for $cameraId")
     }
 
@@ -217,7 +246,11 @@ class AndroidCameraManagerGateway(
         } else {
             CapabilityState.Known(value)
         }
-    } catch (_: Exception) {
+    } catch (_: SecurityException) {
+        CapabilityState.Unknown("$label unavailable for $cameraId")
+    } catch (_: CameraAccessException) {
+        CapabilityState.Unknown("$label unavailable for $cameraId")
+    } catch (_: AndroidCameraAccessFailure) {
         CapabilityState.Unknown("$label unavailable for $cameraId")
     }
 }
@@ -253,16 +286,16 @@ class AndroidCameraManagerFacadeImpl(
 
     override fun getControls(cameraId: String): CameraControlAvailability? {
         val characteristics = characteristics(cameraId)
-        val afModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
-        val exposureRange = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+        val afModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: return null
+        val exposureRange = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: return null
         val zoomAvailable = if (sdkInt >= Build.VERSION_CODES.R) {
-            characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) != null
+            characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.let { it.upper > 1.0f } ?: return null
         } else {
-            characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)?.let { it > 1.0f } == true
+            characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)?.let { it > 1.0f } ?: return null
         }
         return CameraControlAvailability(
-            autoFocus = afModes?.any { it != CameraCharacteristics.CONTROL_AF_MODE_OFF } == true,
-            exposureCompensation = exposureRange?.let { it.lower != 0 || it.upper != 0 } == true,
+            autoFocus = afModes.any { it != CameraCharacteristics.CONTROL_AF_MODE_OFF },
+            exposureCompensation = exposureRange.lower != 0 || exposureRange.upper != 0,
             zoomRatio = zoomAvailable,
         )
     }

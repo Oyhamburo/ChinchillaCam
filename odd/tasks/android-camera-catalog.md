@@ -70,7 +70,8 @@ Estos advisories de T5d3 son conocidos y no deben iniciar un bucle automático i
 
 - [x] T1: agregar dominio `CameraCapabilityCatalog` con gateway fake y pruebas JVM. Commit `d75495b` (`feat: add Android camera capability catalog`) implementó `CameraCapabilityCatalog.kt` y `CameraCapabilityCatalogTest.kt`; revisión nativa RDD aprobada y reconocida en lineage `review-ff86e4f59c053d11`.
 - [x] T1b: endurecer catálogo ante fallos parciales y orden no determinista. Commit `9558ca3` (`fix: harden Android camera catalog snapshots`) resolvió `R3-characteristics-failure-aborts-snapshot` y `R3-nondeterministic-physical-order`: una excepción/fallo de características de una cámara produce entrada parcial `Unknown` sin abortar otras cámaras; los IDs direct-open-candidate y físicos child salen en orden determinista estable. Incorporó la nuance de `getCameraIdList()`: un ID listado es candidato direccionable, no garantía de apertura exitosa. Sin `CameraDevice.open`, sin captura, sin UI y sin claims hardware. Revisión nativa RDD aprobada y reconocida en lineage `review-2237faf927784644`.
-- [ ] T2: adapter real `CameraManager`/`CameraCharacteristics` con guards de API para IDs lógicos/físicos, tamaños/FPS/controles y estados `Unknown`/`Unavailable` claros; compile/build tests, sin abrir cámara. Debe conservar la nuance de `getCameraIdList()`: ID listado es `DirectOpenCandidate`, no apertura garantizada. Los IDs físicos solo se consultan directamente con guard API 29+; si no, quedan `Unknown` sin crash. `SecurityException`, `CameraAccessException` u omisiones de claves restringidas se degradan a `Unknown`/`Unavailable`, nunca a crash del catálogo completo.
+- [x] T2: adapter real `CameraManager`/`CameraCharacteristics` con guards de API para IDs lógicos/físicos, tamaños/FPS/controles y estados `Unknown`/`Unavailable` claros; compile/build tests, sin abrir cámara. Commit `3b902bf` (`feat: add Android CameraManager catalog adapter`); revisión nativa RDD aprobada y reconocida en lineage `review-086573489e2dd009`. Conserva la nuance de `getCameraIdList()`: ID listado es `DirectOpenCandidate`, no apertura garantizada. Los IDs físicos solo se consultan directamente con guard API 29+; si no, quedan `Unknown` sin crash. `SecurityException`, `CameraAccessException` u omisiones de claves restringidas se degradan a `Unknown`/`Unavailable`, nunca a crash del catálogo completo.
+- [x] T2b: endurecer adapter antes de UI por advisories `R3-missing-control-metadata-reported-false` y `R3-overbroad-run-catching`: controles sin metadata quedan `Unknown` en vez de `Known(false)`; valores conocidos `false` siguen siendo `Known(false)`; el gateway/adapter atrapa solo fallos esperados de API/permisos/cámara, no cualquier excepción inesperada. Sin abrir cámara, sin captura, sin UI y sin pruebas físicas.
 - [ ] T3: UI española para listar/seleccionar solo IDs direccionables; físicos-only se muestran como no abribles. Sin prometer selección de lentes Samsung sin soporte de API.
 
 ## Verificación T1
@@ -164,3 +165,26 @@ La verificación local de T2 cubre adapter real `CameraManager`/`CameraCharacter
 - Lineage: `review-086573489e2dd009`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes del reviewer: `R3-missing-control-metadata-reported-false` y `R3-overbroad-run-catching`. No abrieron corrección para T2; quedan como hardening futuro antes de UI/captura si se decide.
+
+## Verificación T2b
+
+T2b endureció el adapter antes de UI para resolver los advisories no bloqueantes de T2.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` porque los tests nuevos referenciaban `AndroidCameraAccessFailure` antes de existir.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`; 19 tareas ejecutadas.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date en la corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+- Verificación independiente read-only: PASS; confirmó tests de metadata de controles, propagación de fallos inesperados, catches acotados, ausencia de open/capture/UI/manifest y sin claims hardware.
+
+### Límites y decisiones T2b
+
+- `AndroidCameraAccessFailure` representa fallos recuperables de acceso/cámara dentro del dominio testeable.
+- `CameraCapabilityCatalog` y `AndroidCameraManagerGateway` degradan solo `SecurityException`, `CameraAccessException` y `AndroidCameraAccessFailure`. Fallos inesperados, como errores de programación, se propagan para no ocultar bugs.
+- `AndroidCameraManagerFacadeImpl.getControls()` devuelve `null` si falta metadata requerida; el catálogo lo muestra como `CapabilityState.Unknown`. Cuando la metadata existe pero indica que un control no está disponible, se preserva `Known(false)`.
+- No se agregó apertura de cámara, captura, frame stream, UI, permiso de cámara ni prueba física.

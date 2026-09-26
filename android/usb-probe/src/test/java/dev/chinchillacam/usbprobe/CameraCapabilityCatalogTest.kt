@@ -174,7 +174,7 @@ private class FakeCameraCapabilityGateway(
     override fun getOpenableCameraIds(): List<String> = openableIds
 
     override fun getCharacteristics(cameraId: String): CameraCapabilityCharacteristics? {
-        if (cameraId in failingIds) error("camera characteristics unavailable")
+        if (cameraId in failingIds) throw AndroidCameraAccessFailure("camera characteristics unavailable")
         return characteristics[cameraId]?.let {
             CameraCapabilityCharacteristics(
                 facing = it.facing,

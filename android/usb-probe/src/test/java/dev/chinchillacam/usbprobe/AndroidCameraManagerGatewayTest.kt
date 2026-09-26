@@ -93,6 +93,47 @@ class AndroidCameraManagerGatewayTest {
         assertEquals(CapabilityState.Unknown("controls unavailable for 1"), catalog.entry("1").controls)
     }
 
+
+    @Test
+    fun missingControlMetadataIsUnknownButKnownUnsupportedControlsStayKnownFalse() {
+        val facade = FakeAndroidCameraManagerFacade(
+            sdkInt = 33,
+            listedIds = listOf("missing", "unsupported"),
+            records = mapOf(
+                "missing" to FakeAndroidCameraRecord(
+                    facing = CameraFacing.Back,
+                    controls = null,
+                ),
+                "unsupported" to FakeAndroidCameraRecord(
+                    facing = CameraFacing.Back,
+                    controls = CameraControlAvailability(autoFocus = false, exposureCompensation = false, zoomRatio = false),
+                ),
+            ),
+        )
+
+        val catalog = CameraCapabilityCatalog(AndroidCameraManagerGateway(facade)).snapshot()
+
+        assertEquals(CapabilityState.Unknown("controls unavailable for missing"), catalog.entry("missing").controls)
+        assertEquals(
+            CapabilityState.Known(CameraControlAvailability(autoFocus = false, exposureCompensation = false, zoomRatio = false)),
+            catalog.entry("unsupported").controls,
+        )
+    }
+
+    @Test
+    fun unexpectedCameraManagerFailuresAreNotSwallowedAsUnknown() {
+        val facade = FakeAndroidCameraManagerFacade(
+            sdkInt = 33,
+            listedIds = listOf("boom"),
+            records = mapOf("boom" to FakeAndroidCameraRecord(facing = CameraFacing.Back)),
+            unexpectedFailures = mapOf(AndroidCameraCharacteristicField.Facing to IllegalStateException("programming bug")),
+        )
+
+        val result = runCatching { CameraCapabilityCatalog(AndroidCameraManagerGateway(facade)).snapshot() }
+
+        assertTrue(result.exceptionOrNull() is IllegalStateException)
+    }
+
     @Test
     fun listedCameraIdsFailureReturnsEmptyCatalogWithoutThrowing() {
         val facade = FakeAndroidCameraManagerFacade(
@@ -125,9 +166,10 @@ private class FakeAndroidCameraManagerFacade(
     private val listedIds: List<String>,
     private val records: Map<String, FakeAndroidCameraRecord>,
     private val failList: Boolean = false,
+    private val unexpectedFailures: Map<AndroidCameraCharacteristicField, RuntimeException> = emptyMap(),
 ) : AndroidCameraManagerFacade {
     override fun getCameraIdList(): List<String> {
-        if (failList) error("camera list unavailable")
+        if (failList) throw AndroidCameraAccessFailure("camera list unavailable")
         return listedIds
     }
 
@@ -142,7 +184,8 @@ private class FakeAndroidCameraManagerFacade(
     override fun getControls(cameraId: String): CameraControlAvailability? = record(cameraId, AndroidCameraCharacteristicField.Controls).controls
 
     private fun record(cameraId: String, field: AndroidCameraCharacteristicField): FakeAndroidCameraRecord {
-        val record = records[cameraId] ?: error("missing $cameraId")
+        unexpectedFailures[field]?.let { throw it }
+        val record = records[cameraId] ?: throw AndroidCameraAccessFailure("missing $cameraId")
         if (field in record.restrictedFields) throw SecurityException("restricted $field")
         return record
     }
