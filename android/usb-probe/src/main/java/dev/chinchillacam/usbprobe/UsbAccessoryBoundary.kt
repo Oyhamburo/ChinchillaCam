@@ -241,6 +241,14 @@ value class PermissionRequestToken(val value: String) {
 
     companion object {
         fun newRandom(): PermissionRequestToken = PermissionRequestToken(UUID.randomUUID().toString())
+
+        fun fromCallbackExtra(value: String?): PermissionRequestToken? {
+            val token = value ?: return null
+            if (token.isBlank()) return null
+            if (token != token.trim()) return null
+            if (token.any { it.isISOControl() }) return null
+            return PermissionRequestToken(token)
+        }
     }
 }
 
@@ -259,8 +267,12 @@ data class AccessoryFingerprint(
     val uri: String,
     val serial: String,
 ) {
-    fun stableString(): String = listOf(manufacturer, model, description, version, uri, serial)
-        .joinToString(separator = "\u001f") { it.replace("\u001f", "\\u001f") }
+    fun stableString(): String = fields.joinToString(separator = "") { field ->
+        "${field.length}:$field"
+    }
+
+    private val fields: List<String>
+        get() = listOf(manufacturer, model, description, version, uri, serial)
 
     companion object {
         fun fromFields(
@@ -280,8 +292,21 @@ data class AccessoryFingerprint(
         )
 
         fun fromStableString(value: String?): AccessoryFingerprint? {
-            val parts = value?.split('\u001f') ?: return null
-            if (parts.size != 6) return null
+            val encoded = value ?: return null
+            val parts = mutableListOf<String>()
+            var offset = 0
+            repeat(6) {
+                val colon = encoded.indexOf(':', startIndex = offset)
+                if (colon < 0 || colon == offset) return null
+                val length = encoded.substring(offset, colon).toIntOrNull() ?: return null
+                if (length < 0) return null
+                val start = colon + 1
+                val end = start + length
+                if (end > encoded.length) return null
+                parts += encoded.substring(start, end)
+                offset = end
+            }
+            if (offset != encoded.length) return null
             return AccessoryFingerprint(
                 manufacturer = parts[0],
                 model = parts[1],
@@ -310,11 +335,18 @@ data class PendingAccessoryPermissionRequest(
     val consumed: Boolean = false,
 )
 
+sealed class PendingPermissionSnapshotResult {
+    data class Restored(val request: PendingAccessoryPermissionRequest) : PendingPermissionSnapshotResult()
+    object ExpiredOrMissing : PendingPermissionSnapshotResult()
+    object Consumed : PendingPermissionSnapshotResult()
+}
+
 sealed class PermissionCallbackDecision {
     data class Valid(val callback: AccessoryPermissionCallback) : PermissionCallbackDecision()
     object WrongAccessory : PermissionCallbackDecision()
     object DuplicateOrConsumed : PermissionCallbackDecision()
     object StaleOrMissingRequest : PermissionCallbackDecision()
+    object MalformedToken : PermissionCallbackDecision()
 }
 
 class AccessoryPermissionRequestGate(
@@ -325,6 +357,28 @@ class AccessoryPermissionRequestGate(
     }
 
     private var current: PendingAccessoryPermissionRequest? = null
+
+    fun snapshotPendingRequest(nowMillis: Long): PendingPermissionSnapshotResult {
+        val request = current ?: return PendingPermissionSnapshotResult.ExpiredOrMissing
+        return when {
+            request.consumed -> PendingPermissionSnapshotResult.Consumed
+            nowMillis >= request.expiresAtMillis -> PendingPermissionSnapshotResult.ExpiredOrMissing
+            else -> PendingPermissionSnapshotResult.Restored(request)
+        }
+    }
+
+    fun restorePendingRequest(request: PendingAccessoryPermissionRequest?, nowMillis: Long): PendingPermissionSnapshotResult {
+        val restored = request ?: return PendingPermissionSnapshotResult.ExpiredOrMissing
+        current = restored
+        return when (val snapshot = snapshotPendingRequest(nowMillis)) {
+            PendingPermissionSnapshotResult.Consumed,
+            PendingPermissionSnapshotResult.ExpiredOrMissing -> {
+                current = null
+                snapshot
+            }
+            is PendingPermissionSnapshotResult.Restored -> snapshot
+        }
+    }
 
     fun beginRequest(
         fingerprint: AccessoryFingerprint,
@@ -347,6 +401,17 @@ class AccessoryPermissionRequestGate(
         }
     }
 
+    fun classifyCallbackTokenValue(
+        tokenValue: String?,
+        fingerprint: AccessoryFingerprint?,
+        callback: AccessoryPermissionCallback,
+        nowMillis: Long,
+    ): PermissionCallbackDecision {
+        val token = PermissionRequestToken.fromCallbackExtra(tokenValue)
+            ?: return PermissionCallbackDecision.MalformedToken
+        return classifyCallback(token, fingerprint, callback, nowMillis)
+    }
+
     fun classifyCallback(
         token: PermissionRequestToken?,
         fingerprint: AccessoryFingerprint?,
@@ -364,6 +429,18 @@ class AccessoryPermissionRequestGate(
 
         current = request.copy(consumed = true)
         return PermissionCallbackDecision.Valid(callback)
+    }
+
+    companion object {
+        fun restoreFromSnapshot(
+            timeoutMillis: Long,
+            snapshot: PendingAccessoryPermissionRequest,
+            nowMillis: Long,
+        ): AccessoryPermissionRequestGate {
+            val gate = AccessoryPermissionRequestGate(timeoutMillis)
+            gate.restorePendingRequest(snapshot, nowMillis)
+            return gate
+        }
     }
 }
 
@@ -418,6 +495,7 @@ sealed class AccessoryPermissionUiModel {
     object RejectedWrongAccessory : AccessoryPermissionUiModel()
     object RejectedDuplicateOrConsumed : AccessoryPermissionUiModel()
     object RejectedStaleOrMissingRequest : AccessoryPermissionUiModel()
+    object RejectedMalformedToken : AccessoryPermissionUiModel()
 }
 
 object AccessoryPermissionLifecycleReducer {
@@ -434,6 +512,7 @@ object AccessoryPermissionLifecycleReducer {
             PermissionCallbackDecision.WrongAccessory -> AccessoryPermissionUiModel.RejectedWrongAccessory
             PermissionCallbackDecision.DuplicateOrConsumed -> AccessoryPermissionUiModel.RejectedDuplicateOrConsumed
             PermissionCallbackDecision.StaleOrMissingRequest -> AccessoryPermissionUiModel.RejectedStaleOrMissingRequest
+            PermissionCallbackDecision.MalformedToken -> AccessoryPermissionUiModel.RejectedMalformedToken
         }
     }
 
@@ -499,6 +578,7 @@ object UsbProbeScreenPlanner {
             permissionState == AccessoryPermissionUiModel.RejectedWrongAccessory -> "Se rechazó el permiso porque corresponde a otro accesorio USB; podés intentar de nuevo."
             permissionState == AccessoryPermissionUiModel.RejectedDuplicateOrConsumed -> "Se rechazó un callback de permiso duplicado o ya consumido; no se inició otra prueba."
             permissionState == AccessoryPermissionUiModel.RejectedStaleOrMissingRequest -> "Se rechazó un resultado de permiso vencido o sin token; podés intentar de nuevo."
+            permissionState == AccessoryPermissionUiModel.RejectedMalformedToken -> "Se rechazó un resultado de permiso con token inválido; podés intentar de nuevo."
             accessoryAvailable -> "Accesorio USB detectado. Tocá el botón para pedir permiso."
             else -> "Conectá el accesorio USB para iniciar la prueba."
         }

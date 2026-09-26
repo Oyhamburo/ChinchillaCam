@@ -425,6 +425,125 @@ class UsbAccessoryBoundaryTest {
     }
 
     @Test
+    fun blankPermissionCallbackTokenIsTypedRejectionAndNeverThrows() {
+        val phone = AccessoryFingerprint.fromFields("ChinchillaCam", "USB Probe", "AOA", "0.1.0", "", "phone-1")
+        val gate = AccessoryPermissionRequestGate(timeoutMillis = 1_000)
+        gate.beginRequest(phone, nowMillis = 10, token = PermissionRequestToken("token-1"))
+
+        val blankDecision = runCatching {
+            gate.classifyCallbackTokenValue(
+                tokenValue = "   ",
+                fingerprint = phone,
+                callback = AccessoryPermissionCallback.Granted,
+                nowMillis = 20,
+            )
+        }
+        val malformedDecision = runCatching {
+            gate.classifyCallbackTokenValue(
+                tokenValue = "token-1\n",
+                fingerprint = phone,
+                callback = AccessoryPermissionCallback.Granted,
+                nowMillis = 20,
+            )
+        }
+
+        assertTrue("blank callback token must be classified, not thrown", blankDecision.isSuccess)
+        assertTrue("malformed callback token must be classified, not thrown", malformedDecision.isSuccess)
+        assertEquals(PermissionCallbackDecision.MalformedToken, blankDecision.getOrThrow())
+        assertEquals(PermissionCallbackDecision.MalformedToken, malformedDecision.getOrThrow())
+        assertEquals(
+            AccessoryPermissionUiModel.RejectedMalformedToken,
+            AccessoryPermissionLifecycleReducer.reduce(
+                AccessoryPermissionUiModel.WaitingForCallback,
+                AccessoryPermissionEvent.CallbackDecision(blankDecision.getOrThrow()),
+            ),
+        )
+    }
+
+    @Test
+    fun accessoryFingerprintStableStringRoundTripsDelimiterControlAndColonExactly() {
+        val fingerprint = AccessoryFingerprint.fromFields(
+            manufacturer = "Chinchilla\u001fCam",
+            model = "USB:Probe",
+            description = "AOA\\u001fboundary",
+            version = "0.1.0\nrelease",
+            uri = "content://example.invalid/a:b",
+            serial = "phone\u001f:1",
+        )
+
+        val encoded = fingerprint.stableString()
+        val decoded = AccessoryFingerprint.fromStableString(encoded)
+
+        assertEquals(fingerprint, decoded)
+    }
+
+    @Test
+    fun accessoryFingerprintStableStringCannotBeSpoofedByMovingDelimitersBetweenFields() {
+        val original = AccessoryFingerprint.fromFields(
+            manufacturer = "Chinchilla\u001fCam",
+            model = "USB Probe",
+            description = "AOA",
+            version = "0.1.0",
+            uri = "https://example.invalid/chinchillacam",
+            serial = "phone-1",
+        )
+        val spoofed = listOf(
+            "Chinchilla",
+            "Cam\u001fUSB Probe",
+            "AOA",
+            "0.1.0",
+            "https://example.invalid/chinchillacam",
+            "phone-1",
+        ).joinToString(separator = "\u001f")
+
+        assertEquals(original, AccessoryFingerprint.fromStableString(original.stableString()))
+        assertEquals(null, AccessoryFingerprint.fromStableString(spoofed))
+    }
+
+    @Test
+    fun malformedAccessoryFingerprintStableStringReturnsNull() {
+        assertEquals(null, AccessoryFingerprint.fromStableString(null))
+        assertEquals(null, AccessoryFingerprint.fromStableString("only\u001ffive\u001ffields\u001fhere\u001fmissing"))
+        assertEquals(null, AccessoryFingerprint.fromStableString("bad escape \\u00zz\u001fmodel\u001fdesc\u001fver\u001furi\u001fserial"))
+    }
+
+    @Test
+    fun pendingPermissionRequestSnapshotRestoresAndGrantActivatesOnce() {
+        val phone = AccessoryFingerprint.fromFields("ChinchillaCam", "USB Probe", "AOA", "0.1.0", "", "phone-1")
+        val originalGate = AccessoryPermissionRequestGate(timeoutMillis = 1_000)
+        val request = originalGate.beginRequest(phone, nowMillis = 10, token = PermissionRequestToken("token-1"))
+        val snapshot = originalGate.snapshotPendingRequest(nowMillis = 20)
+
+        assertEquals(PendingPermissionSnapshotResult.Restored(request), snapshot)
+
+        val restoredGate = AccessoryPermissionRequestGate.restoreFromSnapshot(
+            timeoutMillis = 1_000,
+            snapshot = (snapshot as PendingPermissionSnapshotResult.Restored).request,
+            nowMillis = 30,
+        )
+        val first = restoredGate.classifyCallback(request.token, phone, AccessoryPermissionCallback.Granted, nowMillis = 40)
+        val replay = restoredGate.classifyCallback(request.token, phone, AccessoryPermissionCallback.Granted, nowMillis = 50)
+
+        assertEquals(PermissionCallbackDecision.Valid(AccessoryPermissionCallback.Granted), first)
+        assertEquals(PermissionCallbackDecision.DuplicateOrConsumed, replay)
+    }
+
+    @Test
+    fun pendingPermissionRequestSnapshotInvalidatesExpiredOrConsumedRequestsExplicitly() {
+        val phone = AccessoryFingerprint.fromFields("ChinchillaCam", "USB Probe", "AOA", "0.1.0", "", "phone-1")
+        val expiredGate = AccessoryPermissionRequestGate(timeoutMillis = 50)
+        expiredGate.beginRequest(phone, nowMillis = 10, token = PermissionRequestToken("token-1"))
+
+        assertEquals(PendingPermissionSnapshotResult.ExpiredOrMissing, expiredGate.snapshotPendingRequest(nowMillis = 61))
+
+        val consumedGate = AccessoryPermissionRequestGate(timeoutMillis = 1_000)
+        val consumed = consumedGate.beginRequest(phone, nowMillis = 10, token = PermissionRequestToken("token-2"))
+        consumedGate.classifyCallback(consumed.token, phone, AccessoryPermissionCallback.Denied, nowMillis = 20)
+
+        assertEquals(PendingPermissionSnapshotResult.Consumed, consumedGate.snapshotPendingRequest(nowMillis = 30))
+    }
+
+    @Test
     fun boundedSmokeSessionTimesOutClosesSessionAndReportsCancellationLimit() {
         val closeable = RecordingCloseable()
         val session = AccessoryIoSession(

@@ -32,10 +32,29 @@ class UsbProbeActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+        restorePermissionRequest(savedInstanceState)
         buildUi()
         action.setOnClickListener { requestPermissionFromUserAction() }
+        if (permissionState == AccessoryPermissionUiModel.WaitingForCallback) {
+            schedulePermissionCallbackTimeout()
+        }
         handlePermissionCallbackIntent(intent)
         render()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(STATE_PERMISSION_UI, permissionState.toSavedName())
+        when (val snapshot = permissionGate.snapshotPendingRequest(SystemClock.elapsedRealtime())) {
+            is PendingPermissionSnapshotResult.Restored -> {
+                outState.putString(STATE_PERMISSION_TOKEN, snapshot.request.token.value)
+                outState.putString(STATE_ACCESSORY_FINGERPRINT, snapshot.request.fingerprint.stableString())
+                outState.putLong(STATE_PERMISSION_EXPIRES_AT, snapshot.request.expiresAtMillis)
+                outState.putBoolean(STATE_PERMISSION_CONSUMED, snapshot.request.consumed)
+            }
+            PendingPermissionSnapshotResult.Consumed,
+            PendingPermissionSnapshotResult.ExpiredOrMissing -> Unit
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -154,8 +173,8 @@ class UsbProbeActivity : Activity() {
     private fun handlePermissionCallbackIntent(intent: Intent?) {
         val callbackIntent = intent ?: return
         val callback = permissionCallbackFromExtra(callbackIntent.getStringExtra(UsbAccessoryPermissionReceiver.EXTRA_PERMISSION_CALLBACK)) ?: return
-        val decision = permissionGate.classifyCallback(
-            token = callbackIntent.getStringExtra(UsbAccessoryPermissionReceiver.EXTRA_PERMISSION_TOKEN)?.let(::PermissionRequestToken),
+        val decision = permissionGate.classifyCallbackTokenValue(
+            tokenValue = callbackIntent.getStringExtra(UsbAccessoryPermissionReceiver.EXTRA_PERMISSION_TOKEN),
             fingerprint = AccessoryFingerprint.fromStableString(callbackIntent.getStringExtra(UsbAccessoryPermissionReceiver.EXTRA_ACCESSORY_FINGERPRINT)),
             callback = callback,
             nowMillis = SystemClock.elapsedRealtime(),
@@ -181,6 +200,58 @@ class UsbProbeActivity : Activity() {
         }, PERMISSION_CALLBACK_TIMEOUT_MILLIS)
     }
 
+    private fun restorePermissionRequest(savedInstanceState: Bundle?) {
+        val state = savedInstanceState ?: return
+        permissionState = permissionStateFromSavedName(state.getString(STATE_PERMISSION_UI))
+        val token = PermissionRequestToken.fromCallbackExtra(state.getString(STATE_PERMISSION_TOKEN)) ?: return
+        val fingerprint = AccessoryFingerprint.fromStableString(state.getString(STATE_ACCESSORY_FINGERPRINT)) ?: return
+        val expiresAt = state.getLong(STATE_PERMISSION_EXPIRES_AT, Long.MIN_VALUE)
+        if (expiresAt == Long.MIN_VALUE) return
+        val request = PendingAccessoryPermissionRequest(
+            token = token,
+            fingerprint = fingerprint,
+            expiresAtMillis = expiresAt,
+            consumed = state.getBoolean(STATE_PERMISSION_CONSUMED, false),
+        )
+        when (permissionGate.restorePendingRequest(request, SystemClock.elapsedRealtime())) {
+            is PendingPermissionSnapshotResult.Restored -> Unit
+            PendingPermissionSnapshotResult.Consumed,
+            PendingPermissionSnapshotResult.ExpiredOrMissing -> {
+                if (permissionState == AccessoryPermissionUiModel.WaitingForCallback) {
+                    permissionState = AccessoryPermissionUiModel.CallbackMissingOrCanceled
+                }
+            }
+        }
+    }
+
+    private fun AccessoryPermissionUiModel.toSavedName(): String = when (this) {
+        AccessoryPermissionUiModel.Idle -> "idle"
+        AccessoryPermissionUiModel.WaitingForCallback -> "waiting"
+        AccessoryPermissionUiModel.Granted -> "granted"
+        AccessoryPermissionUiModel.Denied -> "denied"
+        AccessoryPermissionUiModel.MissingAccessory -> "missing_accessory"
+        AccessoryPermissionUiModel.MissingPermissionResult -> "missing_permission_result"
+        AccessoryPermissionUiModel.CallbackMissingOrCanceled -> "callback_missing"
+        AccessoryPermissionUiModel.RejectedWrongAccessory -> "rejected_wrong_accessory"
+        AccessoryPermissionUiModel.RejectedDuplicateOrConsumed -> "rejected_duplicate"
+        AccessoryPermissionUiModel.RejectedStaleOrMissingRequest -> "rejected_stale"
+        AccessoryPermissionUiModel.RejectedMalformedToken -> "rejected_malformed_token"
+    }
+
+    private fun permissionStateFromSavedName(name: String?): AccessoryPermissionUiModel = when (name) {
+        "waiting" -> AccessoryPermissionUiModel.WaitingForCallback
+        "granted" -> AccessoryPermissionUiModel.Granted
+        "denied" -> AccessoryPermissionUiModel.Denied
+        "missing_accessory" -> AccessoryPermissionUiModel.MissingAccessory
+        "missing_permission_result" -> AccessoryPermissionUiModel.MissingPermissionResult
+        "callback_missing" -> AccessoryPermissionUiModel.CallbackMissingOrCanceled
+        "rejected_wrong_accessory" -> AccessoryPermissionUiModel.RejectedWrongAccessory
+        "rejected_duplicate" -> AccessoryPermissionUiModel.RejectedDuplicateOrConsumed
+        "rejected_stale" -> AccessoryPermissionUiModel.RejectedStaleOrMissingRequest
+        "rejected_malformed_token" -> AccessoryPermissionUiModel.RejectedMalformedToken
+        else -> AccessoryPermissionUiModel.Idle
+    }
+
     private fun AccessorySmokeResult.toUiMessage(): String = when (this) {
         is AccessorySmokeResult.AckWritten -> "ACK enviado para stream $streamId ($payloadBytes bytes)."
         is AccessorySmokeResult.DecodeFailed -> "Frame USB inválido: ${reason.javaClass.simpleName}."
@@ -195,5 +266,10 @@ class UsbProbeActivity : Activity() {
     private companion object {
         const val MAX_PAYLOAD_BYTES = 64 * 1024
         const val PERMISSION_CALLBACK_TIMEOUT_MILLIS = 10_000L
+        const val STATE_PERMISSION_UI = "dev.chinchillacam.usbprobe.state.PERMISSION_UI"
+        const val STATE_PERMISSION_TOKEN = "dev.chinchillacam.usbprobe.state.PERMISSION_TOKEN"
+        const val STATE_ACCESSORY_FINGERPRINT = "dev.chinchillacam.usbprobe.state.ACCESSORY_FINGERPRINT"
+        const val STATE_PERMISSION_EXPIRES_AT = "dev.chinchillacam.usbprobe.state.PERMISSION_EXPIRES_AT"
+        const val STATE_PERMISSION_CONSUMED = "dev.chinchillacam.usbprobe.state.PERMISSION_CONSUMED"
     }
 }

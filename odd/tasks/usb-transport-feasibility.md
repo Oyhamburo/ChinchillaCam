@@ -70,7 +70,8 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 - [x] **T5d1 — Endurecer APK smoke antes de uso físico.** Resolvió test-first los advisories aprobados de T5d: `R3-permission-state-never-resolved` con reducer/estado explícito para grant, deny, accesorio faltante, resultado de permiso faltante y callback cancelado/ausente; y `R3-unbounded-accessory-read` con sesión smoke Activity-owned fuera del main thread, timeout app-level de 10s, cierre de sesión al vencer y sin `goAsync()` retenido para I/O USB. La limitación queda explícita: el timeout/cierre acota la espera de la app, pero no garantiza que el SO interrumpa todo `stream.read` bloqueado. No se instaló ni ejecutó en dispositivo físico, no se usó ADB como transporte de producto y no se afirma compatibilidad hardware.
 - [x] **T5d2 — Vincular permiso Android a una sola solicitud/accesorio.** Commit `2aaa5be` (`fix: bind Android permission result identity`) endureció test-first los advisories `R3-accessory-identity-discarded`, `R3-permission-callback-replayed` y `R3-stale-permission-timeout`: cada solicitud de permiso iniciada por el usuario lleva token único y fingerprint app-local derivado de `UsbAccessory` (`manufacturer`, `model`, `description`, `version`, `uri`, `serial`), se consume una sola vez y rechaza callbacks wrong/duplicate/stale con estado UI visible. El receiver solo clasifica/traslada el callback y no hace I/O USB. No se instaló ni ejecutó en dispositivo físico, no se usó ADB como transporte de producto, no se agregó cámara/background service y no se afirma compatibilidad hardware/Samsung. Revisión nativa RDD aprobada y reconocida: lineage `review-f288311aa738e1e1`.
 - [x] **T5e — Framing y guía smoke host↔phone.** Commit `a2f74f7` (`docs: define host phone USB smoke procedure`) documentó la guía smoke host↔teléfono en `docs/uso.md` y el límite de factibilidad en `docs/factibilidad.md`: comandos reproducibles para construir APK, verificar el artefacto, correr pruebas Rust, ejecutar `--dry-run` como plan sin hardware y reservar `--live-bulk-smoke` para prueba física explícita. Mantiene `--live-bulk-smoke` como smoke AOA bulk de un frame con framing `u32 LE stream_id + u32 LE payload_len + payload acotado + ACK Android`, sin afirmar video/cámara virtual/hardware, sin automatizar drivers/Zadig/WinUSB, sin ADB como transporte de producto y con validación física Samsung/Windows/macOS pendiente. Revisión nativa RDD aprobada y reconocida: lineage `review-4180aa96e41300b7`.
-- [ ] **T6 — Validación plataforma/dispositivo pendiente.** Registrar qué queda pendiente para Windows 11, macOS host real y Samsung reales. Debe incluir advertencias de WinUSB/libusb como decisión manual del usuario, nunca automatizada. Mantener no-ADB como default; cualquier fallback de depuración USB solo se documenta después de pruebas específicas.
+- [x] **T5d3 — Endurecer corrección de permiso Android sin hardware.** Resolvió bajo TDD estricto los advisories `R3-blank-token-crashes-callback`, `R3-fingerprint-encoding-not-roundtrip-safe` y `R3-permission-request-lost-on-recreation`: token blank/malformed produce rechazo tipado visible sin crash; fingerprint usa codificación length-prefixed roundtrip-safe sin spoofing por delimitador; recreación de Activity preserva solicitud pendiente no vencida o la invalida explícitamente si expiró/fue consumida, reprograma timeout visible y mantiene activación única. Sin instalación física, sin ADB como transporte de producto, sin cámara/background service y sin afirmar compatibilidad hardware. Revisión nativa RDD pendiente en este candidato.
+- [ ] **T6 — Validación plataforma/dispositivo pendiente.** Pendiente hasta pruebas reales de hardware. Registrar qué queda pendiente para Windows 11, macOS host real y Samsung reales; no marcar completo solo con documentación. Debe incluir advertencias de WinUSB/libusb como decisión manual del usuario, nunca automatizada. Mantener no-ADB como default; cualquier fallback de depuración USB solo se documenta después de pruebas específicas.
 
 ## Estrategia de entrega y slicing
 
@@ -101,7 +102,32 @@ El primer foco es validar de forma acotada el transporte USB entre Android Kotli
 17. `fix: bound Android accessory smoke readiness` — resolver los advisories `R3-permission-state-never-resolved` y `R3-unbounded-accessory-read` con reducer/receiver liviano y sesión smoke acotada por timeout antes de uso físico; sin instalación/dispositivo. Commit `a0641b0`; revisión nativa aprobada y reconocida en lineage `review-8345144ca6a9ee5b`.
 18. `fix: bind Android permission result identity` — una solicitud de permiso Android se vincula a un accesorio específico, se consume una sola vez y rechaza callbacks wrong/duplicate/stale con estado visible. Commit `2aaa5be`; revisión nativa aprobada y reconocida en lineage `review-f288311aa738e1e1`.
 19. `docs: define host phone USB smoke procedure` — comandos host↔phone, ruta Windows si es factible y validación hardware marcada pendiente. Commit `a2f74f7`; revisión nativa aprobada y reconocida en lineage `review-4180aa96e41300b7`.
-20. T6 previsto: `docs: record remaining USB platform validation gates` — Windows 11, macOS host real y Samsung reales quedan como validación física pendiente.
+20. T5d3 candidato: `fix: harden Android permission callback identity` — rechazo tipado de token blank/malformed, fingerprint roundtrip-safe sin spoofing de delimitador y manejo explícito de solicitud pendiente tras recreación.
+21. T6 previsto: `docs: record remaining USB platform validation gates` — Windows 11, macOS host real y Samsung reales quedan como validación física pendiente; no se cierra solo por documentación.
+
+
+## Verificación T5d3
+
+La verificación local de T5d3 es JVM/build Android solamente. No se instaló el APK, no se ejecutó en dispositivo físico, no se usó ADB como transporte de producto, no se cambiaron drivers/WinUSB/Zadig, no se agregó cámara/background service y no se afirma compatibilidad Samsung/hardware.
+
+### RED observado antes del código de producción
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: falló con código 1 en `:android:usb-probe:compileDebugUnitTestKotlin` por APIs/estados todavía inexistentes: `classifyCallbackTokenValue`, `PermissionCallbackDecision.MalformedToken`, `AccessoryPermissionUiModel.RejectedMalformedToken`, `snapshotPendingRequest`, `PendingPermissionSnapshotResult` y `restoreFromSnapshot`.
+
+### GREEN observado
+
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest`: pasó con `BUILD SUCCESSFUL`; 19 tareas accionables, 4 ejecutadas y 15 up-to-date en la última corrida local.
+- `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:assembleDebug`: pasó con `BUILD SUCCESSFUL`; 31 tareas accionables, 3 ejecutadas y 28 up-to-date en la última corrida local.
+- `test -f android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`: confirmó el APK en la ruta esperada.
+- `git diff --check`: pasó sin salida.
+- Verificación independiente read-only: PASS; confirmó token blank/malformed sin crash, fingerprint length-prefixed roundtrip-safe, restauración/invalidez explícita tras recreación, no segunda activación, receiver sin I/O/goAsync y ausencia de claims hardware.
+
+### Límites y decisiones T5d3
+
+- `PermissionRequestToken.fromCallbackExtra` rechaza tokens nulos, blank, con espacios envolventes o caracteres de control antes de construir el value class, evitando crashes por callback malformado.
+- Un token no correspondiente a la solicitud actual sigue siendo `StaleOrMissingRequest`, no activación.
+- `AccessoryFingerprint.stableString()` usa campos con prefijo de longitud (`<len>:<value>`) para preservar delimitadores/control chars/colon y rechazar encodings truncados o con campos movidos.
+- La Activity guarda token/fingerprint/expiry/consumed + estado UI en `onSaveInstanceState`; al recrearse restaura una solicitud vigente o invalida una expirada/consumida con estado visible, y reprograma timeout si sigue esperando callback. La clasificación final conserva `expiresAtMillis` absoluto, por lo que un callback tardío no activa I/O aunque el timeout UI se reprograme.
 
 
 ## Verificación T5e
