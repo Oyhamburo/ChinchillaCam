@@ -30,6 +30,26 @@ Construir el contrato local de sesión entre Android y desktop antes de transpor
 
 
 
+
+## Diseño T12b — hardening QR antes de LAN autenticado
+
+T12b es un lote pequeño de corrección de advisories antes de T17, separado de T14 para no mezclar autoridad de sesión con parsing QR. No debe abrir transportes ni agregar autenticación propia.
+
+Alcance T12b:
+
+- Definir explícitamente la semántica de expiración: un payload con `expiresAtEpochSeconds == nowEpochSeconds` debe estar expirado o aceptado, con test que fije la decisión.
+- Rechazar percent-encoding malformed y UTF-8 inválido en campos QR sin normalización ambigua.
+- Mantener `ChecksumMismatch` como detección de corrupción accidental solamente; no convertirlo en autenticación ni MAC.
+- Mantener rechazo de campos desconocidos/duplicados.
+- Sin persistencia, sin listener, sin LAN, sin prueba de posesión y sin cambios de trust store salvo que un test demuestre acoplamiento directo.
+
+Criterios de tests futuros:
+
+- Boundary de expiración en `now == expiresAt`.
+- Percent escape incompleto o inválido se rechaza con error tipado.
+- Octetos percent-encoded que no formen UTF-8 válido se rechazan con error tipado.
+- Un QR válido existente sigue roundtripeando.
+
 ## Diseño T14 — una computadora activa
 
 T14 debe modelar autoridad de sesión antes de cualquier transporte real. Mientras el review nativo de T12/T11b/T13a siga pendiente, este bloque queda como planificación solamente: no agrega source ni tests nuevos.
