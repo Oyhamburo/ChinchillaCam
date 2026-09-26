@@ -1,6 +1,6 @@
 # Complete ChinchillaCam webcam product plan
 
-> Estado: plan paraguas creado en `feat/android-camera-catalog` desde HEAD limpio `2958236`. Este plan coordina el producto completo sin push/PR/merge. Los commits siguen siendo locales. Las pruebas físicas Samsung/Mac/Windows quedan deliberadamente al final.
+> Estado (2026-09-26): plan paraguas creado y revisado en `feat/android-camera-catalog` desde HEAD limpio `2958236`; corrección de seguridad de planificación aplicada en commit separado. Este plan coordina el producto completo sin push/PR/merge. Los commits siguen siendo locales. Las pruebas físicas Samsung/Mac/Windows quedan deliberadamente al final y requieren acceso explícito a hardware del usuario.
 
 ## Alcance de producto
 
@@ -76,7 +76,7 @@ Para cada unidad de trabajo:
 - revisión nativa RDD por candidato cuando aplique;
 - sin push, PR ni merge;
 - sin code-golf para esconder tamaño;
-- rollback por commit local y `git revert`/reset en la rama local si se abandona el candidato;
+- rollback ordinario por commit local y `git revert` en la rama local si se abandona el candidato; cualquier operación destructiva como `git reset` requiere autorización humana explícita;
 - UI y Markdown orientados a usuario en español; código en inglés;
 - no afirmar soporte hardware sin evidencia física.
 
@@ -97,52 +97,53 @@ Para cada unidad de trabajo:
 8. **T9 — Métricas Android de captura/encode.** FPS reales, frames dropped, encoder latency y estado visible.
 9. **T10 — Foreground service y pantalla bloqueada experimental.** Implementar servicio/notificación si necesario, con límites honestos; no declarar soporte hasta prueba física.
 
-### M3 — Transporte de sesión compartido
+### M3 — Pairing, autoridad local y framing de sesión
 
 10. **T11 — Protocolo de sesión y framing de video.** Extender framing para handshake, stream metadata, video chunks, metrics y control messages.
-11. **T12 — USB video transport sobre AOA bulk.** Reusar claim/framing existente para stream sostenido con backpressure/timeouts; sin prueba física todavía.
-12. **T13 — Wi‑Fi LAN transport MVP.** TCP/UDP local según diseño, conexión directa, timeouts y errores accionables.
-13. **T14 — Transport switch model.** Cambiar USB/Wi‑Fi sin reemparejar; interrupción explícita y estado recuperable.
+11. **T12 — QR pairing payload.** Diseñar payload local con claves/identificador de PC, expiración y tests.
+12. **T13 — Persistencia de confianza local.** Guardar confianza en Android y desktop; revocación local.
+13. **T14 — One-active-computer enforcement.** Rechazar segunda sesión activa con mensaje claro; handoff explícito.
 
-### M4 — Pairing, autoridad local y una computadora activa
+### M4 — Transportes autenticados y cambio de modo
 
-14. **T15 — QR pairing payload.** Diseñar payload local con claves/identificador de PC, expiración y tests.
-15. **T16 — Persistencia de confianza local.** Guardar confianza en Android y desktop; revocación local.
-16. **T17 — One-active-computer enforcement.** Rechazar segunda sesión activa con mensaje claro; handoff explícito.
-17. **T18 — Reconnection and session resume.** Reconectar cable/red sin nuevo QR cuando confianza local siga válida.
+14. **T15 — USB video transport sobre AOA bulk.** Reusar claim/framing existente para stream sostenido con backpressure/timeouts; sin prueba física todavía.
+15. **T16 — Wi‑Fi LAN transport fake/loopback.** Modelar transporte Wi‑Fi sin listener externo no autenticado; fakes o loopback local hasta tener pairing/trust.
+16. **T17 — Wi‑Fi LAN transport autenticado.** Habilitar listener/red local solo después de QR pairing + confianza local + one-active-computer; rechazar tráfico no autenticado.
+17. **T18 — Transport switch model.** Cambiar USB/Wi‑Fi sin reemparejar; interrupción explícita y estado recuperable.
+18. **T19 — Reconnection and session resume.** Reconectar cable/red sin nuevo QR cuando confianza local siga válida.
 
 ### M5 — Desktop receive/decode core
 
-18. **T19 — Desktop receiver session core.** Separar transporte, protocolo, decode y métricas; fakes para USB/Wi‑Fi.
-19. **T20 — Video decode pipeline.** Decodificar frames H.264 con boundary testeable; errores tipados.
-20. **T21 — Desktop metrics.** FPS, latency, dropped frames, active transport quality y causa probable.
+19. **T20 — Desktop receiver session core.** Separar transporte, protocolo, decode y métricas; fakes para USB/Wi‑Fi.
+20. **T21 — Video decode pipeline.** Decodificar frames H.264 con boundary testeable; errores tipados.
+21. **T22 — Desktop metrics.** FPS, latency, dropped frames, active transport quality y causa probable.
 
 ### M6 — Cámara seleccionable por plataforma
 
-21. **T22 — Windows 11 virtual camera prototype.** Media Foundation boundary, registro/publicación, pruebas automatizables donde sea posible; validación con app real queda para fase física/manual.
-22. **T23 — macOS OBS integration prototype.** Fuente/flujo OBS documentado o adapter si viable; no prometer cámara nativa propia.
-23. **T24 — Desktop app UX shell.** Pantallas españolas de pairing, transporte, cámara seleccionada, métricas y fallos.
+22. **T23 — Windows 11 virtual camera prototype.** Media Foundation boundary, registro/publicación, pruebas automatizables donde sea posible; validación con app real queda para fase física/manual.
+23. **T24 — macOS OBS integration prototype.** Fuente/flujo OBS documentado o adapter si viable; no prometer cámara nativa propia.
+24. **T25 — Desktop app UX shell.** Pantallas españolas de pairing, transporte, cámara seleccionada, métricas y fallos.
 
 ### M7 — Calidad, controles y recuperación
 
-24. **T25 — Controles de cámara/calidad.** Resolución, FPS, cámara, modo automático; degradar si capability `Unavailable`.
-25. **T26 — Error recovery UX.** USB/Wi‑Fi/cámara/encoder/desktop output con acciones claras.
-26. **T27 — Privacy and local-only audit.** Confirmar sin cuentas/nube/backend/audio/recording; docs y tests de configuración.
+25. **T26 — Controles de cámara/calidad.** Resolución, FPS, cámara, modo automático; degradar si capability `Unavailable`.
+26. **T27 — Error recovery UX.** USB/Wi‑Fi/cámara/encoder/desktop output con acciones claras.
+27. **T28 — Privacy and local-only audit.** Confirmar sin cuentas/nube/backend/audio/recording; docs y tests de configuración.
 
 ### M8 — Build, packaging y publicación gratuita
 
-27. **T28 — Android APK product build.** Separar o renombrar probe/product si procede; APK GitHub-ready.
-28. **T29 — Windows package.** Build/install local, advertencias de firma si aplica, sin prometer fricción cero.
-29. **T30 — macOS package.** Build Apple Silicon, OBS dependency docs, advertencias de firma/notarización.
-30. **T31 — CI/local release automation.** Comandos reproducibles para APK/Windows/macOS, checksums y docs.
+28. **T29 — Android APK product build.** Separar o renombrar probe/product si procede; APK GitHub-ready.
+29. **T30 — Windows package.** Build/install local, advertencias de firma si aplica, sin prometer fricción cero.
+30. **T31 — macOS package.** Build Apple Silicon, OBS dependency docs, advertencias de firma/notarización.
+31. **T32 — CI/local release automation.** Comandos reproducibles para APK/Windows/macOS, checksums y docs.
 
 ### M9 — Validación física final
 
-31. **T32 — USB physical matrix.** Samsung referencia + Windows 11 + macOS 13+; WinUSB/libusb manual si el usuario decide; registrar evidencia.
-32. **T33 — Wi‑Fi LAN matrix.** Redes reales, firewall/guest isolation, reconnect, latency.
-33. **T34 — Camera and screen-lock matrix.** Note10/S24+ u otros disponibles, cámaras, resolución/FPS, pantalla bloqueada.
-34. **T35 — External app matrix.** Windows apps seleccionan `ChinchillaCam`; macOS apps seleccionan `OBS Virtual Camera`; documentar fallos.
-35. **T36 — Support declaration pass.** Solo aquí mover hipótesis a soporte real o limitaciones por plataforma/dispositivo.
+32. **T33 — USB physical matrix.** Requiere acceso del usuario a Samsung referencia + Windows 11 + macOS 13+; WinUSB/libusb manual solo si el usuario decide; registrar evidencia.
+33. **T34 — Wi‑Fi LAN matrix.** Requiere redes reales del usuario; firewall/guest isolation, reconnect, latency.
+34. **T35 — Camera and screen-lock matrix.** Requiere Note10/S24+ u otros disponibles; cámaras, resolución/FPS, pantalla bloqueada.
+35. **T36 — External app matrix.** Requiere apps reales del usuario; Windows apps seleccionan `ChinchillaCam`; macOS apps seleccionan `OBS Virtual Camera`; documentar fallos.
+36. **T37 — Support declaration pass.** Solo aquí mover hipótesis a soporte real o limitaciones por plataforma/dispositivo, basado en evidencia de T33–T36.
 
 ## Próxima unidad autorizada
 
