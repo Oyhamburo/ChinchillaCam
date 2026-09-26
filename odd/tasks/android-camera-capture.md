@@ -295,3 +295,10 @@ T9 agrega métricas visibles desde eventos reales del pipeline local: chunks cod
 - La latencia encode se muestra como estimación y solo cuando `presentationTimeUs` no está en el futuro respecto del reloj local; si los relojes no son comparables queda `Unknown`.
 - `VisibleCameraPipelineController` actualiza `metricsText` desde resultados reales de `drainEncoded`; `UsbProbeActivity` muestra esas métricas en la sección de cámara local.
 - No se introduce calidad de red, transporte USB/Wi‑Fi, storage, audio, wire protocol, FGS, prueba física ni claim de producto funcional.
+
+### Revisión nativa RDD T9
+
+- Candidato: `17f9326` contra base `8c2abaf`.
+- Lineage: `review-ba0213606915aefa`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes del reviewer: `R3-latency-clock-domain-not-validated`, `R3-stale-metrics-during-restart`. No abrieron corrección para T9; quedan para hardening antes de métricas públicas más estrictas o captura prolongada.
