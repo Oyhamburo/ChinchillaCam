@@ -37,6 +37,13 @@ Preparar y proteger el `DesktopVideoSessionReceiver` fake-only con enlace de `se
 - `i32::MAX` queda soportado en source para paridad con el fake Android; las pruebas dedicadas quedan diferidas a M3b2.
 - `receive_desktop_video_frame` permanece stateless y sin enlace.
 
+## Alcance M3b2
+
+- Slice test-only desde `c35c2e9 docs(desktop): translate sequence binding task`.
+- Cubrir que un frame final/emitible con `i32::MAX` se acepta y empuja exactamente una vez, y el siguiente receive devuelve `Closed`.
+- Cubrir que un fragmento type9 parcial con `i32::MAX` falla cerrado con `SessionSequenceExhausted`, no empuja al sink y permite una sesión nueva después de `reset_for_new_session()`.
+- Si las pruebas pasan contra el source existente, reportar honestamente que no hubo RED.
+
 ## Superficies autorizadas usadas
 
 - `desktop/usb-probe/tests/desktop_receiver_test.rs`
