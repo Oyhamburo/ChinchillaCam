@@ -117,7 +117,7 @@ class VisibleCameraPipelineControllerTest {
     }
 
     @Test
-    fun acceptedFakeEgressChunksReportCountersWithoutFalseDiscardMetrics() {
+    fun acceptedFakeEgressChunksReportFpsAndCountersWithoutFalseDiscardMetrics() {
         val handle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
             EncodedVideoChunk(byteArrayOf(1), presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = true),
             EncodedVideoChunk(byteArrayOf(2), presentationTimeUs = 2L, isCodecConfig = false, isKeyFrame = false),
@@ -132,10 +132,37 @@ class VisibleCameraPipelineControllerTest {
 
         val state = controller.drainOnce(maxOutputs = 4)
 
-        assertTrue(state.metricsText.contains("FPS: no disponible para egreso fake en T15d2"))
+        assertTrue(state.metricsText.contains("FPS: 2.0"))
         assertTrue(state.metricsText.contains("Chunks aceptados: 2"))
         assertTrue(state.metricsText.contains("Chunks descartados: 0"))
         assertFalse(state.metricsText.contains("Bytes descartados"))
+    }
+
+    @Test
+    fun partialFakeEgressSuccessRecordsOnlyAcceptedChunksBeforeFailingClosed() {
+        val handle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(byteArrayOf(1), presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = false),
+            EncodedVideoChunk(byteArrayOf(2), presentationTimeUs = 2L, isCodecConfig = false, isKeyFrame = false),
+        )))
+        val transport = ControllerRecordingEncodedVideoTransport(
+            EncodedVideoSessionFrameWriteResult.Written,
+            EncodedVideoSessionFrameWriteResult.BackpressureExceeded,
+        )
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
+            sampleConfig(),
+            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+        )
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val state = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(VisibleCameraPipelineStatus.Error, state.status)
+        assertEquals(emptyList<Int>(), handle.consumed)
+        assertTrue(state.metricsText.contains("FPS: 1.0"))
+        assertTrue(state.metricsText.contains("Chunks aceptados: 1"))
+        assertTrue(state.metricsText.contains("Chunks descartados: 1"))
+        assertEquals(2, transport.payloads.size)
     }
 
     @Test
@@ -536,13 +563,14 @@ private class BlockingVisibleLauncher(
 }
 
 private class ControllerRecordingEncodedVideoTransport(
-    private val result: EncodedVideoSessionFrameWriteResult = EncodedVideoSessionFrameWriteResult.Written,
+    private vararg val results: EncodedVideoSessionFrameWriteResult = arrayOf(EncodedVideoSessionFrameWriteResult.Written),
     private val closeFailure: RuntimeException? = null,
 ) : EncodedVideoSessionFrameTransport {
     val payloads = mutableListOf<SessionPayload.VideoChunkV2>()
     var closeCount = 0
 
     override fun write(payload: SessionPayload.VideoChunkV2): EncodedVideoSessionFrameWriteResult {
+        val result = results[payloads.size.coerceAtMost(results.lastIndex)]
         payloads += payload
         return result
     }

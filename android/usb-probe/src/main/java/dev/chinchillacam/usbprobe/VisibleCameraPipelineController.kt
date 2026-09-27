@@ -117,16 +117,38 @@ class VisibleCameraPipelineController(
             running.consumeEncoded(chunks.size)
             return setRunning("Cámara local activa. ${chunks.size} chunks codificados descartados en memoria.")
         }
+        val acceptedChunks = mutableListOf<EncodedVideoChunk>()
         for (chunk in chunks) {
             when (val result = sink.write(chunk)) {
-                is EncodedVideoSessionFrameSinkResult.Accepted -> Unit
-                EncodedVideoSessionFrameSinkResult.BackpressureExceeded -> return failAndStop("Egreso fake detenido por backpressure; cámara local detenida.")
-                EncodedVideoSessionFrameSinkResult.Closed -> return failAndStop("Egreso fake cerrado; cámara local detenida.")
-                EncodedVideoSessionFrameSinkResult.Oversized -> return failAndStop("Egreso fake rechazó chunk H.264 oversized; cámara local detenida.")
-                is EncodedVideoSessionFrameSinkResult.InvalidPayload -> return failAndStop("Egreso fake rechazó payload inválido: ${result.reason}; cámara local detenida.")
-                is EncodedVideoSessionFrameSinkResult.Failed -> return failAndStop("Egreso fake falló: ${result.reason}")
+                is EncodedVideoSessionFrameSinkResult.Accepted -> acceptedChunks += chunk
+                EncodedVideoSessionFrameSinkResult.BackpressureExceeded -> return failAfterPartialFakeEgressDelivery(
+                    acceptedChunks,
+                    sink.stats(),
+                    "Egreso fake detenido por backpressure; cámara local detenida.",
+                )
+                EncodedVideoSessionFrameSinkResult.Closed -> return failAfterPartialFakeEgressDelivery(
+                    acceptedChunks,
+                    sink.stats(),
+                    "Egreso fake cerrado; cámara local detenida.",
+                )
+                EncodedVideoSessionFrameSinkResult.Oversized -> return failAfterPartialFakeEgressDelivery(
+                    acceptedChunks,
+                    sink.stats(),
+                    "Egreso fake rechazó chunk H.264 oversized; cámara local detenida.",
+                )
+                is EncodedVideoSessionFrameSinkResult.InvalidPayload -> return failAfterPartialFakeEgressDelivery(
+                    acceptedChunks,
+                    sink.stats(),
+                    "Egreso fake rechazó payload inválido: ${result.reason}; cámara local detenida.",
+                )
+                is EncodedVideoSessionFrameSinkResult.Failed -> return failAfterPartialFakeEgressDelivery(
+                    acceptedChunks,
+                    sink.stats(),
+                    "Egreso fake falló: ${result.reason}",
+                )
             }
         }
+        metrics.recordDeliveredChunks(acceptedChunks)
         running.consumeEncoded(chunks.size)
         val stats = sink.stats()
         return setRunning(
@@ -135,13 +157,25 @@ class VisibleCameraPipelineController(
         )
     }
 
-    private fun failAndStop(detail: String): VisibleCameraPipelineUiState {
+    private fun failAfterPartialFakeEgressDelivery(
+        acceptedChunks: List<EncodedVideoChunk>,
+        stats: EncodedVideoSessionFrameSinkStats,
+        detail: String,
+    ): VisibleCameraPipelineUiState {
+        if (acceptedChunks.isNotEmpty()) metrics.recordDeliveredChunks(acceptedChunks)
+        return failAndStop(detail, metricsText = fakeEgressMetricsText(stats))
+    }
+
+    private fun failAndStop(
+        detail: String,
+        metricsText: String = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
+    ): VisibleCameraPipelineUiState {
         val stoppedHandle = handle
         handle = null
         stoppedHandle?.stop()
         val closeError = closeActiveSink()
         val errorDetail = if (closeError == null) detail else "$detail Egreso fake se cerró con errores: $closeError"
-        return setError(errorDetail)
+        return setError(errorDetail, metricsText)
     }
 
     private fun stopWithMessage(successMessage: String): VisibleCameraPipelineUiState {
@@ -212,12 +246,20 @@ class VisibleCameraPipelineController(
     )
 
     private fun fakeEgressMetricsText(stats: EncodedVideoSessionFrameSinkStats): String = listOf(
-        "FPS: no disponible para egreso fake en T15d2",
+        "FPS: ${formatFakeEgressMetricValue(metrics.snapshot().encodedFps)}",
         "Chunks aceptados: ${stats.accepted}",
         "Chunks descartados: ${stats.dropped}",
     ).joinToString("\n")
 
-    private fun setError(detail: String): VisibleCameraPipelineUiState {
+    private fun formatFakeEgressMetricValue(value: MetricValue): String = when (value) {
+        MetricValue.Unknown -> "sin muestras aún"
+        is MetricValue.Known -> String.format(java.util.Locale.US, "%.1f", value.value)
+    }
+
+    private fun setError(
+        detail: String,
+        metricsText: String = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
+    ): VisibleCameraPipelineUiState {
         handle = null
         state = VisibleCameraPipelineUiState(
             status = VisibleCameraPipelineStatus.Error,
@@ -225,7 +267,7 @@ class VisibleCameraPipelineController(
             detail = detail,
             primaryAction = "Iniciar cámara local",
             primaryActionEnabled = true,
-            metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
+            metricsText = metricsText,
         )
         return state
     }
