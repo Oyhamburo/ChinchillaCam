@@ -102,7 +102,7 @@ class VisibleCameraPipelineControllerTest {
         val controller = VisibleCameraPipelineController(
             RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
             sampleConfig(),
-            encodedVideoSinkFactory = { sink },
+            encodedVideoSinkFactory = { LegacyEncodedVideoEgressSink(sink) },
         )
         controller.start(sampleSnapshot(), "camera-1", true)
 
@@ -126,7 +126,7 @@ class VisibleCameraPipelineControllerTest {
         val controller = VisibleCameraPipelineController(
             RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
             sampleConfig(),
-            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+            encodedVideoSinkFactory = { LegacyEncodedVideoEgressSink(EncodedVideoSessionFrameSink(transport)) },
         )
         controller.start(sampleSnapshot(), "camera-1", true)
 
@@ -151,7 +151,7 @@ class VisibleCameraPipelineControllerTest {
         val controller = VisibleCameraPipelineController(
             RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
             sampleConfig(),
-            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+            encodedVideoSinkFactory = { LegacyEncodedVideoEgressSink(EncodedVideoSessionFrameSink(transport)) },
         )
         controller.start(sampleSnapshot(), "camera-1", true)
 
@@ -192,7 +192,7 @@ class VisibleCameraPipelineControllerTest {
         val controller = VisibleCameraPipelineController(
             RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
             sampleConfig(),
-            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+            encodedVideoSinkFactory = { LegacyEncodedVideoEgressSink(EncodedVideoSessionFrameSink(transport)) },
         )
         controller.start(sampleSnapshot(), "camera-1", true)
 
@@ -216,7 +216,7 @@ class VisibleCameraPipelineControllerTest {
         val controller = VisibleCameraPipelineController(
             RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
             sampleConfig(),
-            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+            encodedVideoSinkFactory = { LegacyEncodedVideoEgressSink(EncodedVideoSessionFrameSink(transport)) },
         )
         controller.start(sampleSnapshot(), "camera-1", true)
 
@@ -239,7 +239,7 @@ class VisibleCameraPipelineControllerTest {
         val controller = VisibleCameraPipelineController(
             RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
             sampleConfig(),
-            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+            encodedVideoSinkFactory = { LegacyEncodedVideoEgressSink(EncodedVideoSessionFrameSink(transport)) },
         )
         controller.start(sampleSnapshot(), "camera-1", true)
 
@@ -259,7 +259,7 @@ class VisibleCameraPipelineControllerTest {
         val controller = VisibleCameraPipelineController(
             RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
             sampleConfig(),
-            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+            encodedVideoSinkFactory = { LegacyEncodedVideoEgressSink(EncodedVideoSessionFrameSink(transport)) },
         )
         controller.start(sampleSnapshot(), "camera-1", true)
 
@@ -285,7 +285,7 @@ class VisibleCameraPipelineControllerTest {
                 VisibleCameraPipelineLaunchResult.Running(secondHandle),
             ),
             sampleConfig(),
-            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transports[nextTransport++]) },
+            encodedVideoSinkFactory = { LegacyEncodedVideoEgressSink(EncodedVideoSessionFrameSink(transports[nextTransport++])) },
         )
         controller.start(sampleSnapshot(), "camera-1", true)
 
@@ -314,7 +314,7 @@ class VisibleCameraPipelineControllerTest {
             ),
             sampleConfig(),
             encodedVideoSinkFactory = {
-                ControllerRecordingEncodedVideoTransport().also { transports += it }.let(::EncodedVideoSessionFrameSink)
+                ControllerRecordingEncodedVideoTransport().also { transports += it }.let { LegacyEncodedVideoEgressSink(EncodedVideoSessionFrameSink(it)) }
             },
         )
 
@@ -351,7 +351,7 @@ class VisibleCameraPipelineControllerTest {
                 VisibleCameraPipelineLaunchResult.Running(secondHandle),
             ),
             sampleConfig(),
-            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transports[nextTransport++]) },
+            encodedVideoSinkFactory = { LegacyEncodedVideoEgressSink(EncodedVideoSessionFrameSink(transports[nextTransport++])) },
         )
 
         controller.start(sampleSnapshot(), "camera-1", true)
@@ -363,6 +363,97 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(listOf(1), secondHandle.consumed)
         assertEquals(1, transports[0].closeCount)
         assertEquals(1, transports[1].payloads.size)
+        assertEquals(VisibleCameraPipelineStatus.Running, restarted.status)
+    }
+
+
+    @Test
+    fun fragmentingFakeEgressReportsLogicalAcceptedFpsAndCounters() {
+        val chunks = listOf(
+            EncodedVideoChunk(ByteArray(65_496) { 1 }, presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = true),
+            EncodedVideoChunk(ByteArray(65_497) { 2 }, presentationTimeUs = 2L, isCodecConfig = false, isKeyFrame = false),
+        )
+        val handle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(chunks))
+        val fake = UsbSessionFrameSustainedFakeTransport(maxPayloadBytes = 65_528, outgoingCapacityFrames = 8)
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
+            sampleConfig(),
+            encodedVideoSinkFactory = { FragmentingEncodedVideoEgressSink(EncodedVideoFragmentingSessionFrameSink(EncodedVideoSustainedFakeTransportAdapter("s", fake))) },
+        )
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val state = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(VisibleCameraPipelineStatus.Running, state.status)
+        assertEquals(listOf(2), handle.consumed)
+        assertTrue(state.metricsText.contains("FPS: 2.0"))
+        assertTrue(state.metricsText.contains("Chunks aceptados: 2"))
+        assertTrue(state.metricsText.contains("Chunks descartados: 0"))
+        assertEquals(SessionFrameType.VIDEO_CHUNK_V2, decodeOutgoing(fake).type)
+        assertEquals(SessionFrameType.VIDEO_CHUNK_FRAGMENT_V1, decodeOutgoing(fake).type)
+        assertEquals(SessionFrameType.VIDEO_CHUNK_FRAGMENT_V1, decodeOutgoing(fake).type)
+    }
+
+    @Test
+    fun fragmentingPartialBackpressureDoesNotRecordFalseAcceptedFpsOrConsume() {
+        val handle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(ByteArray(65_497) { 1 }, presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = true),
+        )))
+        val fake = UsbSessionFrameSustainedFakeTransport(maxPayloadBytes = 65_528, outgoingCapacityFrames = 1)
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
+            sampleConfig(),
+            encodedVideoSinkFactory = { FragmentingEncodedVideoEgressSink(EncodedVideoFragmentingSessionFrameSink(EncodedVideoSustainedFakeTransportAdapter("s", fake))) },
+        )
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val state = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(VisibleCameraPipelineStatus.Error, state.status)
+        assertEquals(emptyList<Int>(), handle.consumed)
+        assertTrue(state.metricsText.contains("FPS: 0.0"))
+        assertTrue(state.metricsText.contains("Chunks aceptados: 0"))
+        assertTrue(state.metricsText.contains("Chunks descartados: 1"))
+        val first = decodeOutgoing(fake)
+        assertEquals(0, first.sequence)
+        assertEquals(0, (first.payload as SessionPayload.VideoChunkFragmentV1).fragmentIndex)
+    }
+
+    @Test
+    fun restartAfterFragmentingBackpressureCreatesFreshSessionSequence() {
+        val firstHandle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(ByteArray(65_497) { 1 }, presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = true),
+        )))
+        val secondHandle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(ByteArray(65_496) { 2 }, presentationTimeUs = 2L, isCodecConfig = false, isKeyFrame = true),
+        )))
+        val fakes = listOf(
+            UsbSessionFrameSustainedFakeTransport(maxPayloadBytes = 65_528, outgoingCapacityFrames = 1),
+            UsbSessionFrameSustainedFakeTransport(maxPayloadBytes = 65_528, outgoingCapacityFrames = 2),
+        )
+        var nextFake = 0
+        val controller = VisibleCameraPipelineController(
+            QueueVisibleLauncher(
+                VisibleCameraPipelineLaunchResult.Running(firstHandle),
+                VisibleCameraPipelineLaunchResult.Running(secondHandle),
+            ),
+            sampleConfig(),
+            encodedVideoSinkFactory = {
+                val fake = fakes[nextFake++]
+                FragmentingEncodedVideoEgressSink(EncodedVideoFragmentingSessionFrameSink(EncodedVideoSustainedFakeTransportAdapter("s", fake)))
+            },
+        )
+
+        controller.start(sampleSnapshot(), "camera-1", true)
+        controller.drainOnce(maxOutputs = 4)
+        controller.start(sampleSnapshot(), "camera-1", true)
+        val restarted = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(1, firstHandle.stopCount)
+        assertEquals(listOf(1), secondHandle.consumed)
+        val restartedFrame = decodeOutgoing(fakes[1])
+        assertEquals(0, restartedFrame.sequence)
+        assertEquals(SessionFrameType.VIDEO_CHUNK_V2, restartedFrame.type)
         assertEquals(VisibleCameraPipelineStatus.Running, restarted.status)
     }
 
@@ -475,6 +566,13 @@ class VisibleCameraPipelineControllerTest {
             ),
         ),
     )
+}
+
+
+private fun decodeOutgoing(fake: UsbSessionFrameSustainedFakeTransport): SessionFrame {
+    val accessoryBytes = fake.removeOutgoingEncodedAccessoryFrame() ?: error("expected queued frame")
+    val accessory = AccessoryFrameCodec.decode(accessoryBytes, maxPayloadBytes = 65_536).getOrThrow()
+    return SessionFrameCodec.decode(accessory.payload).getOrThrow()
 }
 
 private class RecordingVisibleLauncher(

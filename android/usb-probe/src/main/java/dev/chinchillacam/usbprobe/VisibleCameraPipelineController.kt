@@ -4,7 +4,7 @@ class VisibleCameraPipelineController(
     private val launcher: VisibleCameraPipelineLauncher,
     private val encoderConfig: H264EncoderConfig,
     private val metrics: LocalPipelineMetricsTracker = LocalPipelineMetricsTracker(SystemPipelineMetricsClock()),
-    private val encodedVideoSinkFactory: (() -> EncodedVideoSessionFrameSink)? = null,
+    private val encodedVideoSinkFactory: (() -> EncodedVideoEgressSink)? = null,
 ) {
     private var state: VisibleCameraPipelineUiState = VisibleCameraPipelineUiState(
         status = VisibleCameraPipelineStatus.Idle,
@@ -15,7 +15,7 @@ class VisibleCameraPipelineController(
         metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
     )
     private var handle: VisibleCameraPipelineHandle? = null
-    private var activeEncodedVideoSink: EncodedVideoSessionFrameSink? = null
+    private var activeEncodedVideoSink: EncodedVideoEgressSink? = null
     private var startGeneration: Int = 0
 
     @Synchronized
@@ -120,28 +120,28 @@ class VisibleCameraPipelineController(
         val acceptedChunks = mutableListOf<EncodedVideoChunk>()
         for (chunk in chunks) {
             when (val result = sink.write(chunk)) {
-                is EncodedVideoSessionFrameSinkResult.Accepted -> acceptedChunks += chunk
-                EncodedVideoSessionFrameSinkResult.BackpressureExceeded -> return failAfterPartialFakeEgressDelivery(
+                EncodedVideoEgressSinkResult.Accepted -> acceptedChunks += chunk
+                EncodedVideoEgressSinkResult.BackpressureExceeded -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
                     "Egreso fake detenido por backpressure; cámara local detenida.",
                 )
-                EncodedVideoSessionFrameSinkResult.Closed -> return failAfterPartialFakeEgressDelivery(
+                EncodedVideoEgressSinkResult.Closed -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
                     "Egreso fake cerrado; cámara local detenida.",
                 )
-                EncodedVideoSessionFrameSinkResult.Oversized -> return failAfterPartialFakeEgressDelivery(
+                EncodedVideoEgressSinkResult.Oversized -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
                     "Egreso fake rechazó chunk H.264 oversized; cámara local detenida.",
                 )
-                is EncodedVideoSessionFrameSinkResult.InvalidPayload -> return failAfterPartialFakeEgressDelivery(
+                is EncodedVideoEgressSinkResult.InvalidPayload -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
                     "Egreso fake rechazó payload inválido: ${result.reason}; cámara local detenida.",
                 )
-                is EncodedVideoSessionFrameSinkResult.Failed -> return failAfterPartialFakeEgressDelivery(
+                is EncodedVideoEgressSinkResult.Failed -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
                     "Egreso fake falló: ${result.reason}",
@@ -159,10 +159,10 @@ class VisibleCameraPipelineController(
 
     private fun failAfterPartialFakeEgressDelivery(
         acceptedChunks: List<EncodedVideoChunk>,
-        stats: EncodedVideoSessionFrameSinkStats,
+        stats: EncodedVideoEgressSinkStats,
         detail: String,
     ): VisibleCameraPipelineUiState {
-        if (acceptedChunks.isNotEmpty()) metrics.recordDeliveredChunks(acceptedChunks)
+        metrics.recordDeliveredChunks(acceptedChunks)
         return failAndStop(detail, metricsText = fakeEgressMetricsText(stats))
     }
 
@@ -245,7 +245,7 @@ class VisibleCameraPipelineController(
         metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
     )
 
-    private fun fakeEgressMetricsText(stats: EncodedVideoSessionFrameSinkStats): String = listOf(
+    private fun fakeEgressMetricsText(stats: EncodedVideoEgressSinkStats): String = listOf(
         "FPS: ${formatFakeEgressMetricValue(metrics.snapshot().encodedFps)}",
         "Chunks aceptados: ${stats.accepted}",
         "Chunks descartados: ${stats.dropped}",
