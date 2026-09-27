@@ -42,3 +42,4 @@ Prepare the fake-only `DesktopVideoSessionReceiver` tests for future session id 
 ## Evidence
 
 - M3a ODD/Engram mirror created before test fixture edits.
+- M3b ODD/Engram transition recorded before source edits.

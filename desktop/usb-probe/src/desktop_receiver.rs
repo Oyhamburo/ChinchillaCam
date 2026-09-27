@@ -16,6 +16,9 @@ pub enum DesktopReceiverError {
     UnexpectedBulkStream { actual: u32, expected: u32 },
     MalformedSessionFrame(SessionFrameDecodeError),
     UnexpectedSessionPayload { type_id: u8 },
+    UnexpectedSessionId { actual: String, expected: String },
+    UnexpectedSequence { actual: i32, expected: i32 },
+    SessionSequenceExhausted { sequence: i32 },
     NegativePresentationTimestamp(i64),
     UnknownFrameKind,
     SinkRejected(EncodedVideoSinkError),
@@ -61,7 +64,14 @@ pub struct DesktopVideoSessionReceiver<C> {
     reassembler: VideoFragmentReassembler,
     reassembled_chunk_limits: EncodedVideoChunkLimits,
     fragment_in_flight: bool,
+    binding: Option<DesktopVideoSessionBinding>,
     closed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopVideoSessionBinding {
+    session_id: String,
+    next_sequence: i32,
 }
 
 impl<C> DesktopVideoSessionReceiver<C>
@@ -77,6 +87,7 @@ where
             )
             .expect("non-zero fixed desktop receiver reassembled payload limit"),
             fragment_in_flight: false,
+            binding: None,
             closed: false,
         }
     }
@@ -84,6 +95,7 @@ where
     pub fn reset_for_new_session(&mut self) {
         self.reassembler.reset_all();
         self.fragment_in_flight = false;
+        self.binding = None;
         self.closed = false;
     }
 
@@ -104,6 +116,7 @@ where
             Err(error) => {
                 self.reassembler.reset_all();
                 self.fragment_in_flight = false;
+                self.binding = None;
                 self.closed = true;
                 Err(error)
             }
@@ -128,6 +141,10 @@ where
         let session_frame =
             SessionFrameCodec::decode_with_limit(bulk_frame.payload(), MAX_USB_SESSION_FRAME_BYTES)
                 .map_err(DesktopReceiverError::MalformedSessionFrame)?;
+
+        if is_desktop_video_payload(session_frame.payload()) {
+            self.validate_and_advance_binding(&session_frame)?;
+        }
 
         if self.fragment_in_flight
             && !matches!(
@@ -157,21 +174,27 @@ where
                     h264_bytes.clone(),
                     &self.reassembled_chunk_limits,
                     sink,
-                )
+                )?;
+                self.close_if_sequence_exhausted(session_frame.sequence());
+                Ok(())
             }
             SessionFramePayload::VideoChunkV2 {
                 presentation_time_us,
                 kind,
                 h264_bytes,
                 ..
-            } => push_encoded_chunk(
-                bulk_frame.stream_id(),
-                *presentation_time_us,
-                encoded_frame_kind(*kind),
-                h264_bytes.clone(),
-                &self.reassembled_chunk_limits,
-                sink,
-            ),
+            } => {
+                push_encoded_chunk(
+                    bulk_frame.stream_id(),
+                    *presentation_time_us,
+                    encoded_frame_kind(*kind),
+                    h264_bytes.clone(),
+                    &self.reassembled_chunk_limits,
+                    sink,
+                )?;
+                self.close_if_sequence_exhausted(session_frame.sequence());
+                Ok(())
+            }
             SessionFramePayload::VideoChunkFragmentV1 { .. } => {
                 let Some(chunk) = self
                     .reassembler
@@ -179,6 +202,11 @@ where
                     .map_err(DesktopReceiverError::FragmentReassemblyFailed)?
                 else {
                     self.fragment_in_flight = true;
+                    if session_frame.sequence() == i32::MAX {
+                        return Err(DesktopReceiverError::SessionSequenceExhausted {
+                            sequence: session_frame.sequence(),
+                        });
+                    }
                     return Ok(());
                 };
                 self.fragment_in_flight = false;
@@ -189,11 +217,60 @@ where
                     chunk.h264_bytes().to_vec(),
                     &self.reassembled_chunk_limits,
                     sink,
-                )
+                )?;
+                self.close_if_sequence_exhausted(session_frame.sequence());
+                Ok(())
             }
             other => Err(DesktopReceiverError::UnexpectedSessionPayload {
                 type_id: session_payload_type_id(other),
             }),
+        }
+    }
+    fn validate_and_advance_binding(
+        &mut self,
+        session_frame: &SessionFrame,
+    ) -> Result<(), DesktopReceiverError> {
+        if session_frame.sequence() < 0 {
+            return Err(DesktopReceiverError::UnexpectedSequence {
+                actual: session_frame.sequence(),
+                expected: 0,
+            });
+        }
+
+        let binding = self
+            .binding
+            .get_or_insert_with(|| DesktopVideoSessionBinding {
+                session_id: session_frame.session_id().to_string(),
+                next_sequence: session_frame.sequence(),
+            });
+
+        if session_frame.session_id() != binding.session_id {
+            return Err(DesktopReceiverError::UnexpectedSessionId {
+                actual: session_frame.session_id().to_string(),
+                expected: binding.session_id.clone(),
+            });
+        }
+
+        if session_frame.sequence() != binding.next_sequence {
+            return Err(DesktopReceiverError::UnexpectedSequence {
+                actual: session_frame.sequence(),
+                expected: binding.next_sequence,
+            });
+        }
+
+        if binding.next_sequence != i32::MAX {
+            binding.next_sequence += 1;
+        }
+
+        Ok(())
+    }
+
+    fn close_if_sequence_exhausted(&mut self, sequence: i32) {
+        if sequence == i32::MAX {
+            self.reassembler.reset_all();
+            self.fragment_in_flight = false;
+            self.binding = None;
+            self.closed = true;
         }
     }
 }
@@ -295,6 +372,15 @@ where
 
     sink.push_encoded_video(chunk)
         .map_err(DesktopReceiverError::SinkRejected)
+}
+
+fn is_desktop_video_payload(payload: &SessionFramePayload) -> bool {
+    matches!(
+        payload,
+        SessionFramePayload::VideoChunk { .. }
+            | SessionFramePayload::VideoChunkV2 { .. }
+            | SessionFramePayload::VideoChunkFragmentV1 { .. }
+    )
 }
 
 fn encoded_frame_kind(kind: VideoFrameKind) -> EncodedVideoFrameKind {
