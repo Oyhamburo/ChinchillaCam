@@ -1,12 +1,22 @@
 use std::{
-    fs, io,
+    fs::{self, OpenOptions},
+    io,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
 const MAGIC: &str = "CHINCHILLACAM_TRUSTED_PHONES_V1";
 const MAX_PHONE_ID_LEN: usize = 128;
 const MAX_LABEL_LEN: usize = 256;
 const MAX_PUBLIC_KEY_LEN: usize = 4096;
+const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCK_RETRY: Duration = Duration::from_millis(5);
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedPhoneIdentity {
@@ -55,21 +65,45 @@ impl From<io::Error> for TrustedPhoneStoreError {
     }
 }
 
-#[derive(Debug, Clone)]
+pub trait TrustedPhoneStoreWriteCoordinator: Send + Sync {
+    fn after_records_loaded(&self, path: &Path) -> Result<(), TrustedPhoneStoreError>;
+}
+
+#[derive(Debug)]
+struct NoopWriteCoordinator;
+
+impl TrustedPhoneStoreWriteCoordinator for NoopWriteCoordinator {
+    fn after_records_loaded(&self, _path: &Path) -> Result<(), TrustedPhoneStoreError> {
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
 pub struct FileTrustedPhoneStore {
     path: PathBuf,
+    write_coordinator: Arc<dyn TrustedPhoneStoreWriteCoordinator>,
 }
 
 impl FileTrustedPhoneStore {
     pub fn new(path: impl AsRef<Path>) -> Self {
+        Self::with_write_coordinator(path, Arc::new(NoopWriteCoordinator))
+    }
+
+    pub fn with_write_coordinator(
+        path: impl AsRef<Path>,
+        write_coordinator: Arc<dyn TrustedPhoneStoreWriteCoordinator>,
+    ) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
+            write_coordinator,
         }
     }
 
     pub fn trust(&self, identity: TrustedPhoneIdentity) -> Result<(), TrustedPhoneStoreError> {
         identity.validate()?;
+        let _lock = self.acquire_write_lock()?;
         let mut records = self.load_records()?;
+        self.write_coordinator.after_records_loaded(&self.path)?;
         records.retain(|record| record.identity.phone_id != identity.phone_id);
         records.push(TrustedPhoneRecord {
             identity,
@@ -92,7 +126,9 @@ impl FileTrustedPhoneStore {
 
     pub fn revoke(&self, phone_id: &str) -> Result<bool, TrustedPhoneStoreError> {
         validate_lookup_id(phone_id)?;
+        let _lock = self.acquire_write_lock()?;
         let mut records = self.load_records()?;
+        self.write_coordinator.after_records_loaded(&self.path)?;
         let mut changed = false;
         for record in &mut records {
             if record.identity.phone_id == phone_id {
@@ -143,10 +179,59 @@ impl FileTrustedPhoneStore {
             text.push_str(&record.encode());
             text.push('\n');
         }
-        let tmp_path = self.path.with_extension("tmp");
+        let tmp_path = self.unique_temp_path();
         fs::write(&tmp_path, text)?;
         fs::rename(tmp_path, &self.path)?;
         Ok(())
+    }
+
+    fn acquire_write_lock(&self) -> Result<StorePathLock, TrustedPhoneStoreError> {
+        let lock_path = self.path.with_extension("lock");
+        let started = Instant::now();
+        loop {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(_) => return Ok(StorePathLock { path: lock_path }),
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                    if started.elapsed() >= LOCK_TIMEOUT {
+                        return Err(TrustedPhoneStoreError::Io(format!(
+                            "timed out acquiring trusted-phone store lock {}",
+                            lock_path.display()
+                        )));
+                    }
+                    thread::sleep(LOCK_RETRY);
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+    }
+
+    fn unique_temp_path(&self) -> PathBuf {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("trusted-phone-store");
+        self.path.with_file_name(format!(
+            ".{file_name}.{}.{}.tmp",
+            std::process::id(),
+            sequence
+        ))
+    }
+}
+
+#[derive(Debug)]
+struct StorePathLock {
+    path: PathBuf,
+}
+
+impl Drop for StorePathLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
     }
 }
 

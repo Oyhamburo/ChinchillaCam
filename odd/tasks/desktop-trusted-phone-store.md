@@ -36,3 +36,29 @@ Add a small desktop trust-store boundary that can persist trusted phone identiti
 - `git diff --check`: passed with no output.
 - Independent verification: `gentle-ai-verify` PASS; confirmed scoped seam only, temp-file tests, no private-key storage, no crypto/secure-pairing/transport/hardware claims, and 388 changed lines within <=400 budget.
 - Commit local: this commit, `feat(desktop): add trusted phone store seam`.
+
+
+## T13c race-fix follow-up scope
+
+Grant withheld after independent scout found high-severity stale read-modify-write behavior: concurrent `trust()` and `revoke()` instances can race, and the deterministic shared temp path can let a stale trust overwrite a completed revoke.
+
+Fix scope in a separate local commit, without amending `93ab9d0`:
+
+- Add a deterministic RED two-writer stale-revocation test using an injectable write coordinator.
+- Cover the full read + mutate + write critical section with a per-store-path lock.
+- Use a unique temp file per writer instead of one shared `.tmp` path.
+- Fail closed on lock/write errors.
+- Verify revocation remains durable across concurrent store instances.
+
+Deferred gates before real app use remain: symlink/path ownership checks, owner-only permissions, fsync, and whole-file size cap. No LAN, secure-pairing, OS keychain, QR, transport, or hardware claim is added here.
+
+## T13c race-fix evidence
+
+- RED: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml trusted_phone_store_prevents_stale` failed on unresolved `TrustedPhoneStoreWriteCoordinator` import and missing injectable coordinator seam.
+- GREEN focused: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml trusted_phone` passed with 5 trusted-phone tests.
+- GREEN full crate: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` passed with 44 AOA + 6 encoded video sink + 12 session frame + 5 trusted-phone tests + doctests.
+- Format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
+- `git diff --check`: passed with no output.
+- Race-fix diff before commit: independently verified 193 insertions / 5 deletions = 198 changed lines.
+- Independent verification: `gentle-ai-verify` PASS; confirmed deterministic stale-revocation coverage, full read+mutate+write lock, unique temp files, fail-closed lock/write errors, no expanded claims.
+- Commit local: this commit, `fix(desktop): serialize trusted phone store writes`.

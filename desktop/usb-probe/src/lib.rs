@@ -12,6 +12,7 @@ pub use session_frame::{
 };
 pub use trusted_phone_store::{
     FileTrustedPhoneStore, TrustedPhoneIdentity, TrustedPhoneStoreError,
+    TrustedPhoneStoreWriteCoordinator,
 };
 
 use std::{

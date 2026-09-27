@@ -1,6 +1,15 @@
-use std::{fs, path::PathBuf, time::SystemTime};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{mpsc, Arc, Mutex},
+    thread,
+    time::{Duration, SystemTime},
+};
 
-use usb_probe::{FileTrustedPhoneStore, TrustedPhoneIdentity, TrustedPhoneStoreError};
+use usb_probe::{
+    FileTrustedPhoneStore, TrustedPhoneIdentity, TrustedPhoneStoreError,
+    TrustedPhoneStoreWriteCoordinator,
+};
 
 #[test]
 fn trusted_phone_store_persists_identity_without_private_keys() {
@@ -63,6 +72,45 @@ fn trusted_phone_identity_rejects_invalid_or_oversized_fields() {
 }
 
 #[test]
+fn trusted_phone_store_prevents_stale_trust_from_overwriting_concurrent_revoke() {
+    let path = unique_store_path("race");
+    FileTrustedPhoneStore::new(&path)
+        .trust(TrustedPhoneIdentity::new("phone-race", "Original", vec![9]).unwrap())
+        .unwrap();
+
+    let (loaded_tx, loaded_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let coordinator = Arc::new(PauseOnceAfterLoad::new(loaded_tx, release_rx));
+    let stale_store = FileTrustedPhoneStore::with_write_coordinator(&path, coordinator);
+    let revoke_store = FileTrustedPhoneStore::new(&path);
+
+    let stale_trust = thread::spawn(move || {
+        stale_store
+            .trust(TrustedPhoneIdentity::new("phone-race", "Stale", vec![1, 2, 3]).unwrap())
+            .unwrap();
+    });
+    loaded_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    let revoke = thread::spawn(move || revoke_store.revoke("phone-race").unwrap());
+    thread::sleep(Duration::from_millis(25));
+    release_tx.send(()).unwrap();
+
+    stale_trust.join().unwrap();
+    assert!(revoke.join().unwrap());
+    assert_eq!(
+        FileTrustedPhoneStore::new(&path)
+            .trusted_identity("phone-race")
+            .unwrap(),
+        None
+    );
+    assert!(FileTrustedPhoneStore::new(&path)
+        .is_revoked("phone-race")
+        .unwrap());
+
+    cleanup(path);
+}
+
+#[test]
 fn trusted_phone_store_rejects_corrupt_persistent_file() {
     let path = unique_store_path("corrupt");
     fs::write(&path, "not-chinchillacam-trust\n").unwrap();
@@ -97,4 +145,32 @@ fn unique_store_path(name: &str) -> PathBuf {
 fn cleanup(path: PathBuf) {
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(path.with_extension("tmp"));
+}
+
+struct PauseOnceAfterLoad {
+    loaded_tx: Mutex<Option<mpsc::Sender<()>>>,
+    release_rx: Mutex<mpsc::Receiver<()>>,
+}
+
+impl PauseOnceAfterLoad {
+    fn new(loaded_tx: mpsc::Sender<()>, release_rx: mpsc::Receiver<()>) -> Self {
+        Self {
+            loaded_tx: Mutex::new(Some(loaded_tx)),
+            release_rx: Mutex::new(release_rx),
+        }
+    }
+}
+
+impl TrustedPhoneStoreWriteCoordinator for PauseOnceAfterLoad {
+    fn after_records_loaded(&self, _path: &Path) -> Result<(), TrustedPhoneStoreError> {
+        if let Some(sender) = self.loaded_tx.lock().unwrap().take() {
+            sender.send(()).unwrap();
+            self.release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+        }
+        Ok(())
+    }
 }
