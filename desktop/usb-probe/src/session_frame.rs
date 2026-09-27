@@ -72,6 +72,7 @@ pub enum SessionFrameEncodeError {
     InvalidSequence(i32),
     InvalidSessionId,
     FieldTooLarge(&'static str),
+    FrameTooLarge { actual_size: usize, max_size: usize },
     InvalidPayload(String),
 }
 
@@ -89,6 +90,8 @@ pub enum SessionFrameDecodeError {
 pub struct SessionFrameCodec;
 
 impl SessionFrameCodec {
+    pub const DEFAULT_MAX_FRAME_SIZE: usize = DEFAULT_MAX_SESSION_FRAME_SIZE;
+
     pub fn encode(frame: &SessionFrame) -> Result<Vec<u8>, SessionFrameEncodeError> {
         if frame.sequence < 0 {
             return Err(SessionFrameEncodeError::InvalidSequence(frame.sequence));
@@ -97,15 +100,26 @@ impl SessionFrameCodec {
             return Err(SessionFrameEncodeError::InvalidSessionId);
         }
 
-        let payload = encode_payload(&frame.payload)?;
         let session_id = frame.session_id.as_bytes();
         write_len_fits_u16(session_id.len(), "sessionId")?;
-        if payload.len() > i32::MAX as usize {
+        let payload_size = encoded_payload_size(&frame.payload)?;
+        if payload_size > i32::MAX as usize {
             return Err(SessionFrameEncodeError::FieldTooLarge("payload"));
         }
+        let frame_size = checked_add(
+            HEADER_WITHOUT_SESSION_BYTES,
+            checked_add(session_id.len(), payload_size, "frame")?,
+            "frame",
+        )?;
+        if frame_size > Self::DEFAULT_MAX_FRAME_SIZE {
+            return Err(SessionFrameEncodeError::FrameTooLarge {
+                actual_size: frame_size,
+                max_size: Self::DEFAULT_MAX_FRAME_SIZE,
+            });
+        }
 
-        let mut encoded =
-            Vec::with_capacity(HEADER_WITHOUT_SESSION_BYTES + session_id.len() + payload.len());
+        let payload = encode_payload(&frame.payload)?;
+        let mut encoded = Vec::with_capacity(frame_size);
         encoded.extend_from_slice(SESSION_FRAME_MAGIC);
         encoded.push(frame.version);
         encoded.push(frame.payload.type_id());
@@ -184,6 +198,49 @@ impl SessionFrameCodec {
             payload,
         })
     }
+}
+
+fn encoded_payload_size(payload: &SessionFramePayload) -> Result<usize, SessionFrameEncodeError> {
+    match payload {
+        SessionFramePayload::HandshakeAccept {
+            desktop_id,
+            message,
+        } => checked_add(
+            encoded_bytes_with_len_size(desktop_id.len())?,
+            encoded_bytes_with_len_size(message.len())?,
+            "payload",
+        ),
+        SessionFramePayload::VideoChunk {
+            chunk_index,
+            h264_bytes,
+            ..
+        } => {
+            if *chunk_index < 0 {
+                return Err(SessionFrameEncodeError::InvalidPayload(
+                    "chunk index must be non-negative".to_string(),
+                ));
+            }
+            checked_add(
+                12,
+                encoded_bytes_with_len_size(h264_bytes.len())?,
+                "payload",
+            )
+        }
+        SessionFramePayload::CameraControlCommand { command, arguments } => {
+            write_len_fits_u16(arguments.len(), "argument count")?;
+            let mut size = checked_add(encoded_bytes_with_len_size(command.len())?, 2, "payload")?;
+            for (key, value) in arguments {
+                size = checked_add(size, encoded_bytes_with_len_size(key.len())?, "payload")?;
+                size = checked_add(size, encoded_bytes_with_len_size(value.len())?, "payload")?;
+            }
+            Ok(size)
+        }
+    }
+}
+
+fn encoded_bytes_with_len_size(length: usize) -> Result<usize, SessionFrameEncodeError> {
+    write_len_fits_u16(length, "field")?;
+    checked_add(2, length, "field")
 }
 
 fn encode_payload(payload: &SessionFramePayload) -> Result<Vec<u8>, SessionFrameEncodeError> {
@@ -411,4 +468,13 @@ fn write_len_fits_u16(length: usize, field: &'static str) -> Result<(), SessionF
         return Err(SessionFrameEncodeError::FieldTooLarge(field));
     }
     Ok(())
+}
+
+fn checked_add(
+    left: usize,
+    right: usize,
+    field: &'static str,
+) -> Result<usize, SessionFrameEncodeError> {
+    left.checked_add(right)
+        .ok_or(SessionFrameEncodeError::FieldTooLarge(field))
 }

@@ -1,5 +1,8 @@
+use std::collections::BTreeMap;
+
 use usb_probe::{
-    BulkFrame, SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFramePayload,
+    BulkFrame, SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,
+    SessionFramePayload,
 };
 
 // Golden bytes copied from Android SessionFrameCodec contract at
@@ -45,9 +48,33 @@ fn session_frame_roundtrips_video_chunk_without_transport_claims() {
     );
 
     let encoded = SessionFrameCodec::encode(&frame).unwrap();
+    assert!(encoded.len() <= SessionFrameCodec::DEFAULT_MAX_FRAME_SIZE);
     let decoded = SessionFrameCodec::decode(&encoded).unwrap();
 
     assert_eq!(decoded, frame);
+}
+
+#[test]
+fn session_frame_encode_rejects_frames_larger_than_decode_cap() {
+    let arguments = (0..u16::MAX)
+        .map(|index| (format!("k{index:05}"), format!("v{index:05}")))
+        .collect::<BTreeMap<_, _>>();
+    let frame = SessionFrame::new(
+        1,
+        "s",
+        SessionFramePayload::CameraControlCommand {
+            command: "setZoom".to_string(),
+            arguments,
+        },
+    );
+
+    assert_eq!(
+        SessionFrameCodec::encode(&frame),
+        Err(SessionFrameEncodeError::FrameTooLarge {
+            actual_size: 1_048_588,
+            max_size: SessionFrameCodec::DEFAULT_MAX_FRAME_SIZE,
+        })
+    );
 }
 
 #[test]

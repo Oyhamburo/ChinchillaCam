@@ -37,6 +37,15 @@ Add a small pure Rust `SessionFrame v1` companion for desktop tests that matches
 - `desktop/usb-probe/tests/session_frame_test.rs`
 - `odd/tasks/desktop-session-frame.md`
 
+## Slice A1 hardening scope
+
+- Close advisory `R3-encode-decode-size-asymmetry` without rewriting `f1de9db` or adding deferred payload types.
+- Ensure `SessionFrameCodec::encode` rejects frames whose encoded size would exceed the same negotiated/default 1 MiB frame cap used by decode.
+- Add RED test for an oversized `CameraControlCommand` payload where encode returns a typed `FrameTooLarge` error before avoidable final frame copy/allocation.
+- Preserve normal roundtrip under the cap and existing Kotlin-compatible golden bytes.
+- Coordinate later with Android Kotlin encoder for the same cap; this Rust slice records the expected cap but does not edit Android.
+- No transport/network/crypto/auth/decoder/virtual-camera work.
+
 ## Evidence
 
 - Android source read: `SessionFrame.kt` and `SessionFrameTest.kt` from sibling commit `f8504a91c27efb1be0004470b1ee30334d5ddc8b`.
@@ -49,6 +58,13 @@ Add a small pure Rust `SessionFrame v1` companion for desktop tests that matches
 - Commit local: `f1de9db feat(desktop): add session frame slice`.
 - Native review: `review-e20ab89368bc203a` for committed range `caf25f9..f1de9db` approved and acknowledged; authority burned. Target `sha256:e149c5f5b39d2ebb8c1bb75d4fa4a455270829feea73a537b760877fd51c4646`; consumed revision `sha256:0e77c803470eb7fa7c087a42a2ab642ad040d4b2728f961647d59239e16343a2`.
 - Advisory informativo no bloqueante: `R3-encode-decode-size-asymmetry`; tratar como trabajo futuro separado, no como razón para reabrir este candidato.
+- Slice A1 RED: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml session_frame` failed on missing `SessionFrameCodec::DEFAULT_MAX_FRAME_SIZE` and `SessionFrameEncodeError::FrameTooLarge`.
+- Slice A1 GREEN: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml session_frame` passed with 8 session frame tests.
+- Slice A1 full crate test: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` passed with 44 AOA + 6 encoded video sink + 8 session frame tests + doctests.
+- Slice A1 format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
+- Slice A1 `git diff --check`: passed with no output.
+- Slice A1 independent verification: `gentle-ai-verify` PASS; confirmed pre-encode frame-size check before `encode_payload`/final allocation, existing golden/roundtrip behavior, and no deferred payload or transport/network/crypto/auth/decoder/virtual-camera work.
+- Slice A1 commit local: pending.
 
 ## Review workload note
 
