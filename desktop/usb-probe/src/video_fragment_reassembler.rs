@@ -46,6 +46,7 @@ pub enum VideoFragmentReassemblerError {
         expected_index: i32,
         actual_index: i32,
     },
+    InvalidFragment,
     MetadataMismatch,
     TotalBytesExceeded {
         total_h264_bytes: i32,
@@ -119,6 +120,11 @@ impl VideoFragmentReassembler {
         &mut self,
         fragment: IncomingFragment<'_>,
     ) -> Result<Option<ReassembledVideoChunk>, VideoFragmentReassemblerError> {
+        if let Err(error) = validate_fragment_bounds(&fragment) {
+            self.active = None;
+            return Err(error);
+        }
+
         if let Some(active) = self.active.as_mut() {
             if active.session_id != fragment.session_id {
                 let error = VideoFragmentReassemblerError::ConcurrentSession {
@@ -157,7 +163,6 @@ impl VideoFragmentReassembler {
                 actual_index: fragment.fragment_index,
             });
         }
-        validate_fragment_bounds(&fragment)?;
         let mut active = ActiveAccessUnit::from_first(fragment);
         active.push_bytes(fragment.fragment_h264_bytes)?;
         active.next_fragment_index = 1;
@@ -284,14 +289,19 @@ struct IncomingFragment<'a> {
 fn validate_fragment_bounds(
     fragment: &IncomingFragment<'_>,
 ) -> Result<(), VideoFragmentReassemblerError> {
-    if fragment.total_h264_bytes <= 0
+    if fragment.session_id.is_empty()
+        || fragment.chunk_index < 0
+        || fragment.presentation_time_us < 0
+        || fragment.fragment_index < 0
+        || fragment.fragment_count <= 0
+        || fragment.fragment_count > 1024
+        || fragment.fragment_index >= fragment.fragment_count
+        || fragment.total_h264_bytes <= 0
         || fragment.total_h264_bytes > MAX_REASSEMBLED_H264_BYTES
+        || fragment.fragment_h264_bytes.is_empty()
         || fragment.fragment_h264_bytes.len() > fragment.total_h264_bytes as usize
     {
-        return Err(VideoFragmentReassemblerError::TotalBytesExceeded {
-            total_h264_bytes: fragment.total_h264_bytes,
-            actual_bytes: fragment.fragment_h264_bytes.len(),
-        });
+        return Err(VideoFragmentReassemblerError::InvalidFragment);
     }
     Ok(())
 }

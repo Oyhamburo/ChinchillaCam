@@ -38,3 +38,4 @@ Add a pure Rust reassembler for decoded `SessionFramePayload::VideoChunkFragment
 - G3a commit: `b48ced3 feat(desktop): add video fragment reassembler`.
 - G3b adds fail-closed edge tests for sequential sessions, concurrent session, duplicate/out-of-order, metadata mismatch, overflow, early-complete, incomplete-final, non-fragment rejection, and reset.
 - G3b focused/full cargo, fmt, `git diff --check`, and independent `gentle-ai-verify` PASS. Diff budget: 236 test/doc changed lines, within <=400.
+- G3c closes public-constructor validation seam: fragment count/index, empty session id, negative chunk index/PTS, and empty fragment bytes now fail closed before state/allocation, including while another fragment is active.

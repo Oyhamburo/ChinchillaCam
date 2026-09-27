@@ -16,6 +16,19 @@ fn fragment(index: i32, count: i32, total: i32, bytes: &[u8]) -> SessionFrame {
     )
 }
 
+fn invalid_fragment_cases() -> Vec<SessionFrame> {
+    vec![
+        fragment(0, 0, 1, &[0x41]),
+        fragment(0, -1, 1, &[0x41]),
+        fragment(0, 1025, 1, &[0x41]),
+        fragment(1, 1, 1, &[0x41]),
+        fragment_with("", 7, 33_366, VideoFrameKind::Key, 0, 1, 1, &[0x41]),
+        fragment_with("s", -1, 33_366, VideoFrameKind::Key, 0, 1, 1, &[0x41]),
+        fragment_with("s", 7, -1, VideoFrameKind::Key, 0, 1, 1, &[0x41]),
+        fragment(0, 1, 1, &[]),
+    ]
+}
+
 fn fragment_with(
     session_id: &str,
     chunk_index: i32,
@@ -155,6 +168,40 @@ fn reassembler_fails_closed_on_second_session_while_active() {
         .push_frame(&fragment(0, 1, 1, &[0x41]))
         .unwrap()
         .is_some());
+}
+
+#[test]
+fn reassembler_rejects_invalid_fragments_before_state() {
+    for frame in invalid_fragment_cases() {
+        let mut reassembler = VideoFragmentReassembler::new();
+        assert_eq!(
+            reassembler.push_frame(&frame),
+            Err(VideoFragmentReassemblerError::InvalidFragment)
+        );
+        assert!(reassembler
+            .push_frame(&fragment(0, 1, 1, &[0x65]))
+            .unwrap()
+            .is_some());
+    }
+}
+
+#[test]
+fn reassembler_rejects_invalid_fragments_while_active_and_clears_state() {
+    for frame in invalid_fragment_cases() {
+        let mut reassembler = VideoFragmentReassembler::new();
+        assert!(reassembler
+            .push_frame(&fragment(0, 2, 2, &[0x65]))
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            reassembler.push_frame(&frame),
+            Err(VideoFragmentReassemblerError::InvalidFragment)
+        );
+        assert!(reassembler
+            .push_frame(&fragment(0, 1, 1, &[0x41]))
+            .unwrap()
+            .is_some());
+    }
 }
 
 #[test]
