@@ -1,7 +1,7 @@
 package dev.chinchillacam.usbprobe
 
 class EncodedVideoSustainedFakeTransportAdapter(
-    private val sessionId: String,
+    val sessionId: String,
     private val transport: UsbSessionFrameSustainedFakeTransport,
     initialSequence: Int = 0,
 ) : EncodedVideoSessionFrameTransport {
@@ -15,7 +15,14 @@ class EncodedVideoSustainedFakeTransportAdapter(
     }
 
     @Synchronized
-    override fun write(payload: SessionPayload.VideoChunkV2): EncodedVideoSessionFrameWriteResult {
+    override fun write(payload: SessionPayload.VideoChunkV2): EncodedVideoSessionFrameWriteResult = writePayload(payload)
+
+    @Synchronized
+    fun writeFragment(payload: SessionPayload.VideoChunkFragmentV1): EncodedVideoSessionFrameWriteResult = writePayload(payload)
+
+    fun maxType8H264Bytes(): Int = MAX_SESSION_PAYLOAD_BYTES - SESSION_FRAME_BASE_BYTES - sessionId.toByteArray(Charsets.UTF_8).size - VIDEO_CHUNK_V2_FIXED_PAYLOAD_BYTES
+
+    private fun writePayload(payload: SessionPayload): EncodedVideoSessionFrameWriteResult {
         if (closed) return EncodedVideoSessionFrameWriteResult.Closed
         val frame = SessionFrame(sequence = nextSequence, sessionId = sessionId, payload = payload)
         val encodedSize = try {
@@ -72,5 +79,7 @@ class EncodedVideoSustainedFakeTransportAdapter(
 
     private companion object {
         const val MAX_SESSION_PAYLOAD_BYTES = 65_528
+        const val SESSION_FRAME_BASE_BYTES = 16
+        const val VIDEO_CHUNK_V2_FIXED_PAYLOAD_BYTES = 15
     }
 }

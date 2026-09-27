@@ -23,6 +23,41 @@ class EncodedVideoSustainedFakeTransportAdapterTest {
     }
 
     @Test
+    fun exposesSessionIdAndType8CapacityForPlanning() {
+        val adapter = EncodedVideoSustainedFakeTransportAdapter("s", UsbSessionFrameSustainedFakeTransport(65_528, 1))
+        val utf8Adapter = EncodedVideoSustainedFakeTransportAdapter("ññ", UsbSessionFrameSustainedFakeTransport(65_528, 1))
+
+        assertEquals("s", adapter.sessionId)
+        assertEquals(65_496, adapter.maxType8H264Bytes())
+        assertEquals(65_493, utf8Adapter.maxType8H264Bytes())
+    }
+
+    @Test
+    fun writesType9FragmentsThroughSameSequenceOwner() {
+        val fake = UsbSessionFrameSustainedFakeTransport(maxPayloadBytes = 65_528, outgoingCapacityFrames = 2)
+        val adapter = EncodedVideoSustainedFakeTransportAdapter("s", fake, initialSequence = 9)
+
+        assertEquals(EncodedVideoSessionFrameWriteResult.Written, adapter.write(videoPayload()))
+        assertEquals(EncodedVideoSessionFrameWriteResult.Written, adapter.writeFragment(fragmentPayload()))
+
+        assertEquals(9, decodeOutgoing(fake).sequence)
+        val second = decodeOutgoing(fake)
+        assertEquals(10, second.sequence)
+        assertEquals(SessionFrameType.VIDEO_CHUNK_FRAGMENT_V1, second.type)
+        assertEquals(0, (second.payload as SessionPayload.VideoChunkFragmentV1).fragmentIndex)
+    }
+
+    @Test
+    fun fragmentWritesUseSameFailClosedRules() {
+        val fake = UsbSessionFrameSustainedFakeTransport(maxPayloadBytes = 65_528, outgoingCapacityFrames = 0)
+        val adapter = EncodedVideoSustainedFakeTransportAdapter("s", fake)
+
+        assertEquals(EncodedVideoSessionFrameWriteResult.BackpressureExceeded, adapter.writeFragment(fragmentPayload()))
+        assertEquals(EncodedVideoSessionFrameWriteResult.Closed, adapter.writeFragment(fragmentPayload()))
+        assertEquals(UsbSessionFrameSustainedWriteResult.Closed, fake.write(SessionFrame(1, 0, "s", fragmentPayload())))
+    }
+
+    @Test
     fun preflightsSessionFramePayloadAt65528EvenWhenFakeTransportIsPermissive() {
         val fake = UsbSessionFrameSustainedFakeTransport(maxPayloadBytes = 65_536, outgoingCapacityFrames = 1)
         val adapter = EncodedVideoSustainedFakeTransportAdapter(sessionId = "s", transport = fake)
@@ -97,6 +132,17 @@ class EncodedVideoSustainedFakeTransportAdapterTest {
         presentationTimeUs = 1L,
         frameKind = SessionVideoFrameKind.KEY,
         h264Bytes = h264Bytes,
+    )
+
+
+    private fun fragmentPayload(): SessionPayload.VideoChunkFragmentV1 = SessionPayload.VideoChunkFragmentV1(
+        chunkIndex = 0,
+        presentationTimeUs = 1L,
+        frameKind = SessionVideoFrameKind.KEY,
+        fragmentIndex = 0,
+        fragmentCount = 2,
+        totalH264Bytes = 70_000,
+        fragmentBytes = byteArrayOf(0x65),
     )
 
     private fun decodeOutgoing(fake: UsbSessionFrameSustainedFakeTransport): SessionFrame {
