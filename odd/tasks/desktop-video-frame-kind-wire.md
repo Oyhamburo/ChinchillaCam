@@ -64,5 +64,7 @@ Session id `s`, sequence `0`, key frame kind `1`, chunk index `0`, PTS `0`, byte
 - GREEN full crate test: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` passed with 44 AOA, 7 desktop receiver, 6 encoded video sink, 16 session frame, 7 trusted-phone store tests, and doctests.
 - Format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
 - `git diff --check`: passed with no output.
-- Diff budget: independent verifier counted 287 tracked changed lines plus 61-line ODD doc = 346 total, within <=400.
+- Diff budget at source commit: final committed candidate `997b41f..77e2127` changed 5 files with 353 insertions and 2 deletions = 355 diff lines, within <=400.
 - Independent verification: `gentle-ai-verify` PASS; confirmed type 8 wire order/kind mapping, typed unknown-kind error with no fallback, legacy type 5 golden preserved, v2 receiver not consumed, and no hardware/LAN/crypto claims.
+- Source commit: `77e2127 feat(desktop): add video chunk frame kind wire`.
+- Native review: pending explicit GRANT; no INSPECT/START run for this candidate yet.
