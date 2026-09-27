@@ -1,8 +1,10 @@
 use usb_probe::{
     BoundedEncodedVideoQueue, BulkFrame, DesktopReceiverError, EncodedVideoFrameKind, SessionFrame,
-    SessionFrameCodec, SessionFramePayload, StaticFrameKindClassifier, VideoFrameKind,
-    VideoFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
+    SessionFrameCodec, SessionFrameDecodeError, SessionFramePayload, StaticFrameKindClassifier,
+    VideoFrameKind, VideoFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
 };
+
+const MAX_USB_SESSION_FRAME_BYTES: usize = 65_528;
 
 fn video_bulk_frame(presentation_time_us: i64, payload: Vec<u8>) -> BulkFrame {
     let session = SessionFrame::new(
@@ -46,6 +48,25 @@ fn video_v2_bulk_frame(
         SessionFrameCodec::encode(&session).unwrap(),
     )
     .unwrap()
+}
+
+fn video_bulk_frame_with_session_bytes(target_session_bytes: usize) -> BulkFrame {
+    let overhead_without_h264_bytes = video_bulk_frame(1, Vec::new()).payload().len();
+    let h264_len = target_session_bytes
+        .checked_sub(overhead_without_h264_bytes)
+        .expect("target session bytes must fit legacy video overhead");
+    video_bulk_frame(1, vec![0x65; h264_len])
+}
+
+fn video_v2_bulk_frame_with_session_bytes(target_session_bytes: usize) -> BulkFrame {
+    let overhead_without_h264_bytes = video_v2_bulk_frame(VideoFrameKind::Key, 1, vec![0x65])
+        .payload()
+        .len()
+        - 1;
+    let h264_len = target_session_bytes
+        .checked_sub(overhead_without_h264_bytes)
+        .expect("target session bytes must fit v2 video overhead");
+    video_v2_bulk_frame(VideoFrameKind::Key, 1, vec![0x65; h264_len])
 }
 
 fn non_video_bulk_frame() -> BulkFrame {
@@ -129,6 +150,55 @@ fn desktop_receiver_rejects_malformed_session_frame() {
         Err(DesktopReceiverError::MalformedSessionFrame(_))
     ));
     assert!(queue.is_empty());
+}
+
+#[test]
+fn desktop_receiver_accepts_max_usb_session_frame_budget_for_legacy_and_v2() {
+    let cases = [
+        (
+            video_bulk_frame_with_session_bytes(MAX_USB_SESSION_FRAME_BYTES),
+            EncodedVideoFrameKind::Delta,
+        ),
+        (
+            video_v2_bulk_frame_with_session_bytes(MAX_USB_SESSION_FRAME_BYTES),
+            EncodedVideoFrameKind::Key,
+        ),
+    ];
+
+    for (frame, expected_kind) in cases {
+        assert_eq!(frame.payload().len(), MAX_USB_SESSION_FRAME_BYTES);
+        let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
+        let mut classifier = StaticFrameKindClassifier::known(EncodedVideoFrameKind::Delta);
+
+        usb_probe::receive_desktop_video_frame(&frame, &mut classifier, &mut queue).unwrap();
+
+        let chunk = queue.pop_front().unwrap();
+        assert_eq!(chunk.frame_kind(), expected_kind);
+        assert!(!chunk.payload().is_empty());
+    }
+}
+
+#[test]
+fn desktop_receiver_rejects_oversize_usb_session_frame_budget_before_sink_push() {
+    for frame in [
+        video_bulk_frame_with_session_bytes(MAX_USB_SESSION_FRAME_BYTES + 1),
+        video_v2_bulk_frame_with_session_bytes(MAX_USB_SESSION_FRAME_BYTES + 1),
+    ] {
+        assert_eq!(frame.payload().len(), MAX_USB_SESSION_FRAME_BYTES + 1);
+        let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
+        let mut classifier = StaticFrameKindClassifier::known(EncodedVideoFrameKind::Delta);
+
+        assert_eq!(
+            usb_probe::receive_desktop_video_frame(&frame, &mut classifier, &mut queue),
+            Err(DesktopReceiverError::MalformedSessionFrame(
+                SessionFrameDecodeError::FrameTooLarge {
+                    actual_size: MAX_USB_SESSION_FRAME_BYTES + 1,
+                    max_size: MAX_USB_SESSION_FRAME_BYTES,
+                }
+            ))
+        );
+        assert!(queue.is_empty());
+    }
 }
 
 #[test]

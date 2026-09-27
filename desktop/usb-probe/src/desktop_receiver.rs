@@ -5,6 +5,9 @@ use crate::{
 };
 
 pub const USB_SESSION_FRAME_STREAM_ID: u32 = 0x0102_0304;
+const MAX_USB_TOTAL_PACKET_BYTES: usize = 65_536;
+const BULK_FRAME_HEADER_BYTES: usize = 8;
+const MAX_USB_SESSION_FRAME_BYTES: usize = MAX_USB_TOTAL_PACKET_BYTES - BULK_FRAME_HEADER_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopReceiverError {
@@ -65,8 +68,9 @@ where
         });
     }
 
-    let session_frame = SessionFrameCodec::decode(bulk_frame.payload())
-        .map_err(DesktopReceiverError::MalformedSessionFrame)?;
+    let session_frame =
+        SessionFrameCodec::decode_with_limit(bulk_frame.payload(), MAX_USB_SESSION_FRAME_BYTES)
+            .map_err(DesktopReceiverError::MalformedSessionFrame)?;
 
     let (presentation_time_us, h264_bytes, frame_kind) = match session_frame.payload() {
         SessionFramePayload::VideoChunk {
