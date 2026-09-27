@@ -4,10 +4,9 @@
 
 - Branch: `feat/desktop-video-sink`
 - Worktree: `/Users/jele/Desktop/codes/ChinchillaCam-desktop-video-sink`
-- Base esperada para T20a: `43e30d3a16beb98453c6c3739acb55135366c6ca`
+- Base real para T20a: `55e751c` (cierre B3 documentado en un commit local separado).
 - Estado inicial: plan creado antes de escribir código fuente.
-- Commit local T20a: este documento se actualiza dentro del commit local T20a.
-- Cierre B3 documentado en commit local separado `55e751c docs(desktop): record session frame review closure`.
+- Commit local T20a: `e95110b feat(desktop): add fake video receiver`.
 
 ## Contexto
 
@@ -61,4 +60,4 @@ Crear un receptor fake de escritorio para pruebas que acepte un `BulkFrame` ya r
 - `git diff --check`: pasó sin salida.
 - Diff budget: 340 inserciones / 0 borrados en 4 archivos T20a, dentro del corte <=400 líneas.
 - Revisión independiente: `gentle-ai-verify` PASS; confirmó stream id `0x01020304`, decode de `SessionFrame`, rechazos tipados, seam de clasificación Key/CodecConfig/Delta, y ausencia de decoder/hardware/LAN/crypto/cámara virtual.
-- Commit local T20a: este documento se actualiza dentro del commit local T20a.
+- El commit T20a es `e95110b`; revisión nativa pendiente.
