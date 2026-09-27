@@ -60,4 +60,4 @@ Use TDD: RED focused tests for sink mapping/failure behavior and controller sink
 - Focused controller restart/failure/factory/metrics tests: PASS.
 - Full `:android:usb-probe:testDebugUnitTest --rerun-tasks`, `:android:usb-probe:assembleDebug`, `git diff --check`, and independent verify: PASS.
 - T15d2 commit id: `1a045fa244c626c0c9f491ac4e836179b6c137d9`.
-- T15d1 closure doc commit pending.
+- T15d1 closure doc commit: `d1f77dd34e18a227053698b90ee9e9b51a665120`.
