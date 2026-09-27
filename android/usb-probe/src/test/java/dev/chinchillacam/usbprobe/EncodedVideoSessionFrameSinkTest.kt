@@ -56,6 +56,20 @@ class EncodedVideoSessionFrameSinkTest {
         assertEquals(EncodedVideoSessionFrameSinkStats(accepted = 0, dropped = 2), sink.stats())
     }
 
+
+    @Test
+    fun transportOversizeClosesSinkAsOversized() {
+        val transport = RecordingEncodedVideoTransport(EncodedVideoSessionFrameWriteResult.Oversized)
+        val sink = EncodedVideoSessionFrameSink(transport)
+
+        val result = sink.write(EncodedVideoChunk(byteArrayOf(1), 1L, isCodecConfig = false, isKeyFrame = false))
+        val afterClose = sink.write(EncodedVideoChunk(byteArrayOf(2), 2L, isCodecConfig = false, isKeyFrame = false))
+
+        assertEquals(EncodedVideoSessionFrameSinkResult.Oversized, result)
+        assertEquals(EncodedVideoSessionFrameSinkResult.Closed, afterClose)
+        assertEquals(1, transport.closeCount)
+    }
+
     @Test
     fun emptyChunkFailsClosedBeforeTransportWrite() {
         val transport = RecordingEncodedVideoTransport()

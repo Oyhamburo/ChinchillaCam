@@ -9,6 +9,7 @@ sealed class EncodedVideoSessionFrameWriteResult {
     object Written : EncodedVideoSessionFrameWriteResult()
     object BackpressureExceeded : EncodedVideoSessionFrameWriteResult()
     object Closed : EncodedVideoSessionFrameWriteResult()
+    object Oversized : EncodedVideoSessionFrameWriteResult()
     data class Failed(val reason: String) : EncodedVideoSessionFrameWriteResult()
 }
 
@@ -76,6 +77,11 @@ class EncodedVideoSessionFrameSink(
                 dropped += 1
                 closeLocked()
                 EncodedVideoSessionFrameSinkResult.Closed
+            }
+            EncodedVideoSessionFrameWriteResult.Oversized -> {
+                dropped += 1
+                closeLocked()
+                EncodedVideoSessionFrameSinkResult.Oversized
             }
             is EncodedVideoSessionFrameWriteResult.Failed -> {
                 dropped += 1
