@@ -111,7 +111,7 @@ Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN auten
 
 ### M4 — Transportes autenticados y cambio de modo
 
-14. **T15 — USB video transport sobre AOA bulk.** Reusar claim/framing existente para stream sostenido con backpressure/timeouts; sin prueba física todavía.
+14. **T15 — USB video transport sobre AOA bulk.** Reusar claim/framing existente para stream sostenido con backpressure/timeouts; sin prueba física todavía. T15a inicia con seam fake `UsbSessionFrameTransport` que anida `SessionFrame` como payload opaco dentro de `AccessoryFrame`.
 15. **T16 — Wi‑Fi LAN transport fake/loopback.** Modelar transporte Wi‑Fi sin listener externo no autenticado; fakes o loopback local hasta tener pairing/trust.
 16. **T17 — Wi‑Fi LAN transport autenticado.** Habilitar listener/red local solo después de QR pairing + confianza local + one-active-computer; rechazar tráfico no autenticado.
 17. **T18 — Transport switch model.** Cambiar USB/Wi‑Fi sin reemparejar; interrupción explícita y estado recuperable.
