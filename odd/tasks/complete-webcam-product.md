@@ -152,7 +152,7 @@ Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN auten
 
 ## Próxima unidad autorizada
 
-La próxima unidad de código recomendada en la rama `feat/local-pairing-authority` es **M3/T13 — persistencia de confianza local**, después de revisar el candidato T12/T11b cuando el slot nativo quede libre. No abrir listener LAN externo antes del gate M3/T17.
+La próxima unidad recomendada es **M4/T15 — USB video transport sobre AOA bulk**, empezando con un transport seam/fakes y frames de sesión anidados; sin prueba física todavía, sin listener LAN y sin reinterpretar endianess del `SessionFrame`.
 
 Antes de escribir source para T8b se debe:
 

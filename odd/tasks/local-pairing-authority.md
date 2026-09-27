@@ -22,7 +22,7 @@ Construir el contrato local de sesión entre Android y desktop antes de transpor
 - [x] T12: payload QR local. Incluir identificador de PC, clave pública o material de confianza, expiración y versión; tests de expiración y corrupción accidental por checksum sin clave.
   - 2026-09-26: Implementación pura añadida en `PairingQrPayload.kt`; tests en `PairingQrPayloadTest.kt`. Validado localmente con `testDebugUnitTest --rerun-tasks` y `git diff --check`.
   - 2026-09-26: Semántica ajustada: el checksum sin clave solo detecta corrupción accidental y campos extra/desconocidos; no autentica ni resiste manipulación maliciosa.
-- [ ] T13: persistencia de confianza local en Android y desktop con revocación; fakes primero.
+- [x] T13: persistencia de confianza local Android-only con revocación fake/in-memory; desktop queda para integración separada.
   - T13a en este worktree será Android-only/in-memory seam; desktop queda aislado en otro worktree hasta decisión fresca de integración.
   - 2026-09-26: T13a Android-only/in-memory seam implementado en `TrustedDesktopStore.kt`; tests en `TrustedDesktopStoreTest.kt`. Validado localmente con `testDebugUnitTest --rerun-tasks` antes de actualizar este estado.
 - [x] T14: una computadora activa. Rechazar segunda sesión activa con mensaje español; handoff explícito como acción separada.
@@ -149,3 +149,24 @@ Alcance T11:
 - Lineage: `review-32d058495f927285`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes: `R3-001` en `ActiveDesktopAuthority.kt:196-198` y `R3-002` en `ActiveDesktopAuthority.kt:179`. No abrieron corrección para T14.
+
+
+## Cierre M3 local
+
+M3 queda cerrado localmente como contrato de autoridad previo a transportes: framing tipado, payload QR local, trust store Android in-memory, hardening de parser QR y autoridad de una computadora activa.
+
+Evidencia final local:
+
+- `testDebugUnitTest --rerun-tasks`: pasó con `BUILD SUCCESSFUL`.
+- `assembleDebug`: pasó con `BUILD SUCCESSFUL`.
+- APK debug presente en `android/usb-probe/build/outputs/apk/debug/usb-probe-debug.apk`.
+- `git diff --check`: sin salida.
+- Revisiones nativas RDD aprobadas y reconocidas: T11 `review-0321f52b8e7283e3`, T12/T11b/T13a `review-1a21ff7d946cbfa5`, T12b `review-676a75b529ab8cab`, T14 `review-32d058495f927285`.
+
+Límites de cierre:
+
+- Sin transportes USB/Wi‑Fi de producto aún.
+- Sin listener LAN externo.
+- El checksum QR no autentica ni resiste manipulación maliciosa; solo detecta corrupción accidental.
+- Antes de T17 siguen obligatorios: prueba de posesión de clave privada, nonce single-use/expiry, confirmación explícita de confianza, threat model y TLS estándar/identidad de par esperada.
+- Sin claims Samsung/Windows/macOS/físicos.
