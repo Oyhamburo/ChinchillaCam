@@ -64,3 +64,14 @@ Alcance T15a:
 
 - Se corrigió el advisory `R3-oversize-desynchronizes-session`: un header con payload declarado mayor a `maxPayloadBytes` ahora cierra la `AccessoryIoSession` y devuelve resultado tipado con `sessionClosed = true`, evitando re-sincronización insegura sobre bytes restantes.
 - Validado con test RED/GREEN de oversize que comprueba cierre, además de `testDebugUnitTest --rerun-tasks`, `assembleDebug`, APK presente y `git diff --check`.
+
+## Gate T11c — límite de encode para `SessionFrame`
+
+Antes de T15c/T17 sostenido, `SessionFrameCodec.encode` debe respetar el mismo límite máximo que `decode` acepta por defecto: frame completo, incluyendo header y payload, no puede superar 1 MiB. Esto debe coordinarse con el peer Rust para evitar que un lado emita frames que el otro rechaza.
+
+Alcance T11c Android:
+
+- Agregar test RED para `SessionFrameCodec.encode` que rechace un `VideoChunk` cuyo frame completo exceda 1 MiB.
+- Mantener roundtrip de un frame que queda justo por debajo del límite.
+- Exponer error local claro en encode; sin transporte, sin USB real, sin LAN.
+- No cambiar el formato wire salvo agregar la validación de tamaño.
