@@ -252,6 +252,86 @@ fn session_frame_roundtrips_video_chunk_fragment_v1_kinds() {
 }
 
 #[test]
+fn session_frame_rejects_invalid_video_chunk_fragment_v1_values() {
+    for (field, payload) in [
+        (
+            "chunk index",
+            SessionFramePayload::video_chunk_fragment_v1_delta(-1, 0, 0, 1, 1, vec![0x41]),
+        ),
+        (
+            "presentationTimeUs",
+            SessionFramePayload::video_chunk_fragment_v1_delta(0, -1, 0, 1, 1, vec![0x41]),
+        ),
+        (
+            "fragment index",
+            SessionFramePayload::video_chunk_fragment_v1_delta(0, 0, -1, 1, 1, vec![0x41]),
+        ),
+    ] {
+        let frame = SessionFrame::new(1, "s", payload);
+        assert_eq!(
+            SessionFrameCodec::encode(&frame),
+            Err(SessionFrameEncodeError::InvalidPayload(format!(
+                "video chunk fragment v1 {field} must be non-negative"
+            )))
+        );
+    }
+
+    for (message, payload) in [
+        (
+            "video chunk fragment v1 fragment count must be positive",
+            SessionFramePayload::video_chunk_fragment_v1_delta(0, 0, 0, 0, 1, vec![0x41]),
+        ),
+        (
+            "video chunk fragment v1 fragment count must be <= 1024",
+            SessionFramePayload::video_chunk_fragment_v1_delta(0, 0, 0, 1025, 1, vec![0x41]),
+        ),
+        (
+            "video chunk fragment v1 fragment index must be less than fragment count",
+            SessionFramePayload::video_chunk_fragment_v1_delta(0, 0, 1, 1, 1, vec![0x41]),
+        ),
+        (
+            "video chunk fragment v1 total h264Bytes must be positive",
+            SessionFramePayload::video_chunk_fragment_v1_delta(0, 0, 0, 1, 0, vec![0x41]),
+        ),
+        (
+            "video chunk fragment v1 total h264Bytes must be <= 4194304",
+            SessionFramePayload::video_chunk_fragment_v1_delta(0, 0, 0, 1, 4_194_305, vec![0x41]),
+        ),
+        (
+            "video chunk fragment v1 fragment h264Bytes must not be empty",
+            SessionFramePayload::video_chunk_fragment_v1_delta(0, 0, 0, 1, 1, Vec::new()),
+        ),
+        (
+            "video chunk fragment v1 fragment h264Bytes must not exceed total h264Bytes",
+            SessionFramePayload::video_chunk_fragment_v1_delta(0, 0, 0, 1, 1, vec![0x41, 0x42]),
+        ),
+    ] {
+        let frame = SessionFrame::new(1, "s", payload);
+        assert_eq!(
+            SessionFrameCodec::encode(&frame),
+            Err(SessionFrameEncodeError::InvalidPayload(message.to_string()))
+        );
+    }
+
+    let unknown_kind = bytes()
+        .int(0)
+        .long(0)
+        .byte(99)
+        .int(0)
+        .int(1)
+        .int(1)
+        .short(1)
+        .byte(0x41)
+        .finish();
+    assert_eq!(
+        SessionFrameCodec::decode(&raw_frame(9, unknown_kind)),
+        Err(SessionFrameDecodeError::InvalidPayload(
+            "unknown video chunk fragment v1 kind: 99".to_string()
+        ))
+    );
+}
+
+#[test]
 fn session_frame_rejects_invalid_video_chunk_v2_values() {
     for (field, chunk_index, presentation_time_us) in
         [("chunk index", -1, 0), ("presentationTimeUs", 0, -1)]

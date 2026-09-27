@@ -49,3 +49,6 @@ Session id `s`, sequence `0`, Key, chunk `0`, PTS `0`, fragment `0/2`, total `70
 - `git diff --check`: passed with no output.
 - Diff budget: G1a core tracked code/test diff plus task doc totals 393 changed lines, within <=400.
 - Independent verification: `gentle-ai-verify` PASS; confirmed type 9 core codec, golden/roundtrip tests, type 5/type 8 preservation, no codec USB cap, and receiver helper arm only.
+- G1a commit: `4c1e5a9 feat(desktop): add video chunk fragment wire`.
+- G1b adds deferred invalidity/security tests for unknown kind, negative values, invalid fragment count/index, invalid total size, empty bytes, and fragment bytes longer than total. No source correction was needed because G1a already implemented the fail-closed validation.
+- G1b focused/full cargo, fmt, `git diff --check`, and independent `gentle-ai-verify` PASS. Diff budget: 82 additions across tests/doc, within <=400.
