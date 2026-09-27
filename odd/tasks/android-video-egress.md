@@ -60,5 +60,8 @@ Use TDD: RED focused tests for sink mapping/failure behavior and controller sink
 - Controller sink-close exceptions during stop/failure are contained so the active sink reference is cleared, visible state remains stopped/error, and later starts create a fresh sink.
 - Focused controller restart/failure/factory/metrics tests: PASS.
 - Full `:android:usb-probe:testDebugUnitTest --rerun-tasks`, `:android:usb-probe:assembleDebug`, `git diff --check`, and independent verify: PASS.
-- T15d2 commit id: `1a045fa244c626c0c9f491ac4e836179b6c137d9`.
+- Final T15d2 HEAD: `dfd47d8c28648469b0d41736da7c83a506526e73`.
+- Final T15d2 reviewed range: `60f9ca69d0050df6d7ecee16fda8a3c571c54b66..dfd47d8c28648469b0d41736da7c83a506526e73`.
+- Native review: approved under lineage `review-bab3e6cdfbd80dbb`; exact ACK recorded and authority burned.
+- Reviewer advisories: `R3-egress-metrics-not-persistent` at `VisibleCameraPipelineController.kt:131` and `R3-factory-failure-discards-stop-result` at `VisibleCameraPipelineController.kt:77`; informational for this reviewed slice and reserved for separate bounded hardening/metrics units.
 - T15d1 closure doc commit: `d1f77dd34e18a227053698b90ee9e9b51a665120`.
