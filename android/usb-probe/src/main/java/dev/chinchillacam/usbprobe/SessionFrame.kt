@@ -113,7 +113,7 @@ object SessionFrameCodec {
         val payloadBytes = PayloadWriter().apply { writePayload(frame.payload) }.toByteArray()
         require(sessionIdBytes.size <= UShort.MAX_VALUE.toInt()) { "session id is too long" }
 
-        return ByteArrayOutputStream().apply {
+        val encoded = ByteArrayOutputStream().apply {
             write(SESSION_FRAME_MAGIC)
             write(frame.version)
             write(frame.type.id)
@@ -123,6 +123,8 @@ object SessionFrameCodec {
             writeInt(payloadBytes.size)
             write(payloadBytes)
         }.toByteArray()
+        require(encoded.size <= DEFAULT_MAX_SESSION_FRAME_SIZE) { "session frame exceeds max frame size" }
+        return encoded
     }
 
     fun decode(bytes: ByteArray, maxFrameSize: Int = DEFAULT_MAX_SESSION_FRAME_SIZE): Result<SessionFrame> {

@@ -110,6 +110,47 @@ class SessionFrameTest {
     }
 
 
+
+    @Test
+    fun encodeRejectsFrameLargerThanDefaultDecodeLimit() {
+        val oversizedCapability = "x".repeat(60_000)
+        val frame = SessionFrame(
+            version = 1,
+            sequence = 10,
+            sessionId = "s",
+            payload = SessionPayload.HandshakeHello(
+                deviceId = "p",
+                appName = "a",
+                capabilities = List(18) { oversizedCapability },
+            ),
+        )
+
+        val error = runCatching { SessionFrameCodec.encode(frame) }.exceptionOrNull()
+
+        assertTrue(error is IllegalArgumentException)
+        assertEquals("session frame exceeds max frame size", error?.message)
+    }
+
+    @Test
+    fun encodeAllowsFrameWithinDefaultDecodeLimit() {
+        val largeCapability = "x".repeat(60_000)
+        val frame = SessionFrame(
+            version = 1,
+            sequence = 11,
+            sessionId = "s",
+            payload = SessionPayload.HandshakeHello(
+                deviceId = "p",
+                appName = "a",
+                capabilities = List(17) { largeCapability },
+            ),
+        )
+
+        val encoded = SessionFrameCodec.encode(frame)
+
+        assertTrue(encoded.size <= 1024 * 1024)
+        assertFrameEquals(frame, SessionFrameCodec.decode(encoded).getOrThrow())
+    }
+
     @Test
     fun rejectsMalformedUtf8WithoutReplacement() {
         val bytes = byteArrayOf(
