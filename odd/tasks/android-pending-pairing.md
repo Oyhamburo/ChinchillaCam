@@ -84,3 +84,37 @@ Build the pure Android state model for future desktop pairing without Activity, 
 - `:android:usb-probe:lintDebug` se intentó por separado y falló por problemas preexistentes no relacionados (primero: `CameraCapabilityCatalog.kt` `Map.putIfAbsent`, API 24 con minSdk 23); no se identificó hallazgo lint del coordinador M3b1.
 - Verificador independiente API 23 follow-up: PASS.
 - Pendiente planificado: después de M3b2, hacer un corte docs-only <=400 para traducir este task file completo al español sin tocar código.
+
+## M3b2 — confirmación explícita, guardado de confianza y activación
+
+### Superficies permitidas
+
+- `android/usb-probe/src/main/java/dev/chinchillacam/usbprobe/PendingPairingCoordinator.kt`
+- `android/usb-probe/src/test/java/dev/chinchillacam/usbprobe/PendingPairingCoordinatorTest.kt`
+- `odd/tasks/android-pending-pairing.md`
+
+### Requisitos
+
+- Confirmar explícitamente un pending antes de guardar confianza o activar desktop.
+- Sin confirmación no hay `TrustedDesktopStore.save` ni `ActiveDesktopAuthority.requestActivation`.
+- `pendingId` incorrecto no produce efectos laterales.
+- Pending expirado al confirmar devuelve expirado tipado, limpia pending y no guarda/activa.
+- Precheck del store: rechazar record revocado y mismo `desktopId` con fingerprint distinto sin sobrescribir.
+- Si `save` falla, no activar.
+- Confirm válido: guardar primero y luego solicitar activación.
+- Si ya hay otro desktop activo, devolver `TrustedButInactive`; no auto-handoff ni claim de activación.
+- Rutas terminales limpian pending y retienen el nonce QR hasta su expiración.
+- `state()` no debe exponer pending accionable ya expirado.
+
+### No objetivos
+
+- No Activity, implementación TLS, LAN, auth real, source de compatibilidad API23 ni native review.
+
+## Evidencia M3b2
+
+- RED: las pruebas de confirmación fallaron al compilar antes de `confirm`, `pendingId` y `PendingPairingConfirmResult`.
+- GREEN focused tests: sin confirmación no guarda/activa; `pendingId` incorrecto no tiene efectos; expirado no guarda/activa y `state()` no expone pending accionable; store revocado o fingerprint distinto rechaza sin overwrite; fallo de save no activa; confirm válido guarda y activa; segundo desktop queda `TrustedButInactive` sin auto-handoff; cancel retiene nonce — PASS.
+- Full `:android:usb-probe:testDebugUnitTest --rerun-tasks` — PASS.
+- `:android:usb-probe:assembleDebug` — PASS.
+- `git diff --check` — PASS.
+- Independent verifier: PASS.

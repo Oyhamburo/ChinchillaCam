@@ -48,6 +48,7 @@ sealed class PairingProofVerificationResult {
 }
 
 class PendingPairingSummary(
+    val pendingId: String,
     val desktopId: String,
     val desktopName: String,
     val trustMaterialFingerprint: PairingTrustFingerprint,
@@ -87,6 +88,20 @@ sealed class PendingPairingCancelResult {
     object NoPendingPairing : PendingPairingCancelResult()
 }
 
+sealed class PendingPairingConfirmResult {
+    data class Activated(val desktopId: String) : PendingPairingConfirmResult()
+    data class TrustedButInactive(val desktopId: String, val activeDesktopId: String) : PendingPairingConfirmResult()
+
+    sealed class Rejected : PendingPairingConfirmResult() {
+        object NoPendingPairing : Rejected()
+        object PendingIdMismatch : Rejected()
+        object Expired : Rejected()
+        data class ExistingTrustRejected(val reason: TrustedDesktopAuthResult) : Rejected()
+        data class SaveFailed(val reason: String) : Rejected()
+        data class ActivationRejected(val reason: TrustedDesktopAuthResult) : Rejected()
+    }
+}
+
 class PendingPairingCoordinator(
     private val epochSecondsSource: EpochSecondsSource,
     private val challengeNonceSource: ChallengeNonceSource,
@@ -101,7 +116,10 @@ class PendingPairingCoordinator(
     }
 
     @Synchronized
-    fun state(): PendingPairingState = pending?.let { PendingPairingState.PendingConfirmation(it) } ?: PendingPairingState.Idle
+    fun state(): PendingPairingState {
+        clearExpiredPending(epochSecondsSource.nowEpochSeconds())
+        return pending?.let { PendingPairingState.PendingConfirmation(it) } ?: PendingPairingState.Idle
+    }
 
     @Synchronized
     fun start(qrPayload: PairingQrPayload, proofBytes: ByteArray): PendingPairingStartResult {
@@ -145,7 +163,16 @@ class PendingPairingCoordinator(
         bindingMismatch(qrPayload, fingerprint, qrNonce, challengeMaterial, verified)?.let { return it }
 
         val expiresAt = minOf(qrPayload.expiresAtEpochSeconds, challengeMaterial.expiresAtEpochSeconds, verified.expiresAtEpochSeconds)
-        val summary = PendingPairingSummary(qrPayload.desktopId, qrPayload.desktopName, fingerprint, qrNonce, challengeMaterial.challengeNonce, challengeMaterial.sessionId, expiresAt)
+        val summary = PendingPairingSummary(
+            pendingId = pendingId(qrPayload.desktopId, challengeMaterial.sessionId, qrNonce),
+            desktopId = qrPayload.desktopId,
+            desktopName = qrPayload.desktopName,
+            trustMaterialFingerprint = fingerprint,
+            qrNonce = qrNonce,
+            challengeNonce = challengeMaterial.challengeNonce,
+            sessionId = challengeMaterial.sessionId,
+            expiresAtEpochSeconds = expiresAt,
+        )
         pending = summary
         return PendingPairingStartResult.PendingConfirmation(summary)
     }
@@ -155,6 +182,59 @@ class PendingPairingCoordinator(
         if (pending == null) return PendingPairingCancelResult.NoPendingPairing
         pending = null
         return PendingPairingCancelResult.Cancelled
+    }
+
+    @Synchronized
+    fun confirm(
+        pendingId: String,
+        trustedDesktopStore: TrustedDesktopStore,
+        activeDesktopAuthority: ActiveDesktopAuthority,
+    ): PendingPairingConfirmResult {
+        val now = epochSecondsSource.nowEpochSeconds()
+        val current = pending ?: return PendingPairingConfirmResult.Rejected.NoPendingPairing
+        if (current.pendingId != pendingId) return PendingPairingConfirmResult.Rejected.PendingIdMismatch
+        if (current.expiresAtEpochSeconds <= now) {
+            pending = null
+            return PendingPairingConfirmResult.Rejected.Expired
+        }
+        val fingerprintBytes = current.trustMaterialFingerprint.bytes
+        val existing = trustedDesktopStore.lookup(current.desktopId)
+        if (existing?.revokedAtEpochSeconds != null) {
+            pending = null
+            return PendingPairingConfirmResult.Rejected.ExistingTrustRejected(TrustedDesktopAuthResult.Revoked)
+        }
+        if (existing != null && !existing.trustMaterialFingerprint.contentEquals(fingerprintBytes)) {
+            pending = null
+            return PendingPairingConfirmResult.Rejected.ExistingTrustRejected(TrustedDesktopAuthResult.FingerprintMismatch)
+        }
+        val record = TrustedDesktopRecord(
+            desktopId = current.desktopId,
+            desktopName = current.desktopName,
+            trustMaterialFingerprint = fingerprintBytes,
+            createdAtEpochSeconds = now,
+            lastSeenAtEpochSeconds = now,
+            expiresAtEpochSeconds = current.expiresAtEpochSeconds,
+        )
+        try {
+            trustedDesktopStore.save(record)
+        } catch (error: RuntimeException) {
+            pending = null
+            return PendingPairingConfirmResult.Rejected.SaveFailed(error.message ?: error::class.java.simpleName)
+        }
+        pending = null
+        return when (val activation = activeDesktopAuthority.requestActivation(current.desktopId, fingerprintBytes, now, trustedDesktopStore)) {
+            is ActiveDesktopAuthority.ActivationResult.Activated -> PendingPairingConfirmResult.Activated(activation.desktopId)
+            is ActiveDesktopAuthority.ActivationResult.KeptActive -> PendingPairingConfirmResult.Activated(activation.desktopId)
+            is ActiveDesktopAuthority.ActivationResult.Rejected.SecondActiveDesktop -> PendingPairingConfirmResult.TrustedButInactive(
+                desktopId = activation.requestedDesktopId,
+                activeDesktopId = activation.activeDesktopId,
+            )
+            is ActiveDesktopAuthority.ActivationResult.Rejected.TrustRejected -> PendingPairingConfirmResult.Rejected.ActivationRejected(activation.reason)
+        }
+    }
+
+    private fun clearExpiredPending(now: Long) {
+        if (pending?.expiresAtEpochSeconds?.let { it <= now } == true) pending = null
     }
 
     private fun validateQrPayload(qrPayload: PairingQrPayload): PendingPairingStartResult.Rejected.InvalidQr? = when {
@@ -182,6 +262,8 @@ class PendingPairingCoordinator(
     private fun pruneExpiredNonces(now: Long) {
         liveNonceExpiries.entries.removeAll { it.value <= now }
     }
+
+    private fun pendingId(desktopId: String, sessionId: String, nonce: ByteArray): String = "$desktopId:$sessionId:${nonce.contentHashCode()}"
 
     private fun nonceKey(nonce: ByteArray): NonceKey = NonceKey(nonce)
 }

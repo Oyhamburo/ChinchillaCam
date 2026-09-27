@@ -163,6 +163,107 @@ class PendingPairingCoordinatorTest {
         assertEquals(PendingPairingStartResult.Rejected.NonceReplay, coordinator.start(qr(nonce = byteArrayOf(0x31), expiresAt = 150), byteArrayOf(1)))
     }
 
+
+    @Test
+    fun noConfirmOrPendingIdMismatchDoesNotSaveOrActivate() {
+        val coordinator = coordinator()
+        val pending = coordinator.start(qr(), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+        val store = RecordingTrustedDesktopStore()
+        val authority = ActiveDesktopAuthority()
+
+        assertEquals(emptyList<TrustedDesktopRecord>(), store.saved)
+        assertEquals(PendingPairingConfirmResult.Rejected.PendingIdMismatch, coordinator.confirm("wrong", store, authority))
+
+        assertEquals(emptyList<TrustedDesktopRecord>(), store.saved)
+        assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
+        assertTrue(coordinator.state() is PendingPairingState.PendingConfirmation)
+        assertEquals(PendingPairingCancelResult.Cancelled, coordinator.cancel())
+        assertEquals(PendingPairingStartResult.Rejected.NonceReplay, coordinator.start(qr(), byteArrayOf(1)))
+        assertTrue(pending.summary.pendingId.isNotBlank())
+    }
+
+    @Test
+    fun expiredConfirmClearsPendingWithoutTrustOrActivation() {
+        val clock = MutableEpochSecondsSource(100)
+        val coordinator = PendingPairingCoordinator(clock, QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(0x10), "session-1", 120)), RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(expiresAtEpochSeconds = 115) })
+        val pending = coordinator.start(qr(expiresAt = 130), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+        val store = RecordingTrustedDesktopStore()
+        val authority = ActiveDesktopAuthority()
+
+        clock.now = 116
+        assertEquals(PendingPairingConfirmResult.Rejected.Expired, coordinator.confirm(pending.summary.pendingId, store, authority))
+
+        assertEquals(emptyList<TrustedDesktopRecord>(), store.saved)
+        assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
+        assertEquals(PendingPairingState.Idle, coordinator.state())
+        clock.now = 117
+        assertEquals(PendingPairingStartResult.Rejected.NonceReplay, coordinator.start(qr(expiresAt = 130), byteArrayOf(1)))
+    }
+
+    @Test
+    fun confirmRejectsRevokedOrDifferentFingerprintWithoutOverwrite() {
+        val revokedStore = RecordingTrustedDesktopStore(existing = trustedRecord(revokedAt = 110))
+        val revokedCoordinator = coordinator()
+        val pending = revokedCoordinator.start(qr(), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+        assertEquals(PendingPairingConfirmResult.Rejected.ExistingTrustRejected(TrustedDesktopAuthResult.Revoked), revokedCoordinator.confirm(pending.summary.pendingId, revokedStore, ActiveDesktopAuthority()))
+        assertEquals(emptyList<TrustedDesktopRecord>(), revokedStore.saved)
+
+        val mismatchStore = RecordingTrustedDesktopStore(existing = trustedRecord(fingerprint = byteArrayOf(0x7f)))
+        val mismatchCoordinator = coordinator()
+        val mismatchPending = mismatchCoordinator.start(qr(), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+        assertEquals(PendingPairingConfirmResult.Rejected.ExistingTrustRejected(TrustedDesktopAuthResult.FingerprintMismatch), mismatchCoordinator.confirm(mismatchPending.summary.pendingId, mismatchStore, ActiveDesktopAuthority()))
+        assertEquals(emptyList<TrustedDesktopRecord>(), mismatchStore.saved)
+    }
+
+
+    @Test
+    fun stateDoesNotExposeExpiredPendingAsActionable() {
+        val clock = MutableEpochSecondsSource(100)
+        val coordinator = PendingPairingCoordinator(
+            epochSecondsSource = clock,
+            challengeNonceSource = QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(0x10), "session-1", 120)),
+            proofVerifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(expiresAtEpochSeconds = 115) },
+        )
+        assertTrue(coordinator.start(qr(expiresAt = 130), byteArrayOf(1)) is PendingPairingStartResult.PendingConfirmation)
+
+        clock.now = 116
+
+        assertEquals(PendingPairingState.Idle, coordinator.state())
+    }
+
+    @Test
+    fun saveFailurePreventsActivation() {
+        val coordinator = coordinator()
+        val pending = coordinator.start(qr(), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+        val store = RecordingTrustedDesktopStore(saveFailure = IllegalStateException("disk full"))
+        val authority = ActiveDesktopAuthority()
+
+        assertEquals(PendingPairingConfirmResult.Rejected.SaveFailed("disk full"), coordinator.confirm(pending.summary.pendingId, store, authority))
+
+        assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
+        assertEquals(1, store.saveAttempts)
+    }
+
+    @Test
+    fun validConfirmSavesThenActivatesOrReturnsTrustedButInactiveForSecondDesktop() {
+        val store = RecordingTrustedDesktopStore()
+        val authority = ActiveDesktopAuthority()
+        val first = coordinator()
+        val firstPending = first.start(qr(), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+
+        assertEquals(PendingPairingConfirmResult.Activated("pc-1"), first.confirm(firstPending.summary.pendingId, store, authority))
+        assertEquals(listOf("pc-1"), store.saved.map { it.desktopId })
+        assertEquals(ActiveDesktopAuthority.State.ActiveDesktop("pc-1"), authority.state)
+        assertEquals(PendingPairingState.Idle, first.state())
+
+        val second = coordinator(verifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(desktopId = "pc-2") })
+        val secondQr = qr(nonce = byteArrayOf(0x22)).copy(desktopId = "pc-2", desktopName = "Second")
+        val secondPending = second.start(secondQr, byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+        assertEquals(PendingPairingConfirmResult.TrustedButInactive("pc-2", "pc-1"), second.confirm(secondPending.summary.pendingId, store, authority))
+        assertEquals(ActiveDesktopAuthority.State.ActiveDesktop("pc-1"), authority.state)
+        assertEquals(listOf("pc-1", "pc-2"), store.saved.map { it.desktopId })
+    }
+
     private fun coordinator(
         verifier: PairingProofVerifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge) },
         challenges: ChallengeNonceSource = QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(0x10), "session-1", expiresAtEpochSeconds = 200)),
@@ -182,6 +283,51 @@ class PendingPairingCoordinatorTest {
         expiresAtEpochSeconds = expiresAt,
         nonce = nonce,
     )
+
+
+    private fun trustedRecord(
+        desktopId: String = "pc-1",
+        fingerprint: ByteArray = PairingTrustFingerprint.fromTrustMaterial(byteArrayOf(0x05, 0x06)).bytes,
+        revokedAt: Long? = null,
+    ) = TrustedDesktopRecord(
+        desktopId = desktopId,
+        desktopName = "Stored",
+        trustMaterialFingerprint = fingerprint,
+        createdAtEpochSeconds = 90,
+        lastSeenAtEpochSeconds = 90,
+        revokedAtEpochSeconds = revokedAt,
+    )
+
+    private class RecordingTrustedDesktopStore(
+        private val existing: TrustedDesktopRecord? = null,
+        private val saveFailure: RuntimeException? = null,
+    ) : TrustedDesktopStore {
+        val saved = mutableListOf<TrustedDesktopRecord>()
+        var saveAttempts = 0
+        private val records = linkedMapOf<String, TrustedDesktopRecord>()
+
+        init { existing?.let { records[it.desktopId] = it } }
+
+        override fun save(record: TrustedDesktopRecord) {
+            saveAttempts += 1
+            saveFailure?.let { throw it }
+            saved += record
+            records[record.desktopId] = record
+        }
+
+        override fun lookup(desktopId: String): TrustedDesktopRecord? = records[desktopId]
+        override fun list(): List<TrustedDesktopRecord> = records.values.toList()
+        override fun revoke(desktopId: String, revokedAtEpochSeconds: Long): Boolean = false
+        override fun forget(desktopId: String): Boolean = records.remove(desktopId) != null
+        override fun evaluate(desktopId: String, presentedTrustMaterialFingerprint: ByteArray, nowEpochSeconds: Long): TrustedDesktopAuthResult {
+            val record = records[desktopId] ?: return TrustedDesktopAuthResult.Unknown
+            return when {
+                record.revokedAtEpochSeconds != null -> TrustedDesktopAuthResult.Revoked
+                !record.trustMaterialFingerprint.contentEquals(presentedTrustMaterialFingerprint) -> TrustedDesktopAuthResult.FingerprintMismatch
+                else -> TrustedDesktopAuthResult.Trusted
+            }
+        }
+    }
 
     private class RecordingVerifier(
         private val response: (PairingProofChallenge, ByteArray) -> PairingProofVerificationResult,
