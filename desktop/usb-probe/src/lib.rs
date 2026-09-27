@@ -5,8 +5,8 @@ mod trusted_phone_store;
 mod video_fragment_reassembler;
 
 pub use desktop_receiver::{
-    receive_desktop_video_frame, DesktopReceiverError, StaticFrameKindClassifier,
-    VideoFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
+    receive_desktop_video_frame, DesktopReceiverError, DesktopVideoSessionReceiver,
+    StaticFrameKindClassifier, VideoFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
 };
 pub use encoded_video_sink::{
     BoundedEncodedVideoQueue, EncodedVideoChunk, EncodedVideoChunkLimits, EncodedVideoFrameKind,
