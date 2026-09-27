@@ -164,6 +164,35 @@ class PendingPairingCoordinatorTest {
     }
 
 
+
+    @Test
+    fun confirmedTrustOutlivesEphemeralProofExpiryUntilExplicitRevocation() {
+        val clock = MutableEpochSecondsSource(100)
+        val store = RecordingTrustedDesktopStore()
+        val authority = ActiveDesktopAuthority()
+        val coordinator = PendingPairingCoordinator(
+            epochSecondsSource = clock,
+            challengeNonceSource = QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(0x10), "session-1", 120)),
+            proofVerifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(expiresAtEpochSeconds = 115) },
+        )
+        val pending = coordinator.start(qr(expiresAt = 130), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+
+        assertEquals(PendingPairingConfirmResult.Activated("pc-1"), coordinator.confirm(pending.summary.pendingId, store, authority))
+        clock.now = 200
+
+        assertEquals(TrustedDesktopAuthResult.Trusted, store.evaluate("pc-1", PairingTrustFingerprint.fromTrustMaterial(byteArrayOf(0x05, 0x06)).bytes, nowEpochSeconds = 200))
+        assertEquals(null, store.lookup("pc-1")?.expiresAtEpochSeconds)
+    }
+
+    @Test
+    fun invalidDesktopIdIsTypedInvalidQrBeforeStoreLookupCanThrow() {
+        val coordinator = coordinator()
+
+        val result = coordinator.start(qr().copy(desktopId = "bad id"), byteArrayOf(1))
+
+        assertEquals(PendingPairingStartResult.Rejected.InvalidQr("desktopId"), result)
+    }
+
     @Test
     fun noConfirmOrPendingIdMismatchDoesNotSaveOrActivate() {
         val coordinator = coordinator()

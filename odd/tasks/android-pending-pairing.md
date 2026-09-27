@@ -118,3 +118,22 @@ Build the pure Android state model for future desktop pairing without Activity, 
 - `:android:usb-probe:assembleDebug` — PASS.
 - `git diff --check` — PASS.
 - Independent verifier: PASS.
+
+## M3b3 — duración de confianza separada del handshake
+
+### Requisitos
+
+- La expiración efímera de QR/challenge/proof sólo limita la confirmación pendiente.
+- Un confirm válido guarda `TrustedDesktopRecord.expiresAtEpochSeconds = null`; la confianza queda vigente hasta revoke/forget explícito y futuras sesiones deberán reautenticarse por el transporte TLS estándar futuro.
+- Confirmar después del TTL efímero sigue devolviendo `Expired` y no guarda/activa.
+- Entradas directas con `desktopId` inválido deben fallar tipadas antes de `lookup`/`save`; no deben crashear por validaciones del store.
+- Sin Activity, LAN, implementación TLS, auth real ni native review.
+
+## Evidencia M3b3
+
+- RED: la prueba de confianza post-confirmación falló porque el record heredaba la expiración efímera del proof/QR; la prueba de `desktopId` directo inválido falló porque no se validaba el patrón antes de usar stores.
+- GREEN focused tests: confirm válido guarda confianza sin expiración persistente (`expiresAtEpochSeconds = null`) y `store.evaluate` sigue `Trusted` después del TTL efímero mientras no haya revoke/forget; confirm después del TTL sigue `Expired`; `desktopId` directo inválido devuelve `InvalidQr("desktopId")` — PASS.
+- Full `:android:usb-probe:testDebugUnitTest --rerun-tasks` — PASS.
+- `:android:usb-probe:assembleDebug` — PASS.
+- `git diff --check` — PASS.
+- Independent verifier: PASS.

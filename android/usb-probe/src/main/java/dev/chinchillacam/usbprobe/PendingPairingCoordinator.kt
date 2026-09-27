@@ -213,7 +213,7 @@ class PendingPairingCoordinator(
             trustMaterialFingerprint = fingerprintBytes,
             createdAtEpochSeconds = now,
             lastSeenAtEpochSeconds = now,
-            expiresAtEpochSeconds = current.expiresAtEpochSeconds,
+            expiresAtEpochSeconds = null,
         )
         try {
             trustedDesktopStore.save(record)
@@ -239,6 +239,7 @@ class PendingPairingCoordinator(
 
     private fun validateQrPayload(qrPayload: PairingQrPayload): PendingPairingStartResult.Rejected.InvalidQr? = when {
         qrPayload.desktopId.isEmpty() -> PendingPairingStartResult.Rejected.InvalidQr("desktopId")
+        !DESKTOP_ID_PATTERN.matches(qrPayload.desktopId) -> PendingPairingStartResult.Rejected.InvalidQr("desktopId")
         qrPayload.nonce.isEmpty() -> PendingPairingStartResult.Rejected.InvalidQr("nonce")
         qrPayload.trustMaterial.isEmpty() -> PendingPairingStartResult.Rejected.InvalidQr("trustMaterial")
         else -> null
@@ -267,6 +268,8 @@ class PendingPairingCoordinator(
 
     private fun nonceKey(nonce: ByteArray): NonceKey = NonceKey(nonce)
 }
+
+private val DESKTOP_ID_PATTERN = Regex("[A-Za-z0-9._-]+")
 
 private class NonceKey(nonce: ByteArray) {
     private val bytes = nonce.copyOf()
