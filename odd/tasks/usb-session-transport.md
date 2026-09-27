@@ -52,3 +52,10 @@ Alcance T15a:
 - Lineage: `review-0466538640e95493`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgo advisory no bloqueante: `R3-accessory-truncation-classification` en `UsbSessionFrameTransport.kt:81-86`. No abrió corrección para T15a.
+
+### Revisión nativa RDD T15b
+
+- Candidato: `36e2b01` contra base `efb7f40`.
+- Lineage: `review-711b35babdedff6e`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes: `R3-clean-close-unproved` en `odd/tasks/usb-session-transport.md:21` y `R3-oversize-desynchronizes-session` en `UsbSessionFrameIoAdapter.kt:79-83`. No abrieron corrección para T15b.
