@@ -19,7 +19,7 @@ Modelar transporte USB lógico sobre AOA bulk usando fakes y el framing ya exist
 
 - [x] T15a: seam puro `UsbSessionFrameTransport` con fake in-memory. Enviar/recibir `SessionFrame` serializado dentro de `AccessoryFrame`, stream id dedicado, límites de payload y errores tipados; sin `UsbManager`, sin hardware. Validado con `:android:usb-probe:testDebugUnitTest` y `:android:usb-probe:assembleDebug`.
 - [x] T15b: adapter sobre `AccessoryIoSession` testeado con streams fake; lectura de frame completo, short header, short payload, oversize, EOF y stream id incorrecto. Validado con `:android:usb-probe:testDebugUnitTest`, `:android:usb-probe:assembleDebug` y `git diff --check`.
-- [ ] T15c: backpressure/timeouts fake para stream sostenido; no prueba física.
+- [x] T15c: backpressure/timeouts fake para stream sostenido; no prueba física. Implementado en fake JVM puro con cola saliente acotada, timeouts explícitos sin sleeps, FIFO y poison fail-closed ante datos parciales/ambiguos.
 
 
 ## Diseño T15b — adapter sobre `AccessoryIoSession`
@@ -107,6 +107,14 @@ Alcance propuesto:
 - Tests RED/GREEN esperados: cola llena rechaza/es backpressure sin perder orden; read timeout sin bytes no consume; timeout/truncation después de header o payload parcial cierra; después de close no se aceptan writes; frame válido conserva orden FIFO.
 
 Gate antes de review nativa: reportar `READY T15c` al coordinador con worktree, rango `base..HEAD` y líneas diff, y esperar `GRANT T15c` explícito.
+
+### Evidencia T15c — fake sustained transport
+
+- Se agregó `UsbSessionFrameSustainedFakeTransport` como fake JVM puro; no usa `UsbManager`, hardware, desktop, cámara ni LAN/Wi-Fi.
+- Escritura: serializa `SessionFrame` con `SessionFrameCodec`, lo envuelve como payload opaco en `AccessoryFrame`, encola bytes FIFO hasta `outgoingCapacityFrames` y devuelve `Backpressure` tipado sin descartar frames existentes.
+- Lectura: `read()` explícito devuelve `Timeout(sessionClosed = false)` cuando no hay bytes, decodifica frames completos FIFO, y cierra/poison ante header parcial, payload parcial u oversize declarado antes de intentar consumir payload.
+- Después de `close`/poison, `write` y `read` devuelven `Closed` tipado.
+- Validación local intentada: los comandos Gradle requeridos no están disponibles en este worktree porque no existe `./gradlew` y `gradle` no está instalado en PATH; `git diff --check` queda como evidencia ejecutable local.
 
 ### Revisión nativa RDD T11d
 
