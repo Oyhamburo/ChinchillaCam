@@ -4,6 +4,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.AbstractList
 
 class SessionFrameTest {
     @Test
@@ -122,6 +123,35 @@ class SessionFrameTest {
                 deviceId = "p",
                 appName = "a",
                 capabilities = List(18) { oversizedCapability },
+            ),
+        )
+
+        val error = runCatching { SessionFrameCodec.encode(frame) }.exceptionOrNull()
+
+        assertTrue(error is IllegalArgumentException)
+        assertEquals("session frame exceeds max frame size", error?.message)
+    }
+
+
+    @Test
+    fun encodeRejectsOversizedAggregateBeforeReadingPastLimit() {
+        val oversizedCapability = "x".repeat(60_000)
+        val capabilities = object : AbstractList<String>() {
+            override val size: Int = UShort.MAX_VALUE.toInt()
+
+            override fun get(index: Int): String {
+                if (index >= 18) error("encoder read past the preflight rejection point")
+                return oversizedCapability
+            }
+        }
+        val frame = SessionFrame(
+            version = 1,
+            sequence = 12,
+            sessionId = "s",
+            payload = SessionPayload.HandshakeHello(
+                deviceId = "p",
+                appName = "a",
+                capabilities = capabilities,
             ),
         )
 

@@ -89,3 +89,7 @@ Alcance T11c Android:
 - Lineage: `review-b7dd0ce3fc2fcf12`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgo advisory no bloqueante: `R3-post-allocation-size-check` en `SessionFrame.kt:126`. No abrió corrección para T11c; queda como hardening si se necesita evitar asignación grande antes de sustained streaming.
+
+### T11d hardening: preflight de tamaño al codificar
+
+Al evaluar `R3-post-allocation-size-check`, el codec Android ya limita cada campo binario/texto a `u16` y el frame completo a 1 MiB, pero antes de T11d calculaba ese límite después de construir el payload y el buffer de salida. T11d agrega un preflight puro de tamaño que suma header, `sessionId` y payload antes de construir `PayloadWriter`/frame final. El preflight se detiene en cuanto el acumulado excede 1 MiB, por lo que una lista adversarial de capabilities no necesita recorrerse ni materializarse completa para rechazar el frame. No cambia el formato de cable; solo adelanta la validación local.

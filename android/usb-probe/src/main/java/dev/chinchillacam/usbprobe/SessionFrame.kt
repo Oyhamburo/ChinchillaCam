@@ -110,8 +110,11 @@ object SessionFrameCodec {
         require(frame.sessionId.isNotEmpty()) { "session id must not be empty" }
 
         val sessionIdBytes = frame.sessionId.encodeUtf8Field("sessionId")
-        val payloadBytes = PayloadWriter().apply { writePayload(frame.payload) }.toByteArray()
         require(sessionIdBytes.size <= UShort.MAX_VALUE.toInt()) { "session id is too long" }
+        val framePrefixSize = HEADER_WITHOUT_SESSION_BYTES + sessionIdBytes.size
+        val payloadSize = PayloadSizer(maxPayloadBytes = DEFAULT_MAX_SESSION_FRAME_SIZE - framePrefixSize).measurePayload(frame.payload)
+        require(framePrefixSize + payloadSize <= DEFAULT_MAX_SESSION_FRAME_SIZE) { "session frame exceeds max frame size" }
+        val payloadBytes = PayloadWriter().apply { writePayload(frame.payload) }.toByteArray()
 
         val encoded = ByteArrayOutputStream().apply {
             write(SESSION_FRAME_MAGIC)
@@ -176,6 +179,81 @@ object SessionFrameCodec {
         } catch (error: IllegalArgumentException) {
             Result.failure(SessionFrameDecodeError.InvalidPayload(error.message ?: "invalid value"))
         }
+    }
+}
+
+
+private class PayloadSizer(private val maxPayloadBytes: Int) {
+    private var size = 0
+
+    fun measurePayload(payload: SessionPayload): Int {
+        when (payload) {
+            is SessionPayload.HandshakeHello -> {
+                addString(payload.deviceId)
+                addString(payload.appName)
+                require(payload.capabilities.size <= UShort.MAX_VALUE.toInt()) { "capability count is too large" }
+                addBytes(2)
+                payload.capabilities.forEach(::addString)
+            }
+            is SessionPayload.HandshakeAccept -> {
+                addString(payload.desktopId)
+                addString(payload.message)
+            }
+            is SessionPayload.HandshakeReject -> {
+                addString(payload.reasonCode)
+                addString(payload.message)
+            }
+            is SessionPayload.StreamMetadata -> {
+                require(payload.width > 0) { "stream width must be positive" }
+                require(payload.height > 0) { "stream height must be positive" }
+                require(payload.frameRate > 0) { "stream frame rate must be positive" }
+                addString(payload.mimeType)
+                addBytes(4)
+                addBytes(4)
+                addBytes(4)
+                addString(payload.profile)
+            }
+            is SessionPayload.VideoChunk -> {
+                require(payload.chunkIndex >= 0) { "chunk index must be non-negative" }
+                addBytes(4)
+                addBytes(8)
+                addBytesWithLength(payload.h264Bytes.size)
+            }
+            is SessionPayload.MetricsSnapshot -> {
+                require(payload.capturedAtUs >= 0) { "metrics timestamp must be non-negative" }
+                require(payload.droppedFrames >= 0) { "dropped frames must be non-negative" }
+                require(payload.latencyMs >= 0) { "latency must be non-negative" }
+                require(payload.frameRate >= 0) { "frame rate must be non-negative" }
+                addBytes(8)
+                addBytes(4)
+                addBytes(4)
+                addBytes(4)
+            }
+            is SessionPayload.CameraControlCommand -> {
+                addString(payload.command)
+                val sortedArguments = payload.arguments.toSortedMap()
+                require(sortedArguments.size <= UShort.MAX_VALUE.toInt()) { "argument count is too large" }
+                addBytes(2)
+                sortedArguments.forEach { (key, value) ->
+                    addString(key)
+                    addString(value)
+                }
+            }
+        }
+        return size
+    }
+
+    private fun addString(value: String) = addBytesWithLength(value.encodeUtf8Field("string").size)
+
+    private fun addBytesWithLength(byteCount: Int) {
+        require(byteCount <= UShort.MAX_VALUE.toInt()) { "field is too large" }
+        addBytes(2)
+        addBytes(byteCount)
+    }
+
+    private fun addBytes(byteCount: Int) {
+        size += byteCount
+        require(size <= maxPayloadBytes) { "session frame exceeds max frame size" }
     }
 }
 
