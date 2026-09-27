@@ -82,3 +82,10 @@ Alcance T11c Android:
 - Lineage: `review-53af7ca505d640da`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgos advisory no bloqueantes: `R3-close-failure-bypasses-result` en `UsbSessionFrameIoAdapter.kt:80` y `R3-payload-nonconsumption-unproved` en `UsbSessionFrameIoAdapterTest.kt:90`. No abrieron corrección para este candidato.
+
+### Revisión nativa RDD T11c
+
+- Candidato: `fbb1068` contra base `2404aae` en worktree temporal detached `/Users/jele/Desktop/codes/ChinchillaCam-t11c-encode-cap-review`.
+- Lineage: `review-b7dd0ce3fc2fcf12`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgo advisory no bloqueante: `R3-post-allocation-size-check` en `SessionFrame.kt:126`. No abrió corrección para T11c; queda como hardening si se necesita evitar asignación grande antes de sustained streaming.
