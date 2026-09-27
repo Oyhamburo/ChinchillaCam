@@ -52,3 +52,50 @@ Fixture compartida para Android/desktop:
 - `:android:usb-probe:lintDebug` — PASS.
 - `git diff --check` — PASS.
 - Independent verifier — PASS.
+
+## T21b0b2 — captura real de CSD desde MediaFormat
+
+### Alcance permitido
+
+- `android/usb-probe/src/main/java/dev/chinchillacam/usbprobe/H264EncoderBoundary.kt`
+- `android/usb-probe/src/test/java/dev/chinchillacam/usbprobe/H264EncoderBoundaryTest.kt`
+- `odd/tasks/android-h264-csd.md`
+
+### Objetivo
+
+Extraer `csd-0` y `csd-1` desde `MediaFormat` en `INFO_OUTPUT_FORMAT_CHANGED`, validar que son CSD AVC con start codes ya presentes, pasarlos por el seam de T21b0b1 y suprimir el buffer `BUFFER_FLAG_CODEC_CONFIG` duplicado cuando sea byte a byte idéntico.
+
+### Reglas
+
+- Copiar sólo `position..limit` de cada `ByteBuffer`; no mutar buffers originales.
+- No agregar start codes: cada parameter set debe traer `00 00 00 01`.
+- Aceptar sólo SPS tipo NAL 7 en `csd-0` y PPS tipo NAL 8 en `csd-1`.
+- Rechazar CSD faltante, vacío, sin start code, con tipo NAL incorrecto o cada parte mayor que 128 KiB + start code o combinado mayor a 256 KiB.
+- Si el formato vendor no cumple estas reglas, no se emite configuración falsa.
+- Suprimir sólo un buffer directo `BUFFER_FLAG_CODEC_CONFIG` idéntico al último CSD emitido por `FormatChanged`; buffers distintos y keyframes nunca se suprimen.
+
+### Evidencia RED prevista
+
+- `extractAvcCsd(csd0, csd1)` debe copiar defensivamente `position..limit` y concatenar bytes exactos.
+- CSD faltante o malformado debe devolver `null`.
+- Un buffer `BUFFER_FLAG_CODEC_CONFIG` idéntico al CSD de `FormatChanged` debe liberarse una vez, no incrementar pending y no aparecer como chunk.
+- Un buffer config distinto debe preservarse.
+- Un keyframe con bytes iguales no debe suprimirse.
+
+### Evidencia RED observada
+
+`H264EncoderBoundaryTest` falló en compilación porque no existía `extractAvcCsd(csd0, csd1)`.
+
+### Evidencia GREEN
+
+- Focused `H264EncoderBoundaryTest` — PASS.
+- `extractAvcCsd` copia `position..limit`, no muta los buffers originales y concatena bytes exactos ya prefijados.
+- CSD faltante, vacío, sin start code, con tipo NAL incorrecto o con parte mayor que 128 KiB + start code o combinado mayor que 256 KiB devuelve `null`.
+- `AndroidH264CodecSession` pasa `csd-0`/`csd-1` validados desde `MediaFormat` hacia `FormatChanged` sin agregar start codes.
+- Un buffer directo `BUFFER_FLAG_CODEC_CONFIG` idéntico al último CSD emitido por `FormatChanged` se libera una vez, no incrementa pending y no aparece como chunk.
+- Un buffer config distinto se preserva y un keyframe nunca se suprime por bytes iguales, incluso si también trae flag codec-config.
+- Full `:android:usb-probe:testDebugUnitTest --rerun-tasks` — PASS.
+- `:android:usb-probe:assembleDebug` — PASS.
+- `:android:usb-probe:lintDebug` — PASS.
+- `git diff --check` — PASS.
+- Independent verifier — PASS.

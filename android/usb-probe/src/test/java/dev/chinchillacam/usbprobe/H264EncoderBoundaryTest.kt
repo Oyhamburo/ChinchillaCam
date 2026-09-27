@@ -8,10 +8,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class H264EncoderBoundaryTest {
-    private val H264_CSD_BYTES = byteArrayOf(
-        0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f,
-        0x00, 0x00, 0x00, 0x01, 0x68, 0xce.toByte(), 0x06, 0xe2.toByte(),
-    )
+    private val H264_SPS_BYTES = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f)
+    private val H264_PPS_BYTES = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x68, 0xce.toByte(), 0x06, 0xe2.toByte())
+    private val H264_CSD_BYTES = H264_SPS_BYTES + H264_PPS_BYTES
 
     @Test
     fun startsSurfaceInputEncoderWithExplicitConfiguration() {
@@ -87,6 +86,81 @@ class H264EncoderBoundaryTest {
         assertEquals(listOf(4, 5), codec.releasedOutputBuffers)
     }
 
+
+
+    @Test
+    fun extractsAvcCsdFromByteBufferPositionToLimitWithoutMutatingSources() {
+        val source0 = ByteBuffer.wrap(byteArrayOf(9, 0, 0, 0, 1, 0x67, 0x42, 0, 0x1f, 9))
+        val source1 = ByteBuffer.wrap(byteArrayOf(8, 0, 0, 0, 1, 0x68, 0xce.toByte(), 0x06, 0xe2.toByte(), 8))
+        source0.position(1)
+        source0.limit(9)
+        source1.position(1)
+        source1.limit(9)
+
+        val extracted = extractAvcCsd(source0, source1)
+
+        assertArrayEquals(H264_CSD_BYTES, extracted)
+        assertEquals(1, source0.position())
+        assertEquals(9, source0.limit())
+        assertEquals(1, source1.position())
+        assertEquals(9, source1.limit())
+    }
+
+    @Test
+    fun rejectsMissingMalformedOrOversizedAvcCsd() {
+        assertEquals(null, extractAvcCsd(null, ByteBuffer.wrap(H264_PPS_BYTES)))
+        assertEquals(null, extractAvcCsd(ByteBuffer.wrap(H264_SPS_BYTES), null))
+        assertEquals(null, extractAvcCsd(ByteBuffer.wrap(byteArrayOf()), ByteBuffer.wrap(H264_PPS_BYTES)))
+        assertEquals(null, extractAvcCsd(ByteBuffer.wrap(byteArrayOf(0, 0, 1, 0x67)), ByteBuffer.wrap(H264_PPS_BYTES)))
+        assertEquals(null, extractAvcCsd(ByteBuffer.wrap(H264_PPS_BYTES), ByteBuffer.wrap(H264_PPS_BYTES)))
+        assertEquals(null, extractAvcCsd(ByteBuffer.wrap(H264_SPS_BYTES), ByteBuffer.wrap(H264_SPS_BYTES)))
+        val oversized = ByteBuffer.allocate(128 * 1024 + 6)
+        oversized.position(1)
+        oversized.limit(128 * 1024 + 6)
+
+        assertEquals(null, extractAvcCsd(oversized, ByteBuffer.wrap(H264_PPS_BYTES)))
+        assertEquals(1, oversized.position())
+        assertEquals(128 * 1024 + 6, oversized.limit())
+    }
+
+    @Test
+    fun suppressesDuplicateDirectCodecConfigAfterFormatChangedButPreservesDistinctConfigAndKeyFrame() {
+        val codec = FakeH264CodecSession(FakeEncoderSurface("codec-input"))
+        codec.outputs += H264CodecOutput.FormatChanged("avc-format", codecConfigBytes = H264_CSD_BYTES)
+        codec.outputs += H264CodecOutput.Buffer(
+            index = 5,
+            buffer = ByteBuffer.wrap(H264_CSD_BYTES),
+            info = H264BufferInfo(offset = 0, size = H264_CSD_BYTES.size, presentationTimeUs = 0L, flags = H264BufferFlags.CODEC_CONFIG),
+        )
+        codec.outputs += H264CodecOutput.Buffer(
+            index = 6,
+            buffer = ByteBuffer.wrap(byteArrayOf(0, 0, 0, 1, 0x67, 0x55)),
+            info = H264BufferInfo(offset = 0, size = 6, presentationTimeUs = 0L, flags = H264BufferFlags.CODEC_CONFIG),
+        )
+        codec.outputs += H264CodecOutput.Buffer(
+            index = 7,
+            buffer = ByteBuffer.wrap(H264_CSD_BYTES),
+            info = H264BufferInfo(
+                offset = 0,
+                size = H264_CSD_BYTES.size,
+                presentationTimeUs = 200L,
+                flags = H264BufferFlags.KEY_FRAME or H264BufferFlags.CODEC_CONFIG,
+            ),
+        )
+        val session = startedSession(codec, maxPendingChunks = 3)
+
+        val result = session.drain(maxOutputs = 4) as H264DrainResult.Chunks
+
+        assertEquals(3, result.chunks.size)
+        assertArrayEquals(H264_CSD_BYTES, result.chunks[0].bytes)
+        assertTrue(result.chunks[0].isCodecConfig)
+        assertArrayEquals(byteArrayOf(0, 0, 0, 1, 0x67, 0x55), result.chunks[1].bytes)
+        assertTrue(result.chunks[1].isCodecConfig)
+        assertArrayEquals(H264_CSD_BYTES, result.chunks[2].bytes)
+        assertTrue(result.chunks[2].isKeyFrame)
+        assertTrue(result.chunks[2].isCodecConfig)
+        assertEquals(listOf(5, 6, 7), codec.releasedOutputBuffers)
+    }
 
     @Test
     fun emitsCodecConfigFromFormatChangedBeforeKeyFrame() {

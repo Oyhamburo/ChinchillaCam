@@ -139,6 +139,7 @@ class H264EncoderSession(
     val outputFormats = mutableListOf<String>()
     private var pendingChunks: Int = 0
     private var stopped: Boolean = false
+    private var lastFormatChangedCodecConfigBytes: ByteArray? = null
 
     @Synchronized
     fun drain(maxOutputs: Int): H264DrainResult {
@@ -162,6 +163,7 @@ class H264EncoderSession(
                     outputFormats += output.description
                     val codecConfigBytes = output.codecConfigBytes()
                     if (codecConfigBytes != null && codecConfigBytes.isNotEmpty()) {
+                        lastFormatChangedCodecConfigBytes = codecConfigBytes.copyOf()
                         pendingChunks += 1
                         chunks += EncodedVideoChunk(
                             bytes = codecConfigBytes,
@@ -181,9 +183,13 @@ class H264EncoderSession(
                     } catch (_: RuntimeException) {
                         return releaseAndFail(output.index, "output buffer copy failed")
                     }
-                    codecSession.releaseOutputBuffer(output.index)
-                    pendingChunks += 1
-                    chunks += chunk
+                    if (isDuplicateFormatChangedCodecConfig(chunk)) {
+                        codecSession.releaseOutputBuffer(output.index)
+                    } else {
+                        codecSession.releaseOutputBuffer(output.index)
+                        pendingChunks += 1
+                        chunks += chunk
+                    }
                 }
             }
         }
@@ -219,6 +225,11 @@ class H264EncoderSession(
             H264CodecCloseOutcome.Closed -> H264EncoderStopResult.Stopped
             is H264CodecCloseOutcome.Failed -> H264EncoderStopResult.Failed(listOf(outcome.reason))
         }
+    }
+
+    private fun isDuplicateFormatChangedCodecConfig(chunk: EncodedVideoChunk): Boolean {
+        val lastConfig = lastFormatChangedCodecConfigBytes ?: return false
+        return chunk.isCodecConfig && !chunk.isKeyFrame && chunk.bytes.contentEquals(lastConfig)
     }
 
     private fun releaseAndFail(index: Int, reason: String): H264DrainResult {
@@ -285,6 +296,41 @@ class AndroidH264EncoderGateway(
     }
 }
 
+private const val MAX_AVC_CSD_PART_BYTES = 128 * 1024 + 4
+private const val MAX_AVC_CSD_BYTES = 256 * 1024
+private val H264_START_CODE = byteArrayOf(0x00, 0x00, 0x00, 0x01)
+
+internal fun extractAvcCsd(csd0: ByteBuffer?, csd1: ByteBuffer?): ByteArray? {
+    val sps = csd0?.copyRemainingBytesBounded() ?: return null
+    val pps = csd1?.copyRemainingBytesBounded() ?: return null
+    if (!isAvcParameterSet(sps, expectedNalType = 7)) return null
+    if (!isAvcParameterSet(pps, expectedNalType = 8)) return null
+    if (sps.size > MAX_AVC_CSD_BYTES - pps.size) return null
+    return sps + pps
+}
+
+private fun ByteBuffer.copyRemainingBytesBounded(): ByteArray? {
+    val duplicate = duplicate()
+    val remaining = duplicate.remaining()
+    if (remaining !in 1..MAX_AVC_CSD_PART_BYTES) return null
+    val bytes = ByteArray(remaining)
+    duplicate.get(bytes)
+    return bytes
+}
+
+private fun isAvcParameterSet(bytes: ByteArray, expectedNalType: Int): Boolean {
+    if (bytes.size <= H264_START_CODE.size) return false
+    if (!bytes.copyOfRange(0, H264_START_CODE.size).contentEquals(H264_START_CODE)) return false
+    val nalType = bytes[H264_START_CODE.size].toInt() and 0x1f
+    return nalType == expectedNalType
+}
+
+private fun MediaFormat.getByteBufferOrNull(name: String): ByteBuffer? = try {
+    getByteBuffer(name)
+} catch (_: RuntimeException) {
+    null
+}
+
 private class AndroidH264CodecSession(
     override val inputSurface: EncoderInputSurface,
     private val codec: MediaCodec,
@@ -295,7 +341,16 @@ private class AndroidH264CodecSession(
     override fun dequeueOutput(): H264CodecOutput {
         return when (val index = codec.dequeueOutputBuffer(bufferInfo, dequeueTimeoutUs)) {
             MediaCodec.INFO_TRY_AGAIN_LATER -> H264CodecOutput.TryAgainLater
-            MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> H264CodecOutput.FormatChanged(codec.outputFormat.toString())
+            MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                val outputFormat = codec.outputFormat
+                H264CodecOutput.FormatChanged(
+                    description = outputFormat.toString(),
+                    codecConfigBytes = extractAvcCsd(
+                        outputFormat.getByteBufferOrNull("csd-0"),
+                        outputFormat.getByteBufferOrNull("csd-1"),
+                    ),
+                )
+            }
             else -> if (index >= 0) {
                 H264CodecOutput.Buffer(
                     index = index,
