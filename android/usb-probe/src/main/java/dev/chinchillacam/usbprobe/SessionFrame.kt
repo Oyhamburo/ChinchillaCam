@@ -27,10 +27,27 @@ enum class SessionFrameType(val id: Int) {
     STREAM_METADATA(4),
     VIDEO_CHUNK(5),
     METRICS_SNAPSHOT(6),
-    CAMERA_CONTROL_COMMAND(7);
+    CAMERA_CONTROL_COMMAND(7),
+    VIDEO_CHUNK_V2(8);
 
     companion object {
         fun fromId(id: Int): SessionFrameType? = values().firstOrNull { it.id == id }
+    }
+}
+
+enum class SessionVideoFrameKind(val id: Int) {
+    DELTA(0),
+    KEY(1),
+    CODEC_CONFIG(2);
+
+    companion object {
+        fun fromId(id: Int): SessionVideoFrameKind? = values().firstOrNull { it.id == id }
+
+        fun fromCodecFlags(isKeyFrame: Boolean, isCodecConfig: Boolean): SessionVideoFrameKind = when {
+            isCodecConfig -> CODEC_CONFIG
+            isKeyFrame -> KEY
+            else -> DELTA
+        }
     }
 }
 
@@ -75,6 +92,30 @@ sealed class SessionPayload(val type: SessionFrameType) {
         override fun hashCode(): Int {
             var result = chunkIndex
             result = 31 * result + presentationTimeUs.hashCode()
+            result = 31 * result + h264Bytes.contentHashCode()
+            return result
+        }
+    }
+
+    data class VideoChunkV2(
+        val chunkIndex: Int,
+        val presentationTimeUs: Long,
+        val frameKind: SessionVideoFrameKind,
+        val h264Bytes: ByteArray,
+    ) : SessionPayload(SessionFrameType.VIDEO_CHUNK_V2) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is VideoChunkV2) return false
+            return chunkIndex == other.chunkIndex &&
+                presentationTimeUs == other.presentationTimeUs &&
+                frameKind == other.frameKind &&
+                h264Bytes.contentEquals(other.h264Bytes)
+        }
+
+        override fun hashCode(): Int {
+            var result = chunkIndex
+            result = 31 * result + presentationTimeUs.hashCode()
+            result = 31 * result + frameKind.hashCode()
             result = 31 * result + h264Bytes.contentHashCode()
             return result
         }
@@ -219,6 +260,15 @@ private class PayloadSizer(private val maxPayloadBytes: Int) {
                 addBytes(8)
                 addBytesWithLength(payload.h264Bytes.size)
             }
+            is SessionPayload.VideoChunkV2 -> {
+                require(payload.chunkIndex >= 0) { "chunk index must be non-negative" }
+                require(payload.presentationTimeUs >= 0) { "presentation timestamp must be non-negative" }
+                require(payload.h264Bytes.isNotEmpty()) { "h264 bytes must not be empty" }
+                addBytes(4)
+                addBytes(8)
+                addBytes(1)
+                addBytesWithLength(payload.h264Bytes.size)
+            }
             is SessionPayload.MetricsSnapshot -> {
                 require(payload.capturedAtUs >= 0) { "metrics timestamp must be non-negative" }
                 require(payload.droppedFrames >= 0) { "dropped frames must be non-negative" }
@@ -293,6 +343,15 @@ private class PayloadWriter {
                 writeLong(payload.presentationTimeUs)
                 writeBytesWithLength(payload.h264Bytes)
             }
+            is SessionPayload.VideoChunkV2 -> {
+                require(payload.chunkIndex >= 0) { "chunk index must be non-negative" }
+                require(payload.presentationTimeUs >= 0) { "presentation timestamp must be non-negative" }
+                require(payload.h264Bytes.isNotEmpty()) { "h264 bytes must not be empty" }
+                writeInt(payload.chunkIndex)
+                writeLong(payload.presentationTimeUs)
+                writeByte(payload.frameKind.id)
+                writeBytesWithLength(payload.h264Bytes)
+            }
             is SessionPayload.MetricsSnapshot -> {
                 require(payload.capturedAtUs >= 0) { "metrics timestamp must be non-negative" }
                 require(payload.droppedFrames >= 0) { "dropped frames must be non-negative" }
@@ -326,6 +385,7 @@ private class PayloadWriter {
         output.write(bytes)
     }
 
+    private fun writeByte(value: Int) = output.write(value)
     private fun writeShort(value: Int) = output.writeShort(value)
     private fun writeInt(value: Int) = output.writeInt(value)
     private fun writeLong(value: Long) = output.writeLong(value)
@@ -368,6 +428,18 @@ private class PayloadReader(private val bytes: ByteArray) {
                     presentationTimeUs = reader.readLong("presentationTimeUs"),
                     h264Bytes = readBytesWithLength("h264Bytes"),
                 )
+            }
+            SessionFrameType.VIDEO_CHUNK_V2 -> {
+                val chunkIndex = reader.readInt("chunkIndex")
+                val presentationTimeUs = reader.readLong("presentationTimeUs")
+                val frameKindId = reader.readUnsignedByte("frameKind")
+                val h264Bytes = readBytesWithLength("h264Bytes")
+                val frameKind = SessionVideoFrameKind.fromId(frameKindId)
+                    ?: throw SessionFrameDecodeError.InvalidPayload("video frame kind is unknown: $frameKindId")
+                if (chunkIndex < 0) throw SessionFrameDecodeError.InvalidPayload("chunk index must be non-negative")
+                if (presentationTimeUs < 0) throw SessionFrameDecodeError.InvalidPayload("presentation timestamp must be non-negative")
+                if (h264Bytes.isEmpty()) throw SessionFrameDecodeError.InvalidPayload("h264 bytes must not be empty")
+                SessionPayload.VideoChunkV2(chunkIndex, presentationTimeUs, frameKind, h264Bytes)
             }
             SessionFrameType.METRICS_SNAPSHOT -> {
                 val capturedAtUs = reader.readLong("capturedAtUs")

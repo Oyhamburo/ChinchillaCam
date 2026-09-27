@@ -15,8 +15,9 @@ class SessionFrameTest {
             SessionFrame(1, 2, "session-a", SessionPayload.HandshakeReject("busy", "Ya hay una computadora activa")),
             SessionFrame(1, 3, "session-a", SessionPayload.StreamMetadata("video/h264", 1920, 1080, 30, "baseline")),
             SessionFrame(1, 4, "session-a", SessionPayload.VideoChunk(7, 123456789L, byteArrayOf(0x00, 0x00, 0x01, 0x65))),
-            SessionFrame(1, 5, "session-a", SessionPayload.MetricsSnapshot(123456790L, 42, 18, 30)),
-            SessionFrame(1, 6, "session-a", SessionPayload.CameraControlCommand("setZoom", mapOf("level" to "2.0", "mode" to "smooth"))),
+            SessionFrame(1, 5, "session-a", SessionPayload.VideoChunkV2(8, 123456790L, SessionVideoFrameKind.KEY, byteArrayOf(0x00, 0x00, 0x01, 0x65))),
+            SessionFrame(1, 6, "session-a", SessionPayload.MetricsSnapshot(123456790L, 42, 18, 30)),
+            SessionFrame(1, 7, "session-a", SessionPayload.CameraControlCommand("setZoom", mapOf("level" to "2.0", "mode" to "smooth"))),
         )
 
         for (frame in frames) {
@@ -43,6 +44,70 @@ class SessionFrameTest {
         assertEquals(0, first[7].toInt())
         assertEquals(0, first[8].toInt())
         assertEquals(9, first[9].toInt())
+    }
+
+    @Test
+    fun preservesCanonicalVideoChunkV2Golden() {
+        val frame = SessionFrame(1, 0, "s", SessionPayload.VideoChunkV2(0, 0L, SessionVideoFrameKind.KEY, byteArrayOf(0x65)))
+        val expected = hexBytes("43 43 53 46 01 08 00 00 00 00 00 01 73 00 00 00 10 00 00 00 00 00 00 00 00 00 00 00 00 01 00 01 65")
+
+        val encoded = SessionFrameCodec.encode(frame)
+        val decoded = SessionFrameCodec.decode(expected).getOrThrow()
+
+        assertArrayEquals(expected, encoded)
+        assertFrameEquals(frame, decoded)
+    }
+
+    @Test
+    fun preservesLegacyVideoChunkWireTypeFive() {
+        val frame = SessionFrame(1, 0, "s", SessionPayload.VideoChunk(0, 0L, byteArrayOf(0x65)))
+        val encoded = SessionFrameCodec.encode(frame)
+
+        assertEquals(SessionFrameType.VIDEO_CHUNK.id, encoded[5].toInt())
+        assertFrameEquals(frame, SessionFrameCodec.decode(encoded).getOrThrow())
+    }
+
+    @Test
+    fun rejectsInvalidVideoChunkV2Payloads() {
+        assertEquals(
+            SessionFrameDecodeError.InvalidPayload("video frame kind is unknown: 9"),
+            SessionFrameCodec.decode(rawFrame(8, videoChunkV2Payload(0, 0L, 9, byteArrayOf(0x65)))).exceptionOrNull(),
+        )
+        assertEquals(
+            SessionFrameDecodeError.InvalidPayload("chunk index must be non-negative"),
+            SessionFrameCodec.decode(rawFrame(8, videoChunkV2Payload(-1, 0L, SessionVideoFrameKind.DELTA.id, byteArrayOf(0x65)))).exceptionOrNull(),
+        )
+        assertEquals(
+            SessionFrameDecodeError.InvalidPayload("presentation timestamp must be non-negative"),
+            SessionFrameCodec.decode(rawFrame(8, videoChunkV2Payload(0, -1L, SessionVideoFrameKind.DELTA.id, byteArrayOf(0x65)))).exceptionOrNull(),
+        )
+        assertEquals(
+            SessionFrameDecodeError.InvalidPayload("h264 bytes must not be empty"),
+            SessionFrameCodec.decode(rawFrame(8, videoChunkV2Payload(0, 0L, SessionVideoFrameKind.DELTA.id, byteArrayOf()))).exceptionOrNull(),
+        )
+    }
+
+    @Test
+    fun encodeRejectsInvalidVideoChunkV2Payloads() {
+        val oversized = runCatching {
+            SessionFrameCodec.encode(SessionFrame(1, 0, "s", SessionPayload.VideoChunkV2(0, 0L, SessionVideoFrameKind.DELTA, ByteArray(UShort.MAX_VALUE.toInt() + 1))))
+        }.exceptionOrNull()
+        assertTrue(oversized is IllegalArgumentException)
+        assertEquals("field is too large", oversized?.message)
+
+        val empty = runCatching {
+            SessionFrameCodec.encode(SessionFrame(1, 0, "s", SessionPayload.VideoChunkV2(0, 0L, SessionVideoFrameKind.DELTA, byteArrayOf())))
+        }.exceptionOrNull()
+        assertTrue(empty is IllegalArgumentException)
+        assertEquals("h264 bytes must not be empty", empty?.message)
+    }
+
+    @Test
+    fun encodesVideoChunkV2FrameKindFromCodecFlags() {
+        assertEquals(SessionVideoFrameKind.DELTA, SessionVideoFrameKind.fromCodecFlags(isKeyFrame = false, isCodecConfig = false))
+        assertEquals(SessionVideoFrameKind.KEY, SessionVideoFrameKind.fromCodecFlags(isKeyFrame = true, isCodecConfig = false))
+        assertEquals(SessionVideoFrameKind.CODEC_CONFIG, SessionVideoFrameKind.fromCodecFlags(isKeyFrame = false, isCodecConfig = true))
+        assertEquals(SessionVideoFrameKind.CODEC_CONFIG, SessionVideoFrameKind.fromCodecFlags(isKeyFrame = true, isCodecConfig = true))
     }
 
     @Test
@@ -237,20 +302,39 @@ class SessionFrameTest {
                 assertEquals(payload.presentationTimeUs, actualPayload.presentationTimeUs)
                 assertArrayEquals(payload.h264Bytes, actualPayload.h264Bytes)
             }
+            is SessionPayload.VideoChunkV2 -> {
+                val actualPayload = actual.payload as SessionPayload.VideoChunkV2
+                assertEquals(payload.chunkIndex, actualPayload.chunkIndex)
+                assertEquals(payload.presentationTimeUs, actualPayload.presentationTimeUs)
+                assertEquals(payload.frameKind, actualPayload.frameKind)
+                assertArrayEquals(payload.h264Bytes, actualPayload.h264Bytes)
+            }
             else -> assertEquals(payload, actual.payload)
         }
         assertTrue(actual.sequence >= 0)
     }
 
-    private fun rawFrame(type: SessionFrameType, payload: ByteArray): ByteArray = ByteArrayBuilder()
+    private fun rawFrame(type: SessionFrameType, payload: ByteArray): ByteArray = rawFrame(type.id, payload)
+
+    private fun rawFrame(typeId: Int, payload: ByteArray): ByteArray = ByteArrayBuilder()
         .writeBytes(byteArrayOf('C'.code.toByte(), 'C'.code.toByte(), 'S'.code.toByte(), 'F'.code.toByte()))
         .writeByte(1)
-        .writeByte(type.id)
+        .writeByte(typeId)
         .writeInt(1)
         .writeString("s")
         .writeInt(payload.size)
         .writeBytes(payload)
         .toByteArray()
+
+    private fun videoChunkV2Payload(chunkIndex: Int, presentationTimeUs: Long, frameKind: Int, h264Bytes: ByteArray): ByteArray = ByteArrayBuilder()
+        .writeInt(chunkIndex)
+        .writeLong(presentationTimeUs)
+        .writeByte(frameKind)
+        .writeShort(h264Bytes.size)
+        .writeBytes(h264Bytes)
+        .toByteArray()
+
+    private fun hexBytes(value: String): ByteArray = value.split(" ").map { it.toInt(16).toByte() }.toByteArray()
 
     private class ByteArrayBuilder {
         private val bytes = mutableListOf<Byte>()
@@ -262,6 +346,16 @@ class SessionFrameTest {
             bytes.add((value and 0xff).toByte())
         }
         fun writeInt(value: Int) = apply {
+            bytes.add(((value ushr 24) and 0xff).toByte())
+            bytes.add(((value ushr 16) and 0xff).toByte())
+            bytes.add(((value ushr 8) and 0xff).toByte())
+            bytes.add((value and 0xff).toByte())
+        }
+        fun writeLong(value: Long) = apply {
+            bytes.add(((value ushr 56) and 0xff).toByte())
+            bytes.add(((value ushr 48) and 0xff).toByte())
+            bytes.add(((value ushr 40) and 0xff).toByte())
+            bytes.add(((value ushr 32) and 0xff).toByte())
             bytes.add(((value ushr 24) and 0xff).toByte())
             bytes.add(((value ushr 16) and 0xff).toByte())
             bytes.add(((value ushr 8) and 0xff).toByte())
