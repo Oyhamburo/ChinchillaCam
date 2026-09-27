@@ -1,7 +1,8 @@
 package dev.chinchillacam.usbprobe
 
-import java.time.Clock
-import java.util.Base64
+fun interface EpochSecondsSource {
+    fun nowEpochSeconds(): Long
+}
 
 interface ChallengeNonceSource {
     fun nextChallenge(): PairingChallengeMaterial
@@ -87,12 +88,12 @@ sealed class PendingPairingCancelResult {
 }
 
 class PendingPairingCoordinator(
-    private val clock: Clock,
+    private val epochSecondsSource: EpochSecondsSource,
     private val challengeNonceSource: ChallengeNonceSource,
     private val proofVerifier: PairingProofVerifier,
     private val maxLiveNonces: Int = 64,
 ) {
-    private val liveNonceExpiries = linkedMapOf<String, Long>()
+    private val liveNonceExpiries = linkedMapOf<NonceKey, Long>()
     private var pending: PendingPairingSummary? = null
 
     init {
@@ -104,7 +105,7 @@ class PendingPairingCoordinator(
 
     @Synchronized
     fun start(qrPayload: PairingQrPayload, proofBytes: ByteArray): PendingPairingStartResult {
-        val now = clock.instant().epochSecond
+        val now = epochSecondsSource.nowEpochSeconds()
         pruneExpiredNonces(now)
         if (pending != null) return PendingPairingStartResult.Rejected.AlreadyPending
         validateQrPayload(qrPayload)?.let { return it }
@@ -134,8 +135,11 @@ class PendingPairingCoordinator(
             is PairingProofVerificationResult.Rejected -> return PendingPairingStartResult.Rejected.ProofRejected(verification.reason)
             is PairingProofVerificationResult.Verified -> verification
         }
-        if (verified.expiresAtEpochSeconds <= now) return PendingPairingStartResult.Rejected.Expired("proof")
-        if (verified.verifiedAtEpochSeconds < 0 || verified.verifiedAtEpochSeconds > now || verified.verifiedAtEpochSeconds >= verified.expiresAtEpochSeconds) {
+        val nowAfterVerify = epochSecondsSource.nowEpochSeconds()
+        if (qrPayload.expiresAtEpochSeconds <= nowAfterVerify) return PendingPairingStartResult.Rejected.Expired("qr")
+        if (challengeMaterial.expiresAtEpochSeconds <= nowAfterVerify) return PendingPairingStartResult.Rejected.Expired("challenge")
+        if (verified.expiresAtEpochSeconds <= nowAfterVerify) return PendingPairingStartResult.Rejected.Expired("proof")
+        if (verified.verifiedAtEpochSeconds < 0 || verified.verifiedAtEpochSeconds > nowAfterVerify || verified.verifiedAtEpochSeconds >= verified.expiresAtEpochSeconds) {
             return PendingPairingStartResult.Rejected.InvalidProofTime("verifiedAt")
         }
         bindingMismatch(qrPayload, fingerprint, qrNonce, challengeMaterial, verified)?.let { return it }
@@ -179,5 +183,17 @@ class PendingPairingCoordinator(
         liveNonceExpiries.entries.removeAll { it.value <= now }
     }
 
-    private fun nonceKey(nonce: ByteArray): String = Base64.getEncoder().encodeToString(nonce)
+    private fun nonceKey(nonce: ByteArray): NonceKey = NonceKey(nonce)
+}
+
+private class NonceKey(nonce: ByteArray) {
+    private val bytes = nonce.copyOf()
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is NonceKey) return false
+        return bytes.contentEquals(other.bytes)
+    }
+
+    override fun hashCode(): Int = bytes.contentHashCode()
 }

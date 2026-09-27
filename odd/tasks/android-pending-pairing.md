@@ -43,17 +43,17 @@ Build the pure Android state model for future desktop pairing without Activity, 
 - NEW `android/usb-probe/src/test/java/dev/chinchillacam/usbprobe/PendingPairingCoordinatorTest.kt`
 - `odd/tasks/android-pending-pairing.md`
 
-## M3b1 requirements
+## Requisitos M3b1
 
-- Model pending pairing and proof/challenge state before any trust save or active desktop activation.
-- Constructor requires injected `java.time.Clock`, `ChallengeNonceSource`, and `PairingProofVerifier`; no insecure defaults.
-- Coordinator calls `PairingProofVerifier.verify(challenge, proofBytes)` itself; callers cannot submit a forged verified object directly as authority.
-- Bind `desktopId`, `PairingTrustFingerprint`, QR nonce, fresh challenge nonce, session id, QR expiry, and proof expiry.
-- Allow only one pending confirmation at a time.
-- QR nonce cache has at most 64 live nonces and fails closed at capacity; it does not evict live nonces.
-- Replay, expiry, mismatch, rejected proof, cache capacity, reject, and cancel return typed results.
-- Do not call `TrustedDesktopStore.save` or `ActiveDesktopAuthority` in M3b1.
-- Fingerprint is not proof/authentication.
+- Modelar el estado pendiente de pairing y prueba/desafío antes de cualquier guardado de confianza o activación de desktop.
+- El constructor requiere `EpochSecondsSource`, `ChallengeNonceSource` y `PairingProofVerifier` inyectados; no hay defaults inseguros ni APIs Android 26+ nuevas en el coordinador.
+- El coordinador llama por sí mismo a `PairingProofVerifier.verify(challenge, proofBytes)`; los callers no pueden entregar un `Verified` forjado como autoridad.
+- Vincular `desktopId`, `PairingTrustFingerprint`, nonce QR, nonce de desafío fresco, session id, expiración QR, expiración de desafío y expiración de proof.
+- Permitir una sola confirmación pendiente a la vez.
+- La cache de nonces QR tiene como máximo 64 nonces vivos y falla cerrada en capacidad; no expulsa nonces vivos.
+- Replay, expiración, mismatch, proof rechazado, capacidad de cache, reject y cancel devuelven resultados tipados.
+- No llamar `TrustedDesktopStore.save` ni `ActiveDesktopAuthority` en M3b1.
+- El fingerprint no es prueba ni autenticación.
 
 ## M3b1 evidence
 
@@ -72,3 +72,15 @@ Build the pure Android state model for future desktop pairing without Activity, 
 - Follow-up `:android:usb-probe:assembleDebug` — PASS.
 - Follow-up `git diff --check` — PASS.
 - Independent follow-up verifier: PASS.
+
+## Evidencia de seguimiento M3b1 API 23 y verificador lento
+
+- RED: la revisión de compatibilidad minSdk 23 detectó que el coordinador usaba `java.time.Clock` y `java.util.Base64` (Android 26+ sin desugaring); la revisión de seguridad del verificador lento exigió releer el tiempo después de `verify`.
+- GREEN focused tests: el coordinador usa `EpochSecondsSource`, claves de nonce inmutables, y rechaza expiración QR/challenge/proof observada después del verificador manteniendo el nonce consumido hasta la expiración QR — PASS.
+- Full API 23 follow-up `:android:usb-probe:testDebugUnitTest --rerun-tasks` — PASS.
+- API 23 follow-up `:android:usb-probe:assembleDebug` — PASS.
+- Grep del coordinador para `java.time`/`java.util.Base64` — PASS (sin coincidencias).
+- Follow-up `git diff --check` — PASS.
+- `:android:usb-probe:lintDebug` se intentó por separado y falló por problemas preexistentes no relacionados (primero: `CameraCapabilityCatalog.kt` `Map.putIfAbsent`, API 24 con minSdk 23); no se identificó hallazgo lint del coordinador M3b1.
+- Verificador independiente API 23 follow-up: PASS.
+- Pendiente planificado: después de M3b2, hacer un corte docs-only <=400 para traducir este task file completo al español sin tocar código.

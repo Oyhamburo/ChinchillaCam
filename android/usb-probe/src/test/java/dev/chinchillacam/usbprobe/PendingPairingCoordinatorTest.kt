@@ -5,9 +5,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.time.Clock
-import java.time.Instant
-import java.time.ZoneOffset
 
 class PendingPairingCoordinatorTest {
     @Test
@@ -96,7 +93,7 @@ class PendingPairingCoordinatorTest {
         coordinator.cancel()
 
         val later = PendingPairingCoordinator(
-            clock = Clock.fixed(Instant.ofEpochSecond(120), ZoneOffset.UTC),
+            epochSecondsSource = EpochSecondsSource { 120 },
             challengeNonceSource = QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(0x10), "session-1", expiresAtEpochSeconds = 200)),
             proofVerifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(verifiedAtEpochSeconds = 120, expiresAtEpochSeconds = 190) },
         )
@@ -116,8 +113,8 @@ class PendingPairingCoordinatorTest {
         val atExpiry = coordinator(verifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(verifiedAtEpochSeconds = 150, expiresAtEpochSeconds = 150) })
         assertEquals(PendingPairingStartResult.Rejected.InvalidProofTime("verifiedAt"), atExpiry.start(qr(nonce = byteArrayOf(14)), byteArrayOf(1)))
 
-        assertTrue(runCatching { PendingPairingCoordinator(Clock.fixed(Instant.ofEpochSecond(100), ZoneOffset.UTC), QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(1), "s", 200)), RecordingVerifier { challenge, _ -> verifiedFrom(challenge) }, maxLiveNonces = 0) }.exceptionOrNull() is IllegalArgumentException)
-        assertTrue(runCatching { PendingPairingCoordinator(Clock.fixed(Instant.ofEpochSecond(100), ZoneOffset.UTC), QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(1), "s", 200)), RecordingVerifier { challenge, _ -> verifiedFrom(challenge) }, maxLiveNonces = 65) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { PendingPairingCoordinator(EpochSecondsSource { 100 }, QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(1), "s", 200)), RecordingVerifier { challenge, _ -> verifiedFrom(challenge) }, maxLiveNonces = 0) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { PendingPairingCoordinator(EpochSecondsSource { 100 }, QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(1), "s", 200)), RecordingVerifier { challenge, _ -> verifiedFrom(challenge) }, maxLiveNonces = 65) }.exceptionOrNull() is IllegalArgumentException)
     }
 
     @Test
@@ -147,11 +144,30 @@ class PendingPairingCoordinatorTest {
         assertEquals(PendingPairingStartResult.Rejected.NonceReplay, coordinator.start(qr(nonce = byteArrayOf(0x21), expiresAt = 200), byteArrayOf(1)))
     }
 
+
+    @Test
+    fun expiryDuringVerifierRejectsButKeepsNonceConsumedUntilQrExpiry() {
+        val clock = MutableEpochSecondsSource(100)
+        val verifier = RecordingVerifier { challenge, _ ->
+            clock.now = 151
+            verifiedFrom(challenge).copy(verifiedAtEpochSeconds = 100, expiresAtEpochSeconds = 160)
+        }
+        val coordinator = PendingPairingCoordinator(
+            epochSecondsSource = clock,
+            challengeNonceSource = QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(0x10), "session-1", expiresAtEpochSeconds = 200)),
+            proofVerifier = verifier,
+        )
+
+        assertEquals(PendingPairingStartResult.Rejected.Expired("qr"), coordinator.start(qr(nonce = byteArrayOf(0x31), expiresAt = 150), byteArrayOf(1)))
+        clock.now = 120
+        assertEquals(PendingPairingStartResult.Rejected.NonceReplay, coordinator.start(qr(nonce = byteArrayOf(0x31), expiresAt = 150), byteArrayOf(1)))
+    }
+
     private fun coordinator(
         verifier: PairingProofVerifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge) },
         challenges: ChallengeNonceSource = QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(0x10), "session-1", expiresAtEpochSeconds = 200)),
     ) = PendingPairingCoordinator(
-        clock = Clock.fixed(Instant.ofEpochSecond(100), ZoneOffset.UTC),
+        epochSecondsSource = EpochSecondsSource { 100 },
         challengeNonceSource = challenges,
         proofVerifier = verifier,
     )
@@ -175,6 +191,10 @@ class PendingPairingCoordinatorTest {
             proofs += proofBytes.copyOf()
             return response(challenge, proofBytes)
         }
+    }
+
+    private class MutableEpochSecondsSource(var now: Long) : EpochSecondsSource {
+        override fun nowEpochSeconds(): Long = now
     }
 
     private class QueueChallengeSource(
