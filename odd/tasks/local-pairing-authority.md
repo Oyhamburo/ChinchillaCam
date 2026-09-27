@@ -135,3 +135,10 @@ Alcance T11:
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Nota de disciplina: este candidato fue demasiado amplio para una unidad de review ideal; agrupó T12, T11b, T13a y planificación T14. Las siguientes revisiones deben volver a cortes por unidad.
 - Hallazgos advisory no bloqueantes: `R3-expiry-boundary` en `PairingQrPayload.kt:134` y `R3-malformed-percent-utf8` en `PairingQrPayload.kt:235`. No abrieron corrección para este candidato.
+
+### Revisión nativa RDD T12b
+
+- Candidato: `afc14dc` contra base `09b8115` en worktree temporal detached `/Users/jele/Desktop/codes/ChinchillaCam-t12b-review`.
+- Lineage: `review-676a75b529ab8cab`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgo advisory no bloqueante: `R3-supplementary-unicode` en `PairingQrPayload.kt:251`. No abrió corrección para T12b.
