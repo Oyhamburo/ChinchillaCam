@@ -93,3 +93,17 @@ Alcance T11c Android:
 ### T11d hardening: preflight de tamaño al codificar
 
 Al evaluar `R3-post-allocation-size-check`, el codec Android ya limita cada campo binario/texto a `u16` y el frame completo a 1 MiB, pero antes de T11d calculaba ese límite después de construir el payload y el buffer de salida. T11d agrega un preflight puro de tamaño que suma header, `sessionId` y payload antes de construir `PayloadWriter`/frame final. El preflight se detiene en cuanto el acumulado excede 1 MiB, por lo que una lista adversarial de capabilities no necesita recorrerse ni materializarse completa para rechazar el frame. No cambia el formato de cable; solo adelanta la validación local.
+
+## Plan T15c — backpressure/timeouts fake
+
+T15c seguirá siendo una capa de pruebas unitarias/fakes sobre AOA bulk; no abre `UsbManager`, hardware, desktop real, cámara ni LAN/Wi‑Fi.
+
+Alcance propuesto:
+
+- Introducir un seam pequeño de sesión USB fake con reloj inyectado para simular `readExactly` bloqueado, progreso parcial y deadline vencido sin dormir tests reales.
+- Modelar resultados tipados para stream sostenido: frame recibido/enviado, timeout de lectura, timeout de escritura/backpressure y cierre de sesión.
+- Poison/close de sesión ante truncation sostenida o timeout después de progreso parcial, para no re-sincronizar sobre bytes ambiguos.
+- Mantener T15b como adapter exacto de frame único; T15c no debe mezclar cámara, encoder, desktop ni transporte físico.
+- Tests RED/GREEN esperados: cola llena rechaza/es backpressure sin perder orden; read timeout sin bytes no consume; timeout/truncation después de header o payload parcial cierra; después de close no se aceptan writes; frame válido conserva orden FIFO.
+
+Gate antes de review nativa: reportar `READY T15c` al coordinador con worktree, rango `base..HEAD` y líneas diff, y esperar `GRANT T15c` explícito.
