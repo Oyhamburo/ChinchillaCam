@@ -26,10 +26,28 @@ pub enum EncodedVideoFrameKind {
 pub enum EncodedVideoSinkError {
     InvalidPayloadLimit,
     EmptyPayload,
-    PayloadTooLarge { length: usize, max: usize },
+    PayloadTooLarge {
+        length: usize,
+        max: usize,
+    },
     InvalidQueueCapacity,
-    QueueCapacityTooLarge { capacity: usize, max: usize },
-    QueueFull { capacity: usize },
+    QueueCapacityTooLarge {
+        capacity: usize,
+        max: usize,
+    },
+    InvalidQueueByteLimit,
+    QueueByteLimitTooLarge {
+        max_queued_bytes: usize,
+        max: usize,
+    },
+    QueueFull {
+        capacity: usize,
+    },
+    QueueBytesFull {
+        queued: usize,
+        incoming: usize,
+        max: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,13 +140,24 @@ pub trait EncodedVideoSink {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundedEncodedVideoQueue {
     capacity: usize,
+    max_queued_bytes: usize,
+    queued_bytes: usize,
     chunks: VecDeque<EncodedVideoChunk>,
 }
 
 impl BoundedEncodedVideoQueue {
     pub const MAX_CAPACITY: usize = 4096;
+    pub const DEFAULT_MAX_QUEUED_BYTES: usize = 16 * 1024 * 1024;
+    pub const MAX_QUEUED_BYTES: usize = 64 * 1024 * 1024;
 
     pub fn new(capacity: usize) -> Result<Self, EncodedVideoSinkError> {
+        Self::with_limits(capacity, Self::DEFAULT_MAX_QUEUED_BYTES)
+    }
+
+    pub fn with_limits(
+        capacity: usize,
+        max_queued_bytes: usize,
+    ) -> Result<Self, EncodedVideoSinkError> {
         if capacity == 0 {
             return Err(EncodedVideoSinkError::InvalidQueueCapacity);
         }
@@ -138,9 +167,20 @@ impl BoundedEncodedVideoQueue {
                 max: Self::MAX_CAPACITY,
             });
         }
+        if max_queued_bytes == 0 {
+            return Err(EncodedVideoSinkError::InvalidQueueByteLimit);
+        }
+        if max_queued_bytes > Self::MAX_QUEUED_BYTES {
+            return Err(EncodedVideoSinkError::QueueByteLimitTooLarge {
+                max_queued_bytes,
+                max: Self::MAX_QUEUED_BYTES,
+            });
+        }
 
         Ok(Self {
             capacity,
+            max_queued_bytes,
+            queued_bytes: 0,
             chunks: VecDeque::new(),
         })
     }
@@ -153,12 +193,22 @@ impl BoundedEncodedVideoQueue {
         self.chunks.len()
     }
 
+    pub fn max_queued_bytes(&self) -> usize {
+        self.max_queued_bytes
+    }
+
+    pub fn queued_bytes(&self) -> usize {
+        self.queued_bytes
+    }
+
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
 
     pub fn pop_front(&mut self) -> Option<EncodedVideoChunk> {
-        self.chunks.pop_front()
+        let chunk = self.chunks.pop_front()?;
+        self.queued_bytes -= chunk.payload().len();
+        Some(chunk)
     }
 }
 
@@ -173,6 +223,23 @@ impl EncodedVideoSink for BoundedEncodedVideoQueue {
             });
         }
 
+        let incoming = chunk.payload().len();
+        let Some(next_queued_bytes) = self.queued_bytes.checked_add(incoming) else {
+            return Err(EncodedVideoSinkError::QueueBytesFull {
+                queued: self.queued_bytes,
+                incoming,
+                max: self.max_queued_bytes,
+            });
+        };
+        if next_queued_bytes > self.max_queued_bytes {
+            return Err(EncodedVideoSinkError::QueueBytesFull {
+                queued: self.queued_bytes,
+                incoming,
+                max: self.max_queued_bytes,
+            });
+        }
+
+        self.queued_bytes = next_queued_bytes;
         self.chunks.push_back(chunk);
         Ok(())
     }

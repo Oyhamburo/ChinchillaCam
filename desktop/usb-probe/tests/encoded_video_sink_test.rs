@@ -95,6 +95,92 @@ fn encoded_video_sink_injects_chunks_without_transport_or_decoder() {
     assert_eq!(sink.received[0].payload(), &[0x01, 0x64]);
 }
 
+fn video_chunk_with_len(length: usize) -> EncodedVideoChunk {
+    let limits = EncodedVideoChunkLimits::new(length).unwrap();
+    EncodedVideoChunk::new(
+        9,
+        PresentationTimestamp::from_micros(length as u64),
+        EncodedVideoFrameKind::Delta,
+        vec![0xaa; length],
+        &limits,
+    )
+    .unwrap()
+}
+
+#[test]
+fn encoded_video_sink_queue_defaults_to_finite_byte_budget() {
+    let queue = BoundedEncodedVideoQueue::new(2).unwrap();
+
+    assert_eq!(queue.queued_bytes(), 0);
+    assert_eq!(
+        queue.max_queued_bytes(),
+        BoundedEncodedVideoQueue::DEFAULT_MAX_QUEUED_BYTES
+    );
+}
+
+#[test]
+fn encoded_video_sink_queue_rejects_invalid_byte_limits() {
+    assert_eq!(
+        BoundedEncodedVideoQueue::with_limits(1, 0),
+        Err(EncodedVideoSinkError::InvalidQueueByteLimit)
+    );
+    assert_eq!(
+        BoundedEncodedVideoQueue::with_limits(1, BoundedEncodedVideoQueue::MAX_QUEUED_BYTES + 1),
+        Err(EncodedVideoSinkError::QueueByteLimitTooLarge {
+            max_queued_bytes: BoundedEncodedVideoQueue::MAX_QUEUED_BYTES + 1,
+            max: BoundedEncodedVideoQueue::MAX_QUEUED_BYTES,
+        })
+    );
+}
+
+#[test]
+fn encoded_video_sink_queue_tracks_and_releases_exact_payload_bytes() {
+    let mut queue = BoundedEncodedVideoQueue::with_limits(2, 5).unwrap();
+
+    queue.push_encoded_video(video_chunk_with_len(2)).unwrap();
+    queue.push_encoded_video(video_chunk_with_len(3)).unwrap();
+
+    assert_eq!(queue.queued_bytes(), 5);
+    assert_eq!(queue.pop_front().unwrap().payload().len(), 2);
+    assert_eq!(queue.queued_bytes(), 3);
+    assert_eq!(queue.pop_front().unwrap().payload().len(), 3);
+    assert_eq!(queue.queued_bytes(), 0);
+}
+
+#[test]
+fn encoded_video_sink_queue_rejects_byte_overflow_without_mutation() {
+    let mut queue = BoundedEncodedVideoQueue::with_limits(3, 4).unwrap();
+    let first = video_chunk_with_len(3);
+    let second = video_chunk_with_len(2);
+
+    queue.push_encoded_video(first.clone()).unwrap();
+
+    assert_eq!(
+        queue.push_encoded_video(second),
+        Err(EncodedVideoSinkError::QueueBytesFull {
+            queued: 3,
+            incoming: 2,
+            max: 4,
+        })
+    );
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue.queued_bytes(), 3);
+    assert_eq!(queue.pop_front(), Some(first));
+}
+
+#[test]
+fn encoded_video_sink_queue_keeps_count_cap_independent_of_byte_budget() {
+    let mut queue = BoundedEncodedVideoQueue::with_limits(1, 1024).unwrap();
+
+    queue.push_encoded_video(video_chunk_with_len(1)).unwrap();
+
+    assert_eq!(
+        queue.push_encoded_video(video_chunk_with_len(1)),
+        Err(EncodedVideoSinkError::QueueFull { capacity: 1 })
+    );
+    assert_eq!(queue.queued_bytes(), 1);
+}
+
 #[test]
 fn encoded_video_sink_queue_applies_bounded_backpressure_without_dropping() {
     let limits = EncodedVideoChunkLimits::new(8).unwrap();
