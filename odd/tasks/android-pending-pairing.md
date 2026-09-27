@@ -36,3 +36,30 @@ Build the pure Android state model for future desktop pairing without Activity, 
 - `:android:usb-probe:assembleDebug` — PASS.
 - `git diff --check` — PASS.
 - Independent verifier: PASS.
+
+## M3b1 allowed edit surfaces
+
+- NEW `android/usb-probe/src/main/java/dev/chinchillacam/usbprobe/PendingPairingCoordinator.kt`
+- NEW `android/usb-probe/src/test/java/dev/chinchillacam/usbprobe/PendingPairingCoordinatorTest.kt`
+- `odd/tasks/android-pending-pairing.md`
+
+## M3b1 requirements
+
+- Model pending pairing and proof/challenge state before any trust save or active desktop activation.
+- Constructor requires injected `java.time.Clock`, `ChallengeNonceSource`, and `PairingProofVerifier`; no insecure defaults.
+- Coordinator calls `PairingProofVerifier.verify(challenge, proofBytes)` itself; callers cannot submit a forged verified object directly as authority.
+- Bind `desktopId`, `PairingTrustFingerprint`, QR nonce, fresh challenge nonce, session id, QR expiry, and proof expiry.
+- Allow only one pending confirmation at a time.
+- QR nonce cache has at most 64 live nonces and fails closed at capacity; it does not evict live nonces.
+- Replay, expiry, mismatch, rejected proof, cache capacity, reject, and cancel return typed results.
+- Do not call `TrustedDesktopStore.save` or `ActiveDesktopAuthority` in M3b1.
+- Fingerprint is not proof/authentication.
+
+## M3b1 evidence
+
+- RED: focused coordinator tests failed to compile before `PendingPairingCoordinator`, challenge/verifier, pending state, and typed results existed.
+- GREEN focused tests: matching verified proof creates pending confirmation; unverified proof and binding mismatches reject without pending; QR/proof/challenge expiry reject; one-pending-at-a-time, cancel, replay, bounded nonce capacity fail-closed; proof bytes and pending nonce bytes are defensively copied — PASS.
+- Full `:android:usb-probe:testDebugUnitTest --rerun-tasks` — PASS.
+- `:android:usb-probe:assembleDebug` — PASS.
+- `git diff --check` — PASS.
+- Independent verifier: PASS.
