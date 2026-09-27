@@ -49,4 +49,11 @@ Use TDD: RED focused tests for sink mapping/failure behavior and controller sink
 
 ### T15d2 — controller integration
 
-Pending follow-up commit evidence and exact commit IDs for T15d1/T15d2.
+- T15d1 commit: `60f9ca69d0050df6d7ecee16fda8a3c571c54b66`.
+- Controller integration wires the sink through a per-start factory so stop/failure closes the active sink and restart creates a fresh fake transport session instead of reopening a closed transport silently.
+- Controller metrics text reports fake-egress accepted/dropped counts without recording accepted chunks as local discarded bytes; FPS remains explicitly unavailable for fake egress until a separate metrics API can track delivered chunks honestly.
+- Default no-sink local discard behavior remains unchanged.
+- Factory failure is typed as visible Error and stops the newly launched handle before publishing it.
+- Focused controller restart/failure/factory/metrics tests: PASS.
+- Full `:android:usb-probe:testDebugUnitTest --rerun-tasks`, `:android:usb-probe:assembleDebug`, `git diff --check`, and independent verify: PASS.
+- T15d2 commit id pending.

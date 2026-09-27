@@ -4,6 +4,7 @@ class VisibleCameraPipelineController(
     private val launcher: VisibleCameraPipelineLauncher,
     private val encoderConfig: H264EncoderConfig,
     private val metrics: LocalPipelineMetricsTracker = LocalPipelineMetricsTracker(SystemPipelineMetricsClock()),
+    private val encodedVideoSinkFactory: (() -> EncodedVideoSessionFrameSink)? = null,
 ) {
     private var state: VisibleCameraPipelineUiState = VisibleCameraPipelineUiState(
         status = VisibleCameraPipelineStatus.Idle,
@@ -14,6 +15,7 @@ class VisibleCameraPipelineController(
         metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
     )
     private var handle: VisibleCameraPipelineHandle? = null
+    private var activeEncodedVideoSink: EncodedVideoSessionFrameSink? = null
     private var startGeneration: Int = 0
 
     @Synchronized
@@ -69,6 +71,13 @@ class VisibleCameraPipelineController(
             } else {
                 when (result) {
                     is VisibleCameraPipelineLaunchResult.Running -> {
+                        val sink = try {
+                            encodedVideoSinkFactory?.invoke()
+                        } catch (error: RuntimeException) {
+                            result.handle.stop()
+                            return@synchronized setError("Egreso fake no pudo iniciar: ${error.message ?: error::class.java.simpleName}")
+                        }
+                        activeEncodedVideoSink = sink
                         handle = result.handle
                         setRunning("Cámara local activa. Video codificado se descarta en memoria; no se transmite ni se graba.")
                     }
@@ -85,12 +94,11 @@ class VisibleCameraPipelineController(
     fun drainOnce(maxOutputs: Int): VisibleCameraPipelineUiState {
         val running = handle ?: return state
         val drained = running.drainEncoded(maxOutputs)
-        metrics.recordDrain(drained)
+        if (drained !is H264DrainResult.Chunks || activeEncodedVideoSink == null) {
+            metrics.recordDrain(drained)
+        }
         return when (drained) {
-            is H264DrainResult.Chunks -> {
-                running.consumeEncoded(drained.chunks.size)
-                setRunning("Cámara local activa. ${drained.chunks.size} chunks codificados descartados en memoria.")
-            }
+            is H264DrainResult.Chunks -> drainChunks(running, drained.chunks)
             H264DrainResult.TryAgainLater -> setRunning("Cámara local activa. Esperando salida codificada.")
             H264DrainResult.Stopped -> stopWithMessage("La cámara local ya se detuvo.")
             is H264DrainResult.BackpressureExceeded -> failAndStop("Backpressure local excedido; salida codificada detenida.")
@@ -104,10 +112,34 @@ class VisibleCameraPipelineController(
     @Synchronized
     fun stopForLifecycle(): VisibleCameraPipelineUiState = stopWithMessage("Cámara local detenida al ocultar la app.")
 
+    private fun drainChunks(running: VisibleCameraPipelineHandle, chunks: List<EncodedVideoChunk>): VisibleCameraPipelineUiState {
+        val sink = activeEncodedVideoSink ?: run {
+            running.consumeEncoded(chunks.size)
+            return setRunning("Cámara local activa. ${chunks.size} chunks codificados descartados en memoria.")
+        }
+        for (chunk in chunks) {
+            when (val result = sink.write(chunk)) {
+                is EncodedVideoSessionFrameSinkResult.Accepted -> Unit
+                EncodedVideoSessionFrameSinkResult.BackpressureExceeded -> return failAndStop("Egreso fake detenido por backpressure; cámara local detenida.")
+                EncodedVideoSessionFrameSinkResult.Closed -> return failAndStop("Egreso fake cerrado; cámara local detenida.")
+                EncodedVideoSessionFrameSinkResult.Oversized -> return failAndStop("Egreso fake rechazó chunk H.264 oversized; cámara local detenida.")
+                is EncodedVideoSessionFrameSinkResult.InvalidPayload -> return failAndStop("Egreso fake rechazó payload inválido: ${result.reason}; cámara local detenida.")
+                is EncodedVideoSessionFrameSinkResult.Failed -> return failAndStop("Egreso fake falló: ${result.reason}")
+            }
+        }
+        running.consumeEncoded(chunks.size)
+        val stats = sink.stats()
+        return setRunning(
+            detail = "Cámara local activa. ${stats.accepted} chunks codificados enviados al egreso fake; ${stats.dropped} descartados.",
+            metricsText = fakeEgressMetricsText(stats),
+        )
+    }
+
     private fun failAndStop(detail: String): VisibleCameraPipelineUiState {
         val stoppedHandle = handle
         handle = null
         stoppedHandle?.stop()
+        closeActiveSink()
         return setError(detail)
     }
 
@@ -116,6 +148,7 @@ class VisibleCameraPipelineController(
         val stoppedHandle = handle
         handle = null
         metrics.reset()
+        closeActiveSink()
         if (stoppedHandle == null) {
             state = VisibleCameraPipelineUiState(
                 status = VisibleCameraPipelineStatus.Stopped,
@@ -149,17 +182,31 @@ class VisibleCameraPipelineController(
         return state
     }
 
-    private fun setRunning(detail: String): VisibleCameraPipelineUiState {
+    private fun setRunning(
+        detail: String,
+        metricsText: String = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
+    ): VisibleCameraPipelineUiState {
         state = VisibleCameraPipelineUiState(
             status = VisibleCameraPipelineStatus.Running,
             title = "Cámara local",
             detail = detail,
             primaryAction = "Detener cámara local",
             primaryActionEnabled = true,
-            metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
+            metricsText = metricsText,
         )
         return state
     }
+
+    private fun closeActiveSink() {
+        activeEncodedVideoSink?.close()
+        activeEncodedVideoSink = null
+    }
+
+    private fun fakeEgressMetricsText(stats: EncodedVideoSessionFrameSinkStats): String = listOf(
+        "FPS: no disponible para egreso fake en T15d2",
+        "Chunks aceptados: ${stats.accepted}",
+        "Chunks descartados: ${stats.dropped}",
+    ).joinToString("\n")
 
     private fun setError(detail: String): VisibleCameraPipelineUiState {
         handle = null

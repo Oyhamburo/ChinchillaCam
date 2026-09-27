@@ -92,6 +92,225 @@ class VisibleCameraPipelineControllerTest {
     }
 
     @Test
+    fun drainTickWritesChunksToInjectedFakeEgressSinkAndConsumesAcceptedMemory() {
+        val handle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(byteArrayOf(1), presentationTimeUs = 1L, isCodecConfig = true, isKeyFrame = true),
+            EncodedVideoChunk(byteArrayOf(2), presentationTimeUs = 2L, isCodecConfig = false, isKeyFrame = false),
+        )))
+        val transport = ControllerRecordingEncodedVideoTransport()
+        val sink = EncodedVideoSessionFrameSink(transport)
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
+            sampleConfig(),
+            encodedVideoSinkFactory = { sink },
+        )
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val state = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(listOf(2), handle.consumed)
+        assertEquals(listOf(0, 1), transport.payloads.map { it.chunkIndex })
+        assertEquals(listOf(SessionVideoFrameKind.CODEC_CONFIG, SessionVideoFrameKind.DELTA), transport.payloads.map { it.frameKind })
+        assertEquals("Cámara local activa. 2 chunks codificados enviados al egreso fake; 0 descartados.", state.detail)
+        assertTrue(state.metricsText.contains("Chunks aceptados: 2"))
+        assertTrue(state.metricsText.contains("Chunks descartados: 0"))
+    }
+
+    @Test
+    fun acceptedFakeEgressChunksReportCountersWithoutFalseDiscardMetrics() {
+        val handle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(byteArrayOf(1), presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = true),
+            EncodedVideoChunk(byteArrayOf(2), presentationTimeUs = 2L, isCodecConfig = false, isKeyFrame = false),
+        )))
+        val transport = ControllerRecordingEncodedVideoTransport()
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
+            sampleConfig(),
+            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+        )
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val state = controller.drainOnce(maxOutputs = 4)
+
+        assertTrue(state.metricsText.contains("FPS: no disponible para egreso fake en T15d2"))
+        assertTrue(state.metricsText.contains("Chunks aceptados: 2"))
+        assertTrue(state.metricsText.contains("Chunks descartados: 0"))
+        assertFalse(state.metricsText.contains("Bytes descartados"))
+    }
+
+    @Test
+    fun throwingFakeEgressFactoryStopsNewHandleAndReportsTypedStartError() {
+        val handle = RecordingVisibleHandle()
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
+            sampleConfig(),
+            encodedVideoSinkFactory = { throw IllegalStateException("sink init boom") },
+        )
+
+        val state = controller.start(sampleSnapshot(), "camera-1", true)
+        val afterFailure = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(1, handle.stopCount)
+        assertEquals(VisibleCameraPipelineStatus.Error, state.status)
+        assertEquals("Egreso fake no pudo iniciar: sink init boom", state.detail)
+        assertEquals(state, afterFailure)
+    }
+
+    @Test
+    fun fakeEgressBackpressureStopsActiveHandleAndDoesNotConsumePendingMemory() {
+        val handle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(byteArrayOf(1), presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = true),
+        )))
+        val transport = ControllerRecordingEncodedVideoTransport(EncodedVideoSessionFrameWriteResult.BackpressureExceeded)
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
+            sampleConfig(),
+            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+        )
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val state = controller.drainOnce(maxOutputs = 4)
+        val afterFailure = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(1, handle.stopCount)
+        assertEquals(emptyList<Int>(), handle.consumed)
+        assertEquals(1, transport.closeCount)
+        assertEquals(VisibleCameraPipelineStatus.Error, state.status)
+        assertEquals("Egreso fake detenido por backpressure; cámara local detenida.", state.detail)
+        assertEquals(state, afterFailure)
+    }
+
+    @Test
+    fun fakeEgressClosedStopsActiveHandleAndPreventsLaterWrites() {
+        val handle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(byteArrayOf(1), presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = false),
+        )))
+        val transport = ControllerRecordingEncodedVideoTransport(EncodedVideoSessionFrameWriteResult.Closed)
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
+            sampleConfig(),
+            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+        )
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val state = controller.drainOnce(maxOutputs = 4)
+        controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(1, handle.stopCount)
+        assertEquals(emptyList<Int>(), handle.consumed)
+        assertEquals(1, transport.payloads.size)
+        assertEquals(1, transport.closeCount)
+        assertEquals("Egreso fake cerrado; cámara local detenida.", state.detail)
+    }
+
+    @Test
+    fun fakeEgressOversizedChunkStopsActiveHandleWithoutWriting() {
+        val handle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(ByteArray(65_536), presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = true),
+        )))
+        val transport = ControllerRecordingEncodedVideoTransport()
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
+            sampleConfig(),
+            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+        )
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val state = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(1, handle.stopCount)
+        assertEquals(emptyList<Int>(), handle.consumed)
+        assertEquals(0, transport.payloads.size)
+        assertEquals(1, transport.closeCount)
+        assertEquals("Egreso fake rechazó chunk H.264 oversized; cámara local detenida.", state.detail)
+    }
+
+    @Test
+    fun explicitStopClosesInjectedFakeEgressSink() {
+        val handle = RecordingVisibleHandle()
+        val transport = ControllerRecordingEncodedVideoTransport()
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
+            sampleConfig(),
+            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transport) },
+        )
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        controller.stopFromUser()
+
+        assertEquals(1, handle.stopCount)
+        assertEquals(1, transport.closeCount)
+    }
+
+    @Test
+    fun restartAfterExplicitStopCreatesFreshFakeEgressSink() {
+        val firstHandle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(byteArrayOf(1), presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = false),
+        )))
+        val secondHandle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(byteArrayOf(2), presentationTimeUs = 2L, isCodecConfig = false, isKeyFrame = true),
+        )))
+        val transports = mutableListOf<ControllerRecordingEncodedVideoTransport>()
+        val controller = VisibleCameraPipelineController(
+            QueueVisibleLauncher(
+                VisibleCameraPipelineLaunchResult.Running(firstHandle),
+                VisibleCameraPipelineLaunchResult.Running(secondHandle),
+            ),
+            sampleConfig(),
+            encodedVideoSinkFactory = {
+                ControllerRecordingEncodedVideoTransport().also { transports += it }.let(::EncodedVideoSessionFrameSink)
+            },
+        )
+
+        controller.start(sampleSnapshot(), "camera-1", true)
+        controller.drainOnce(maxOutputs = 4)
+        controller.stopFromUser()
+        controller.start(sampleSnapshot(), "camera-1", true)
+        val restarted = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(2, transports.size)
+        assertEquals(1, transports[0].closeCount)
+        assertEquals(1, transports[0].payloads.size)
+        assertEquals(1, transports[1].payloads.size)
+        assertEquals(SessionVideoFrameKind.KEY, transports[1].payloads.single().frameKind)
+        assertEquals(VisibleCameraPipelineStatus.Running, restarted.status)
+    }
+
+    @Test
+    fun restartAfterFakeEgressBackpressureCreatesFreshSinkInsteadOfReopeningClosedTransport() {
+        val firstHandle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(byteArrayOf(1), presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = false),
+        )))
+        val secondHandle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(byteArrayOf(2), presentationTimeUs = 2L, isCodecConfig = false, isKeyFrame = false),
+        )))
+        val transports = mutableListOf(
+            ControllerRecordingEncodedVideoTransport(EncodedVideoSessionFrameWriteResult.BackpressureExceeded),
+            ControllerRecordingEncodedVideoTransport(),
+        )
+        var nextTransport = 0
+        val controller = VisibleCameraPipelineController(
+            QueueVisibleLauncher(
+                VisibleCameraPipelineLaunchResult.Running(firstHandle),
+                VisibleCameraPipelineLaunchResult.Running(secondHandle),
+            ),
+            sampleConfig(),
+            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transports[nextTransport++]) },
+        )
+
+        controller.start(sampleSnapshot(), "camera-1", true)
+        controller.drainOnce(maxOutputs = 4)
+        controller.start(sampleSnapshot(), "camera-1", true)
+        val restarted = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals(1, firstHandle.stopCount)
+        assertEquals(listOf(1), secondHandle.consumed)
+        assertEquals(1, transports[0].closeCount)
+        assertEquals(1, transports[1].payloads.size)
+        assertEquals(VisibleCameraPipelineStatus.Running, restarted.status)
+    }
+
+    @Test
     fun repeatedStartWhileRunningDoesNotLaunchOrReplaceHandle() {
         val firstHandle = RecordingVisibleHandle()
         val launcher = QueueVisibleLauncher(
@@ -284,5 +503,21 @@ private class BlockingVisibleLauncher(
         entered.countDown()
         release.await(1, TimeUnit.SECONDS)
         return result
+    }
+}
+
+private class ControllerRecordingEncodedVideoTransport(
+    private val result: EncodedVideoSessionFrameWriteResult = EncodedVideoSessionFrameWriteResult.Written,
+) : EncodedVideoSessionFrameTransport {
+    val payloads = mutableListOf<SessionPayload.VideoChunkV2>()
+    var closeCount = 0
+
+    override fun write(payload: SessionPayload.VideoChunkV2): EncodedVideoSessionFrameWriteResult {
+        payloads += payload
+        return result
+    }
+
+    override fun close() {
+        closeCount += 1
     }
 }
