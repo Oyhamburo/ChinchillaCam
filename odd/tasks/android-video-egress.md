@@ -46,6 +46,9 @@ Use TDD: RED focused tests for sink mapping/failure behavior and controller sink
 - GREEN focused sink path: `:android:usb-probe:testDebugUnitTest` with `EncodedVideoSessionFrameSinkTest` — PASS in final focused run.
 - Scope note: the sink enforces the reviewed `u16` H.264 byte-field bound (`<= 65535`) for fake frame construction only; this does not claim that 65,535 bytes always fits a complete outer USB/transport packet with headers.
 - Fake-only caveat: no USB hardware, LAN, Activity, permission, service, manifest, real session, or decoder/playback readiness.
+- Native review: approved under lineage `review-3845d6cf80b1997f`; exact ACK recorded and authority burned.
+- Final reviewed T15d1 range: `a192cbf6d5131246e5e48e886dc6eca81bcbdc1a..60f9ca69d0050df6d7ecee16fda8a3c571c54b66`.
+- Reviewer advisory: `R3-close-exception-leaks` at `EncodedVideoSessionFrameSink.kt:110`; informational for this reviewed slice and reserved for a separate bounded hardening unit.
 
 ### T15d2 — controller integration
 
@@ -56,4 +59,5 @@ Use TDD: RED focused tests for sink mapping/failure behavior and controller sink
 - Factory failure is typed as visible Error and stops the newly launched handle before publishing it.
 - Focused controller restart/failure/factory/metrics tests: PASS.
 - Full `:android:usb-probe:testDebugUnitTest --rerun-tasks`, `:android:usb-probe:assembleDebug`, `git diff --check`, and independent verify: PASS.
-- T15d2 commit id pending.
+- T15d2 commit id: `1a045fa244c626c0c9f491ac4e836179b6c137d9`.
+- T15d1 closure doc commit pending.
