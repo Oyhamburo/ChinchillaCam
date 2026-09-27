@@ -36,4 +36,14 @@ Type 8 carries frame kind but does not by itself make sustained large-frame vide
 ## Evidence
 
 - Engram mirror: observation `7731` (`odd/android-video-frame-kind-wire/tasks`).
-- Verification to record after implementation: focused unit tests, assemble, diff check, independent verify, and commit id.
+- Source commit: `a20ecdc508b1c2c6771f4c87abc09f91877cf47d`.
+- Comparison base: `aaba87c`.
+- Local verification:
+  - `./gradlew :android:usb-probe:testDebugUnitTest --rerun-tasks` — PASS.
+  - `./gradlew :android:usb-probe:assembleDebug` — PASS.
+  - `git diff --check` — PASS.
+- Independent verification: `gentle-ai-verify` — PASS.
+- Coverage note: `VIDEO_CHUNK_V2` golden encoding is 33 bytes and validates frame-kind flag priority. Legacy type `5` keeps its existing type id and round trips unchanged; there is no exact new legacy type-5 golden claim in this unit.
+- Native review: pending.
+
+This evidence is limited to Kotlin wire-format source, unit/build checks, and review status. It does not claim hardware-camera readiness or decoder/playback readiness.
