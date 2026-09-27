@@ -73,6 +73,23 @@ class CameraCapabilityCatalogTest {
     }
 
 
+
+    @Test
+    fun duplicatePhysicalChildKeepsFirstSortedParentWithoutApi24PutIfAbsent() {
+        val gateway = FakeCameraCapabilityGateway(
+            openableIds = listOf("parent-b", "parent-a"),
+            characteristics = mapOf(
+                "parent-a" to FakeCameraCharacteristics(physicalCameraIds = setOf("shared-child")),
+                "parent-b" to FakeCameraCharacteristics(physicalCameraIds = setOf("shared-child")),
+                "shared-child" to FakeCameraCharacteristics(facing = CapabilityState.Known(CameraFacing.Back)),
+            ),
+        )
+
+        val catalog = CameraCapabilityCatalog(gateway).snapshot()
+
+        assertEquals(CameraIdRole.PhysicalOnlyChild(parentId = "parent-a"), catalog.entry("shared-child").role)
+    }
+
     @Test
     fun characteristicsFailureCreatesPartialUnknownEntryAndDoesNotAbortOtherCameras() {
         val gateway = FakeCameraCapabilityGateway(

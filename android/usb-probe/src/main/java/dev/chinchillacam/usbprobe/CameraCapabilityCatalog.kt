@@ -1,5 +1,6 @@
 package dev.chinchillacam.usbprobe
 
+import android.annotation.TargetApi
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCharacteristics
@@ -26,7 +27,7 @@ class CameraCapabilityCatalog(
             characteristics?.physicalCameraIds.orEmpty()
                 .sorted()
                 .filterNot { it in directCandidateSet }
-                .forEach { childId -> physicalOnlyChildren.putIfAbsent(childId, cameraId) }
+                .forEach { childId -> if (!physicalOnlyChildren.containsKey(childId)) physicalOnlyChildren[childId] = cameraId }
         }
 
         for ((childId, parentId) in physicalOnlyChildren) {
@@ -268,8 +269,8 @@ class AndroidCameraManagerFacadeImpl(
         else -> null
     }
 
-    override fun getPhysicalCameraIds(cameraId: String): Set<String> = if (sdkInt >= Build.VERSION_CODES.P) {
-        characteristics(cameraId).physicalCameraIds
+    override fun getPhysicalCameraIds(cameraId: String): Set<String> = if (sdkInt >= Build.VERSION_CODES.P && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        physicalCameraIdsApi28(cameraId)
     } else {
         emptySet()
     }
@@ -288,8 +289,8 @@ class AndroidCameraManagerFacadeImpl(
         val characteristics = characteristics(cameraId)
         val afModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: return null
         val exposureRange = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: return null
-        val zoomAvailable = if (sdkInt >= Build.VERSION_CODES.R) {
-            characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.let { it.upper > 1.0f } ?: return null
+        val zoomAvailable = if (sdkInt >= Build.VERSION_CODES.R && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            zoomRatioAvailableApi30(characteristics) ?: return null
         } else {
             characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM)?.let { it > 1.0f } ?: return null
         }
@@ -299,6 +300,13 @@ class AndroidCameraManagerFacadeImpl(
             zoomRatio = zoomAvailable,
         )
     }
+
+    @TargetApi(Build.VERSION_CODES.P)
+    private fun physicalCameraIdsApi28(cameraId: String): Set<String> = characteristics(cameraId).physicalCameraIds
+
+    @TargetApi(Build.VERSION_CODES.R)
+    private fun zoomRatioAvailableApi30(characteristics: CameraCharacteristics): Boolean? =
+        characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.let { it.upper > 1.0f }
 
     private fun characteristics(cameraId: String): CameraCharacteristics = cameraManager.getCameraCharacteristics(cameraId)
 
