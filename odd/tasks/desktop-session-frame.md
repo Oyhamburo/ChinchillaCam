@@ -46,5 +46,13 @@ Add a small pure Rust `SessionFrame v1` companion for desktop tests that matches
 - Format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
 - `git diff --check`: passed with no output.
 - Independent verification: `gentle-ai-verify` PASS; confirmed Android golden bytes, big-endian inner frame, little-endian BulkFrame nesting, UTF-8/duplicate-key rejection, and no transport/network/crypto/auth/decoder/virtual-camera work.
-- Commit local: pending.
-- Native review: pending; do not start without review-slot coordination.
+- Commit local: `f1de9db feat(desktop): add session frame slice`.
+- Native review: `review-e20ab89368bc203a` for committed range `caf25f9..f1de9db` approved and acknowledged; authority burned. Target `sha256:e149c5f5b39d2ebb8c1bb75d4fa4a455270829feea73a537b760877fd51c4646`; consumed revision `sha256:0e77c803470eb7fa7c087a42a2ab642ad040d4b2728f961647d59239e16343a2`.
+- Advisory informativo no bloqueante: `R3-encode-decode-size-asymmetry`; tratar como trabajo futuro separado, no como razón para reabrir este candidato.
+
+## Review workload note
+
+- Review-size exception recorded after local commit: `f1de9db` adds 676 lines, above the ~400 advisory review budget.
+- Rationale: the feature was already committed with tests and ODD evidence as one coherent work unit; splitting after the fact would require amend/reset/rebase or an artificial split that separates tests/docs from behavior.
+- Decision: do not code-golf, amend, reset, rebase, or fake-split this candidate. Native review should inspect only committed range `caf25f9..f1de9db` with `committedOnly: true`.
+- Future payload slices must be genuinely smaller and target <=400 changed lines each: remaining `HandshakeHello`, `HandshakeReject`, `StreamMetadata`, `MetricsSnapshot`, and broader payload validation should not be stacked onto this candidate before review closes.
