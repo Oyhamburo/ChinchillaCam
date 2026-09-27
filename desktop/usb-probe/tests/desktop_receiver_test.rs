@@ -490,6 +490,187 @@ fn desktop_receiver_reports_video_chunk_v2_queue_backpressure() {
     assert!(queue.pop_front().is_none());
 }
 
+fn type9_part(session_id: &str, pts: i64, fragment_index: i32, payload: &[u8]) -> BulkFrame {
+    video_fragment_bulk_frame(
+        session_id,
+        VideoFrameKind::Key,
+        pts,
+        fragment_index,
+        2,
+        3,
+        payload.to_vec(),
+    )
+}
+
+fn assert_accepts_fresh_two_fragment_sequence(
+    receiver: &mut usb_probe::DesktopVideoSessionReceiver<PanicIfCalledClassifier>,
+    queue: &mut BoundedEncodedVideoQueue,
+    pts: i64,
+) {
+    receiver
+        .receive(&type9_part("session-after-reset", pts, 0, &[0x00]), queue)
+        .unwrap();
+    receiver
+        .receive(
+            &type9_part("session-after-reset", pts, 1, &[0x01, 0x65]),
+            queue,
+        )
+        .unwrap();
+
+    let chunk = queue.pop_front().unwrap();
+    assert_eq!(chunk.presentation_timestamp().as_micros(), pts as u64);
+    assert_eq!(chunk.frame_kind(), EncodedVideoFrameKind::Key);
+    assert_eq!(chunk.payload(), &[0x00, 0x01, 0x65]);
+    assert!(queue.is_empty());
+}
+
+#[test]
+fn desktop_receiver_session_type9_pending_wrong_bulk_stream_closes_until_reset() {
+    let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(PanicIfCalledClassifier);
+    let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
+    let final_fragment = type9_part("session-fragment", 101_001, 1, &[0x01, 0x65]);
+
+    receiver
+        .receive(
+            &type9_part("session-fragment", 101_001, 0, &[0x00]),
+            &mut queue,
+        )
+        .unwrap();
+    assert_eq!(
+        receiver.receive(
+            &BulkFrame::new(0x1111_2222, vec![b'C']).unwrap(),
+            &mut queue
+        ),
+        Err(DesktopReceiverError::UnexpectedBulkStream {
+            actual: 0x1111_2222,
+            expected: USB_SESSION_FRAME_STREAM_ID,
+        })
+    );
+    assert!(queue.is_empty());
+    assert_eq!(
+        receiver.receive(&final_fragment, &mut queue),
+        Err(DesktopReceiverError::Closed)
+    );
+
+    receiver.reset_for_new_session();
+    assert_accepts_fresh_two_fragment_sequence(&mut receiver, &mut queue, 101_002);
+}
+
+#[test]
+fn desktop_receiver_session_type9_pending_malformed_session_frame_closes_until_reset() {
+    let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(PanicIfCalledClassifier);
+    let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
+    let final_fragment = type9_part("session-fragment", 202_001, 1, &[0x01, 0x65]);
+
+    receiver
+        .receive(
+            &type9_part("session-fragment", 202_001, 0, &[0x00]),
+            &mut queue,
+        )
+        .unwrap();
+    assert!(matches!(
+        receiver.receive(
+            &BulkFrame::new(USB_SESSION_FRAME_STREAM_ID, vec![b'C']).unwrap(),
+            &mut queue,
+        ),
+        Err(DesktopReceiverError::MalformedSessionFrame(_))
+    ));
+    assert!(queue.is_empty());
+    assert_eq!(
+        receiver.receive(&final_fragment, &mut queue),
+        Err(DesktopReceiverError::Closed)
+    );
+
+    receiver.reset_for_new_session();
+    assert_accepts_fresh_two_fragment_sequence(&mut receiver, &mut queue, 202_002);
+}
+
+#[test]
+fn desktop_receiver_session_type9_final_queue_full_closes_until_reset() {
+    let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(PanicIfCalledClassifier);
+    let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
+
+    receiver
+        .receive(
+            &video_fragment_bulk_frame(
+                "session-fill",
+                VideoFrameKind::Delta,
+                303_000,
+                0,
+                1,
+                1,
+                vec![0x41],
+            ),
+            &mut queue,
+        )
+        .unwrap();
+    receiver
+        .receive(
+            &type9_part("session-fragment", 303_001, 0, &[0x00]),
+            &mut queue,
+        )
+        .unwrap();
+    assert_eq!(
+        receiver.receive(
+            &type9_part("session-fragment", 303_001, 1, &[0x01, 0x65]),
+            &mut queue,
+        ),
+        Err(DesktopReceiverError::SinkRejected(
+            usb_probe::EncodedVideoSinkError::QueueFull { capacity: 1 }
+        ))
+    );
+    assert_eq!(queue.len(), 1);
+    assert_eq!(
+        receiver.receive(
+            &type9_part("session-fragment", 303_001, 1, &[0x01, 0x65]),
+            &mut queue,
+        ),
+        Err(DesktopReceiverError::Closed)
+    );
+
+    receiver.reset_for_new_session();
+    let mut accepting_queue = BoundedEncodedVideoQueue::new(1).unwrap();
+    assert_accepts_fresh_two_fragment_sequence(&mut receiver, &mut accepting_queue, 303_002);
+}
+
+#[test]
+fn desktop_receiver_session_type9_final_queue_bytes_full_closes_until_reset() {
+    let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(PanicIfCalledClassifier);
+    let mut queue = BoundedEncodedVideoQueue::with_limits(2, 2).unwrap();
+
+    receiver
+        .receive(
+            &type9_part("session-fragment", 404_001, 0, &[0x00]),
+            &mut queue,
+        )
+        .unwrap();
+    assert_eq!(
+        receiver.receive(
+            &type9_part("session-fragment", 404_001, 1, &[0x01, 0x65]),
+            &mut queue,
+        ),
+        Err(DesktopReceiverError::SinkRejected(
+            usb_probe::EncodedVideoSinkError::QueueBytesFull {
+                queued: 0,
+                incoming: 3,
+                max: 2,
+            }
+        ))
+    );
+    assert!(queue.is_empty());
+    assert_eq!(
+        receiver.receive(
+            &type9_part("session-fragment", 404_001, 1, &[0x01, 0x65]),
+            &mut queue,
+        ),
+        Err(DesktopReceiverError::Closed)
+    );
+
+    receiver.reset_for_new_session();
+    let mut accepting_queue = BoundedEncodedVideoQueue::new(1).unwrap();
+    assert_accepts_fresh_two_fragment_sequence(&mut receiver, &mut accepting_queue, 404_002);
+}
+
 struct PanicIfCalledClassifier;
 
 impl VideoFrameKindClassifier for PanicIfCalledClassifier {

@@ -38,14 +38,21 @@ Add a fake-only stateful desktop receiver wrapper that can consume `VIDEO_CHUNK_
 - RED then GREEN: wrapper preserves type8 direct-kind behavior.
 - RED then GREEN: wrong stream id while partial fragment is active is terminal; a later valid receive returns `Closed` until `reset_for_new_session()`.
 
+## T20e1b failure/reset tests
+
+- Base: `668f6be feat(desktop): add stateful fragment receiver`
+- Wrong stream while a type9 fragment is partial is terminal: wrapper clears state, leaves sink empty, later valid final returns `Closed` until explicit reset.
+- Malformed SessionFrame while a type9 fragment is partial is terminal: wrapper clears state, leaves sink empty, later valid final returns `Closed` until explicit reset.
+- Queue count-full and byte-full rejection after a final fragment returns `SinkRejected`, closes wrapper, and reset plus a new adequate sink accepts a fresh sequence.
+- Exact 4MiB reassembled chunk acceptance may be covered only if concise and within the ≤400-line work unit; >4MiB churn remains reassembler-covered.
+
 ## Deferred T20e2
 
 - Duplicate/out-of-order/mismatch reassembler errors.
-- Sink byte/full backpressure terminal close.
-- Malformed frame terminal close.
 - Unexpected payload terminal close.
-- Reset-focused recovery tests.
+- Additional reset-focused recovery tests if needed.
 
 ## Evidence
 
 - ODD/Engram mirror created before source edits.
+- T20e1a committed as `668f6be feat(desktop): add stateful fragment receiver`.
