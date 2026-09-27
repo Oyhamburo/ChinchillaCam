@@ -2,6 +2,7 @@ mod desktop_receiver;
 mod encoded_video_sink;
 mod session_frame;
 mod trusted_phone_store;
+mod video_fragment_reassembler;
 
 pub use desktop_receiver::{
     receive_desktop_video_frame, DesktopReceiverError, StaticFrameKindClassifier,
@@ -18,6 +19,9 @@ pub use session_frame::{
 pub use trusted_phone_store::{
     FileTrustedPhoneStore, TrustedPhoneIdentity, TrustedPhoneStoreError,
     TrustedPhoneStoreWriteCoordinator,
+};
+pub use video_fragment_reassembler::{
+    ReassembledVideoChunk, VideoFragmentReassembler, VideoFragmentReassemblerError,
 };
 
 use std::{
