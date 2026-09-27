@@ -173,3 +173,27 @@ Límites del estado parcial:
 - El checksum QR no autentica ni resiste manipulación maliciosa; solo detecta corrupción accidental.
 - Antes de T17 siguen obligatorios: T13b, T13c, prueba de posesión de clave privada, nonce single-use/expiry, confirmación explícita de confianza, threat model y TLS estándar/identidad de par esperada.
 - Sin claims Samsung/Windows/macOS/físicos.
+
+## Diseño T13b — persistencia Android segura/local
+
+T13b debe convertir el seam Android in-memory en persistencia local testeable sin cerrar todavía M3 completo ni desbloquear LAN. El material persistido representa identidad pública/fingerprint de la PC y metadatos de revocación; cualquier clave privada generada en Android debe permanecer en AndroidKeyStore y nunca serializarse en SharedPreferences/JSON/tests.
+
+Alcance propuesto:
+
+- Mantener `TrustedDesktopStore` como contrato; agregar implementación Android local detrás de una abstracción de key-value/archivo inyectable para poder testear sin dispositivo.
+- Persistir solo datos públicos/locales: `desktopId`, nombre visible, fingerprint/hash del material público de la PC, timestamps, expiración opcional y revocación opcional.
+- Cargar defensivamente: corrupción, campos faltantes, desktopId inválido o fingerprint inválida no deben autorizar confianza; deben devolver error/estado seguro sin borrar silenciosamente evidencia salvo operación explícita.
+- Revocación persistente: después de `revoke`, reiniciar la store fake/persistente debe seguir devolviendo `Revoked`; `forget` sí borra el registro de forma explícita.
+- Migración/versionado mínimo del formato para no bloquear cambios posteriores de prueba de posesión.
+- Sin LAN, sin listener externo, sin transporte físico, sin desktop real y sin claim de soporte. T13c desktop y handshake de posesión siguen pendientes.
+
+Criterios RED/GREEN esperados:
+
+- Registro guardado se recupera tras recrear la store.
+- Revocación persiste tras recreación y bloquea `evaluate`.
+- `forget` elimina de forma persistente.
+- Fingerprint distinta sigue devolviendo `FingerprintMismatch` tras recarga.
+- Archivo/JSON corrupto o versión desconocida falla cerrado (`Unknown`/error tipado) y no produce `Trusted`.
+- La implementación no expone ni serializa claves privadas; solo material público/fingerprint.
+
+Gate antes de review nativa: reportar `READY T13b` al coordinador con worktree, rango `base..HEAD` y líneas diff, y esperar `GRANT T13b` explícito.
