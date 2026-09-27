@@ -67,4 +67,4 @@ Session id `s`, sequence `0`, key frame kind `1`, chunk index `0`, PTS `0`, byte
 - Diff budget at source commit: final committed candidate `997b41f..77e2127` changed 5 files with 353 insertions and 2 deletions = 355 diff lines, within <=400.
 - Independent verification: `gentle-ai-verify` PASS; confirmed type 8 wire order/kind mapping, typed unknown-kind error with no fallback, legacy type 5 golden preserved, v2 receiver not consumed, and no hardware/LAN/crypto claims.
 - Source commit: `77e2127 feat(desktop): add video chunk frame kind wire`.
-- Native review: pending explicit GRANT; no INSPECT/START run for this candidate yet.
+- Native review: `review-5e0382ad18aea6d4` approved and acknowledged; authority burned. Target `sha256:c529988dc205da5981c7cb18a05f12d6e474214a4a8749f01debcfb2c414b12f`; consumed revision `sha256:02d2860c05c85a6d646b323281bfbe513ce240c158e32ab437416b9c2a0a5cef`. Informational advisory only: `R3-frame-kind-wire-coverage`; later receiver v2 consumption tests are tracked separately and do not reopen this candidate.
