@@ -1,45 +1,54 @@
-# ODD: Desktop session sequence binding
+# ODD: Enlace de secuencia de sesión del receptor desktop
 
-## Status
+## Estado
 
-- Branch: `feat/desktop-video-sink`
-- Base for M3a: `d5223f7 test(desktop): cover receiver fragment failures`
-- Native review: do not start while consent/review is blocked.
+- Rama: `feat/desktop-video-sink`
+- Base para M3a: `d5223f7 test(desktop): cover receiver fragment failures`
+- M3a: `33e4baa test(desktop): prepare receiver sequence fixtures`
+- M3b1: `2eb67bb feat(desktop): bind receiver session sequence`
+- Revisión nativa: no iniciar mientras el consentimiento/review esté bloqueado.
 
-## Goal
+## Objetivo
 
-Prepare the fake-only `DesktopVideoSessionReceiver` tests for future session id and `SessionFrame.sequence` binding without changing source behavior in M3a.
+Preparar y proteger el `DesktopVideoSessionReceiver` fake-only con enlace de `session_id` y `SessionFrame.sequence`, sin cambiar el contrato legacy stateless de `receive_desktop_video_frame`.
 
-## Read-only mapping
+## Mapeo read-only
 
-- `SessionFrame.sequence` is an existing nonnegative `i32` wire field with constructor/getter and encode/decode validation.
-- Current desktop receiver helpers used fixed sequence values by payload family (`7`, `8`, `9`), including repeated `9` for multiple type9 fragments.
-- Future strict monotonic receiver binding would fail those fixtures for replay before it reaches the intended behavior under test.
-- Android fake adapter behavior treats `Int.MAX_VALUE` as a valid final write: the receiver must accept and push that frame once, then mark the state closed because no next sequence is representable.
+- `SessionFrame.sequence` ya existe como campo wire `i32` no negativo, con constructor/getter y validación encode/decode.
+- Los helpers antiguos del receiver desktop usaban valores fijos por familia de payload (`7`, `8`, `9`), incluido `9` repetido para múltiples fragmentos type9.
+- M3a migró sólo los fixtures stateful a secuencias explícitas y monótonas; los fixtures legacy stateless conservan sus valores fijos.
+- El fake adapter Android trata `Int.MAX_VALUE` como una escritura final válida: el receiver debe aceptar y empujar ese frame una vez y después marcarse `Closed`, porque no hay siguiente secuencia representable.
 
-## M3a scope
+## Alcance M3a
 
-- Test fixture migration only.
-- Add explicit-sequence helper variants for stateful-wrapper tests.
-- Migrate stateful `DesktopVideoSessionReceiver` tests to monotonic sequences across type5/type8/type9 and reset flows.
-- Keep legacy stateless receiver fixtures and behavior unchanged.
-- No `desktop_receiver.rs` source behavior change.
-- No real USB, LAN, decoder, crypto, auth/PoP, hardware, merge, push, PR, or native review scope.
+- Migración de fixtures de test únicamente.
+- Agregar helpers con secuencia explícita para tests del wrapper stateful.
+- Migrar tests stateful de `DesktopVideoSessionReceiver` a secuencias monótonas entre type5/type8/type9 y flujos con reset.
+- Mantener sin cambios los fixtures y comportamiento legacy stateless.
+- Sin cambios de comportamiento en `desktop_receiver.rs`.
 
-## Authorized edit surfaces
+## Alcance M3b1
+
+- El wrapper enlaza el primer `session_id` decodificado y la primera `SessionFrame.sequence` no negativa.
+- Cada frame type5/type8/type9 posterior debe usar el mismo `session_id` y la siguiente secuencia exacta.
+- Replay, gap y mezcla de `session_id` fallan cerrado, limpian estado y no empujan al sink.
+- La validación ocurre antes de classifier, reassembler y sink push.
+- `reset_for_new_session()` limpia el enlace de sesión/secuencia.
+- `i32::MAX` queda soportado en source para paridad con el fake Android; las pruebas dedicadas quedan diferidas a M3b2.
+- `receive_desktop_video_frame` permanece stateless y sin enlace.
+
+## Superficies autorizadas usadas
 
 - `desktop/usb-probe/tests/desktop_receiver_test.rs`
+- `desktop/usb-probe/src/desktop_receiver.rs`
 - `odd/tasks/desktop-session-sequence-binding.md`
 
-## Future M3b semantics, pending fresh grant
+## Fuera de alcance
 
-- Wrapper binds first accepted `session_id` and the next strict sequence.
-- Later type5/type8/type9 frames must use the same session id and exact next sequence; replay, gap, and mixed session id fail closed without sink push.
-- `i32::MAX` is accepted and pushed once when otherwise valid, then the wrapper enters `Closed` until `reset_for_new_session()`.
-- `reset_for_new_session()` clears sequence/session binding and permits a new nonnegative sequence start.
-- Existing stateless `receive_desktop_video_frame` remains unbound.
+- USB real, LAN, decoder, crypto, auth/PoP, hardware, merge, push, PR o revisión nativa.
 
-## Evidence
+## Evidencia
 
-- M3a ODD/Engram mirror created before test fixture edits.
-- M3b ODD/Engram transition recorded before source edits.
+- M3a ODD/Engram mirror creado antes de editar fixtures.
+- M3b ODD/Engram transition registrada antes de editar source.
+- M3b1 quedó dentro del presupuesto de revisión: 366 inserciones y 17 eliminaciones.
