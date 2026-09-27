@@ -31,3 +31,10 @@ Alcance T15a:
 - Errores tipados: stream inesperado, payload USB oversize, frame de sesión inválido, cola vacía/EOF fake.
 - Tests RED: roundtrip handshake/video metadata/video chunk; rechazo de stream id incorrecto; oversize; bytes de sesión inválidos; demostrar que payload `SessionFrame` no se reinterpreta como little-endian.
 - Sin Android USB real, sin permiso USB, sin desktop, sin cámara, sin red.
+
+### Revisión nativa RDD T15a
+
+- Candidato: `7801e8c` contra base `dc6eeed`.
+- Lineage: `review-0466538640e95493`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgo advisory no bloqueante: `R3-accessory-truncation-classification` en `UsbSessionFrameTransport.kt:81-86`. No abrió corrección para T15a.
