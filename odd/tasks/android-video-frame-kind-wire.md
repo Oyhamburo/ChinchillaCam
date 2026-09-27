@@ -44,6 +44,7 @@ Type 8 carries frame kind but does not by itself make sustained large-frame vide
   - `git diff --check` — PASS.
 - Independent verification: `gentle-ai-verify` — PASS.
 - Coverage note: `VIDEO_CHUNK_V2` golden encoding is 33 bytes and validates frame-kind flag priority. Legacy type `5` keeps its existing type id and round trips unchanged; there is no exact new legacy type-5 golden claim in this unit.
-- Native review: pending.
+- Native review: approved under lineage `review-b6560c4fb7d97a2f`; exact ACK recorded.
+- Final reviewed range: `aaba87cb7386200cd4a488bac6ca557c5188fef3..7d79d64e97b1b876f1bf0682ad54727c955a5267`.
 
-This evidence is limited to Kotlin wire-format source, unit/build checks, and review status. It does not claim hardware-camera readiness or decoder/playback readiness.
+This evidence is limited to Kotlin fake wire-format source, unit/build checks, and review status. It does not claim hardware-camera readiness or decoder/playback readiness.
