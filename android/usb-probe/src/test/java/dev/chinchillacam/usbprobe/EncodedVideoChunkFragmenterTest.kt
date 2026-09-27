@@ -29,8 +29,14 @@ class EncodedVideoChunkFragmenterTest {
         assertEquals(listOf(0, 1), fragments.map { it.fragmentIndex })
         assertEquals(listOf(2, 2), fragments.map { it.fragmentCount })
         assertEquals(listOf(65_484, 1), fragments.map { it.fragmentBytes.size })
+        assertEquals(bytes.size, fragments.sumOf { it.fragmentBytes.size })
         assertEquals(listOf(SessionVideoFrameKind.KEY, SessionVideoFrameKind.KEY), fragments.map { it.frameKind })
         assertArrayEquals(bytes, fragments.flatMap { it.fragmentBytes.asIterable() }.toByteArray())
+        bytes.fill(0)
+        assertEquals(65_484, fragments.first().fragmentBytes.size)
+        assertEquals(1, fragments.last().fragmentBytes.size)
+        assertEquals(0, fragments.first().fragmentBytes.first().toInt())
+        assertEquals(0xff.toByte(), fragments.first().fragmentBytes[255])
         fragments.forEach { assertTrue(8 + SessionFrameCodec.encode(SessionFrame(1, 0, "s", it)).size <= 65_536) }
     }
 
