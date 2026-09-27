@@ -112,5 +112,6 @@ fn session_payload_type_id(payload: &SessionFramePayload) -> u8 {
         SessionFramePayload::VideoChunk { .. } => 5,
         SessionFramePayload::MetricsSnapshot { .. } => 6,
         SessionFramePayload::CameraControlCommand { .. } => 7,
+        SessionFramePayload::VideoChunkV2 { .. } => 8,
     }
 }

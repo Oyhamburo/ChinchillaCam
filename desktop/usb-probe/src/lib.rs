@@ -13,7 +13,7 @@ pub use encoded_video_sink::{
 };
 pub use session_frame::{
     SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,
-    SessionFramePayload,
+    SessionFramePayload, VideoFrameKind,
 };
 pub use trusted_phone_store::{
     FileTrustedPhoneStore, TrustedPhoneIdentity, TrustedPhoneStoreError,

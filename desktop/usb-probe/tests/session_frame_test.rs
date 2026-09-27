@@ -47,6 +47,16 @@ const METRICS_SNAPSHOT_GOLDEN: &[u8] = &[
     b'a', 0, 0, 0, 20, 0, 0, 0, 0, 7, 91, 205, 22, 0, 0, 0, 42, 0, 0, 0, 18, 0, 0, 0, 30,
 ];
 
+const VIDEO_CHUNK_LEGACY_GOLDEN: &[u8] = &[
+    b'C', b'C', b'S', b'F', 1, 5, 0, 0, 0, 0, 0, 1, b's', 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 1, 0x65,
+];
+
+const VIDEO_CHUNK_V2_GOLDEN: &[u8] = &[
+    b'C', b'C', b'S', b'F', 1, 8, 0, 0, 0, 0, 0, 1, b's', 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 1, 0, 1, 0x65,
+];
+
 #[test]
 fn session_frame_encodes_android_golden_handshake_hello_big_endian() {
     let frame = SessionFrame::new(
@@ -155,6 +165,109 @@ fn session_frame_encodes_android_golden_metrics_snapshot_big_endian() {
     assert_eq!(
         SessionFrameCodec::decode(METRICS_SNAPSHOT_GOLDEN).unwrap(),
         frame
+    );
+}
+
+#[test]
+fn session_frame_preserves_legacy_video_chunk_type5_golden() {
+    let frame = SessionFrame::new(
+        0,
+        "s",
+        SessionFramePayload::VideoChunk {
+            chunk_index: 0,
+            presentation_time_us: 0,
+            h264_bytes: vec![0x65],
+        },
+    );
+
+    assert_eq!(
+        SessionFrameCodec::encode(&frame).unwrap(),
+        VIDEO_CHUNK_LEGACY_GOLDEN
+    );
+    assert_eq!(
+        SessionFrameCodec::decode(VIDEO_CHUNK_LEGACY_GOLDEN).unwrap(),
+        frame
+    );
+}
+
+#[test]
+fn session_frame_encodes_android_golden_video_chunk_v2_with_frame_kind() {
+    let frame = SessionFrame::new(
+        0,
+        "s",
+        SessionFramePayload::video_chunk_v2_key(0, 0, vec![0x65]),
+    );
+
+    assert_eq!(
+        SessionFrameCodec::encode(&frame).unwrap(),
+        VIDEO_CHUNK_V2_GOLDEN
+    );
+    assert_eq!(
+        SessionFrameCodec::decode(VIDEO_CHUNK_V2_GOLDEN).unwrap(),
+        frame
+    );
+}
+
+#[test]
+fn session_frame_rejects_invalid_video_chunk_v2_values() {
+    for (field, chunk_index, presentation_time_us) in
+        [("chunk index", -1, 0), ("presentationTimeUs", 0, -1)]
+    {
+        let frame = SessionFrame::new(
+            1,
+            "s",
+            SessionFramePayload::video_chunk_v2_delta(
+                chunk_index,
+                presentation_time_us,
+                vec![0x41],
+            ),
+        );
+        assert_eq!(
+            SessionFrameCodec::encode(&frame),
+            Err(SessionFrameEncodeError::InvalidPayload(format!(
+                "video chunk v2 {field} must be non-negative"
+            )))
+        );
+
+        let payload = bytes()
+            .int(chunk_index)
+            .long(presentation_time_us)
+            .byte(0)
+            .short(1)
+            .byte(0x41)
+            .finish();
+        assert_eq!(
+            SessionFrameCodec::decode(&raw_frame(8, payload)),
+            Err(SessionFrameDecodeError::InvalidPayload(format!(
+                "video chunk v2 {field} must be non-negative"
+            )))
+        );
+    }
+
+    let unknown_kind = bytes().int(0).long(0).byte(99).short(1).byte(0x41).finish();
+    assert_eq!(
+        SessionFrameCodec::decode(&raw_frame(8, unknown_kind)),
+        Err(SessionFrameDecodeError::InvalidPayload(
+            "unknown video chunk v2 kind: 99".to_string()
+        ))
+    );
+
+    let empty_bytes = bytes().int(0).long(0).byte(1).short(0).finish();
+    assert_eq!(
+        SessionFrameCodec::decode(&raw_frame(8, empty_bytes)),
+        Err(SessionFrameDecodeError::InvalidPayload(
+            "video chunk v2 h264Bytes must not be empty".to_string()
+        ))
+    );
+
+    let oversized_bytes = SessionFrame::new(
+        1,
+        "s",
+        SessionFramePayload::video_chunk_v2_codec_config(0, 0, vec![0x41; u16::MAX as usize + 1]),
+    );
+    assert_eq!(
+        SessionFrameCodec::encode(&oversized_bytes),
+        Err(SessionFrameEncodeError::FieldTooLarge("h264Bytes"))
     );
 }
 

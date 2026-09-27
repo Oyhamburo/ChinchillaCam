@@ -67,6 +67,12 @@ pub enum SessionFramePayload {
         presentation_time_us: i64,
         h264_bytes: Vec<u8>,
     },
+    VideoChunkV2 {
+        chunk_index: i32,
+        presentation_time_us: i64,
+        kind: VideoFrameKind,
+        h264_bytes: Vec<u8>,
+    },
     MetricsSnapshot {
         captured_at_us: i64,
         dropped_frames: i32,
@@ -80,6 +86,59 @@ pub enum SessionFramePayload {
 }
 
 impl SessionFramePayload {
+    pub fn video_chunk_v2_delta(
+        chunk_index: i32,
+        presentation_time_us: i64,
+        h264_bytes: Vec<u8>,
+    ) -> Self {
+        Self::video_chunk_v2(
+            chunk_index,
+            presentation_time_us,
+            VideoFrameKind::Delta,
+            h264_bytes,
+        )
+    }
+
+    pub fn video_chunk_v2_key(
+        chunk_index: i32,
+        presentation_time_us: i64,
+        h264_bytes: Vec<u8>,
+    ) -> Self {
+        Self::video_chunk_v2(
+            chunk_index,
+            presentation_time_us,
+            VideoFrameKind::Key,
+            h264_bytes,
+        )
+    }
+
+    pub fn video_chunk_v2_codec_config(
+        chunk_index: i32,
+        presentation_time_us: i64,
+        h264_bytes: Vec<u8>,
+    ) -> Self {
+        Self::video_chunk_v2(
+            chunk_index,
+            presentation_time_us,
+            VideoFrameKind::CodecConfig,
+            h264_bytes,
+        )
+    }
+
+    fn video_chunk_v2(
+        chunk_index: i32,
+        presentation_time_us: i64,
+        kind: VideoFrameKind,
+        h264_bytes: Vec<u8>,
+    ) -> Self {
+        Self::VideoChunkV2 {
+            chunk_index,
+            presentation_time_us,
+            kind,
+            h264_bytes,
+        }
+    }
+
     fn type_id(&self) -> u8 {
         match self {
             Self::HandshakeHello { .. } => 1,
@@ -89,6 +148,35 @@ impl SessionFramePayload {
             Self::VideoChunk { .. } => 5,
             Self::MetricsSnapshot { .. } => 6,
             Self::CameraControlCommand { .. } => 7,
+            Self::VideoChunkV2 { .. } => 8,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoFrameKind {
+    Delta,
+    Key,
+    CodecConfig,
+}
+
+impl VideoFrameKind {
+    fn wire_value(self) -> u8 {
+        match self {
+            Self::Delta => 0,
+            Self::Key => 1,
+            Self::CodecConfig => 2,
+        }
+    }
+
+    fn from_wire(value: u8) -> Result<Self, SessionFrameDecodeError> {
+        match value {
+            0 => Ok(Self::Delta),
+            1 => Ok(Self::Key),
+            2 => Ok(Self::CodecConfig),
+            other => Err(SessionFrameDecodeError::InvalidPayload(format!(
+                "unknown video chunk v2 kind: {other}"
+            ))),
         }
     }
 }
@@ -291,6 +379,19 @@ fn encoded_payload_size(payload: &SessionFramePayload) -> Result<usize, SessionF
                 "payload",
             )
         }
+        SessionFramePayload::VideoChunkV2 {
+            chunk_index,
+            presentation_time_us,
+            h264_bytes,
+            ..
+        } => {
+            validate_video_chunk_v2_for_encode(*chunk_index, *presentation_time_us, h264_bytes)?;
+            checked_add(
+                13,
+                encoded_bytes_with_len_size(h264_bytes.len())?,
+                "payload",
+            )
+        }
         SessionFramePayload::MetricsSnapshot {
             captured_at_us,
             dropped_frames,
@@ -378,6 +479,18 @@ fn encode_payload(payload: &SessionFramePayload) -> Result<Vec<u8>, SessionFrame
             writer.write_i32(*chunk_index);
             writer.write_i64(*presentation_time_us);
             writer.write_bytes_with_len(h264_bytes)?;
+        }
+        SessionFramePayload::VideoChunkV2 {
+            chunk_index,
+            presentation_time_us,
+            kind,
+            h264_bytes,
+        } => {
+            validate_video_chunk_v2_for_encode(*chunk_index, *presentation_time_us, h264_bytes)?;
+            writer.write_i32(*chunk_index);
+            writer.write_i64(*presentation_time_us);
+            writer.write_u8(kind.wire_value());
+            writer.write_bytes_with_len_field(h264_bytes, "h264Bytes")?;
         }
         SessionFramePayload::MetricsSnapshot {
             captured_at_us,
@@ -497,6 +610,19 @@ fn decode_payload(
             }
             SessionFramePayload::CameraControlCommand { command, arguments }
         }
+        8 => {
+            let chunk_index = reader.read_i32("chunkIndex")?;
+            let presentation_time_us = reader.read_i64("presentationTimeUs")?;
+            let kind = VideoFrameKind::from_wire(reader.read_u8("kind")?)?;
+            let h264_bytes = reader.read_bytes_with_len("h264Bytes")?;
+            validate_video_chunk_v2_for_decode(chunk_index, presentation_time_us, &h264_bytes)?;
+            SessionFramePayload::VideoChunkV2 {
+                chunk_index,
+                presentation_time_us,
+                kind,
+                h264_bytes,
+            }
+        }
         other => return Err(SessionFrameDecodeError::UnknownType(other)),
     };
 
@@ -506,6 +632,22 @@ fn decode_payload(
         ));
     }
     Ok(decoded)
+}
+
+fn validate_video_chunk_v2_for_encode(
+    chunk_index: i32,
+    presentation_time_us: i64,
+    h264_bytes: &[u8],
+) -> Result<(), SessionFrameEncodeError> {
+    validate_non_negative_for_encode(chunk_index, "video chunk v2 chunk index")?;
+    validate_non_negative_for_encode(presentation_time_us, "video chunk v2 presentationTimeUs")?;
+    if h264_bytes.is_empty() {
+        return Err(SessionFrameEncodeError::InvalidPayload(
+            "video chunk v2 h264Bytes must not be empty".to_string(),
+        ));
+    }
+    write_len_fits_u16(h264_bytes.len(), "h264Bytes")?;
+    Ok(())
 }
 
 fn validate_stream_metadata_for_encode(
@@ -558,6 +700,21 @@ where
         return Err(SessionFrameEncodeError::InvalidPayload(format!(
             "{field} must be non-negative"
         )));
+    }
+    Ok(())
+}
+
+fn validate_video_chunk_v2_for_decode(
+    chunk_index: i32,
+    presentation_time_us: i64,
+    h264_bytes: &[u8],
+) -> Result<(), SessionFrameDecodeError> {
+    validate_non_negative_for_decode(chunk_index, "video chunk v2 chunk index")?;
+    validate_non_negative_for_decode(presentation_time_us, "video chunk v2 presentationTimeUs")?;
+    if h264_bytes.is_empty() {
+        return Err(SessionFrameDecodeError::InvalidPayload(
+            "video chunk v2 h264Bytes must not be empty".to_string(),
+        ));
     }
     Ok(())
 }
@@ -630,7 +787,15 @@ impl Writer {
     }
 
     fn write_bytes_with_len(&mut self, value: &[u8]) -> Result<(), SessionFrameEncodeError> {
-        self.write_u16_len(value.len(), "field")?;
+        self.write_bytes_with_len_field(value, "field")
+    }
+
+    fn write_bytes_with_len_field(
+        &mut self,
+        value: &[u8],
+        field: &'static str,
+    ) -> Result<(), SessionFrameEncodeError> {
+        self.write_u16_len(value.len(), field)?;
         self.bytes.extend_from_slice(value);
         Ok(())
     }
@@ -643,6 +808,10 @@ impl Writer {
         write_len_fits_u16(length, field)?;
         self.bytes.extend_from_slice(&(length as u16).to_be_bytes());
         Ok(())
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.bytes.push(value);
     }
 
     fn write_i32(&mut self, value: i32) {
