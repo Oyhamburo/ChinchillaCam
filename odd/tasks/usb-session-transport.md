@@ -75,3 +75,10 @@ Alcance T11c Android:
 - Mantener roundtrip de un frame que queda justo por debajo del límite.
 - Exponer error local claro en encode; sin transporte, sin USB real, sin LAN.
 - No cambiar el formato wire salvo agregar la validación de tamaño.
+
+### Revisión nativa RDD T15b hardening oversize
+
+- Candidato: `2404aae` contra base `2e89376` en worktree temporal detached `/Users/jele/Desktop/codes/ChinchillaCam-t15b-oversize-review`.
+- Lineage: `review-53af7ca505d640da`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes: `R3-close-failure-bypasses-result` en `UsbSessionFrameIoAdapter.kt:80` y `R3-payload-nonconsumption-unproved` en `UsbSessionFrameIoAdapterTest.kt:90`. No abrieron corrección para este candidato.
