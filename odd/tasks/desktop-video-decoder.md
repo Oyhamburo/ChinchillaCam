@@ -39,12 +39,22 @@ Agregar un límite honesto entre el receptor desktop real y un decoder H.264, si
 - RED→GREEN: type8 `Key` y `Delta` llegan al decoder en orden después de config.
 - RED→GREEN: backpressure/fallo del decoder se propaga como `DesktopReceiverError::SinkRejected` con causa tipada.
 
+## Alcance T21a2
+
+- Slice de integración de tests desde `94f68a6 feat(desktop): add decoder sink boundary`.
+- Cubrir type9 fragmentado de dos frames a través de `DesktopVideoSessionReceiver` y `DecodingEncodedVideoSink`.
+- Verificar que el fragmento parcial no entrega nada al decoder.
+- Verificar que el fragmento final entrega exactamente un `EncodedVideoChunk` access unit con H264 concatenado, PTS y kind preservados.
+- Verificar que `VideoDecoderError::Backpressure` y `VideoDecoderError::Failure` en el fragmento final se propagan como `DesktopReceiverError::SinkRejected`, dejan el receiver stateful terminal (`Closed`) y no hacen retry.
+- Verificar que `reset_for_new_session()` más un decoder fresco permite una secuencia nueva.
+- Mantener fuera de alcance pixels decodificados, FPS, backend OS, OBS/webcam, USB real, LAN o auth.
+
 ## Siguientes cortes
 
-- T21a2: type9 fragmentado hacia decoder y errores adicionales.
 - T21b: backend macOS VideoToolbox real, sólo con investigación oficial y grant fresco.
 - T21c: backend Windows Media Foundation real en runner/host Windows o con estrategia cfg clara.
 
 ## Evidencia
 
 - ODD/Engram mirror creado antes de editar source.
+- T21a2 ODD/Engram transition registrada antes de editar tests.
