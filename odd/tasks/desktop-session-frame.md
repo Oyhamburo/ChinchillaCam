@@ -112,6 +112,7 @@ Add a small pure Rust `SessionFrame v1` companion for desktop tests that matches
 - Slice B3 format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
 - Slice B3 `git diff --check`: passed with no output.
 - Slice B3 independent verification: `gentle-ai-verify` PASS; confirmed encode/decode validation parity, valid golden fixtures unchanged, scope, no deferred transport/network/crypto/auth/decoder/virtual-camera work. Final self-check diff budget: 272 insertions + 20 deletions = 292 changed lines across 3 files.
+- Slice B3 native review: `review-a93cf58704049d19` approved and acknowledged by coordinator; authority burned. No further B3 native review needed.
 
 ## Review workload note
 
