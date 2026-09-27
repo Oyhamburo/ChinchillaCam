@@ -1,5 +1,6 @@
 mod encoded_video_sink;
 mod session_frame;
+mod trusted_phone_store;
 
 pub use encoded_video_sink::{
     BoundedEncodedVideoQueue, EncodedVideoChunk, EncodedVideoChunkLimits, EncodedVideoFrameKind,
@@ -8,6 +9,9 @@ pub use encoded_video_sink::{
 pub use session_frame::{
     SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,
     SessionFramePayload,
+};
+pub use trusted_phone_store::{
+    FileTrustedPhoneStore, TrustedPhoneIdentity, TrustedPhoneStoreError,
 };
 
 use std::{
