@@ -262,12 +262,19 @@ fn encoded_payload_size(payload: &SessionFramePayload) -> Result<usize, SessionF
             "payload",
         ),
         SessionFramePayload::StreamMetadata {
-            mime_type, profile, ..
-        } => checked_add(
-            checked_add(encoded_bytes_with_len_size(mime_type.len())?, 12, "payload")?,
-            encoded_bytes_with_len_size(profile.len())?,
-            "payload",
-        ),
+            mime_type,
+            width,
+            height,
+            frame_rate,
+            profile,
+        } => {
+            validate_stream_metadata_for_encode(*width, *height, *frame_rate)?;
+            checked_add(
+                checked_add(encoded_bytes_with_len_size(mime_type.len())?, 12, "payload")?,
+                encoded_bytes_with_len_size(profile.len())?,
+                "payload",
+            )
+        }
         SessionFramePayload::VideoChunk {
             chunk_index,
             h264_bytes,
@@ -284,7 +291,20 @@ fn encoded_payload_size(payload: &SessionFramePayload) -> Result<usize, SessionF
                 "payload",
             )
         }
-        SessionFramePayload::MetricsSnapshot { .. } => Ok(20),
+        SessionFramePayload::MetricsSnapshot {
+            captured_at_us,
+            dropped_frames,
+            latency_ms,
+            frame_rate,
+        } => {
+            validate_metrics_snapshot_for_encode(
+                *captured_at_us,
+                *dropped_frames,
+                *latency_ms,
+                *frame_rate,
+            )?;
+            Ok(20)
+        }
         SessionFramePayload::CameraControlCommand { command, arguments } => {
             write_len_fits_u16(arguments.len(), "argument count")?;
             let mut size = checked_add(encoded_bytes_with_len_size(command.len())?, 2, "payload")?;
@@ -338,6 +358,7 @@ fn encode_payload(payload: &SessionFramePayload) -> Result<Vec<u8>, SessionFrame
             frame_rate,
             profile,
         } => {
+            validate_stream_metadata_for_encode(*width, *height, *frame_rate)?;
             writer.write_string(mime_type)?;
             writer.write_i32(*width);
             writer.write_i32(*height);
@@ -364,6 +385,12 @@ fn encode_payload(payload: &SessionFramePayload) -> Result<Vec<u8>, SessionFrame
             latency_ms,
             frame_rate,
         } => {
+            validate_metrics_snapshot_for_encode(
+                *captured_at_us,
+                *dropped_frames,
+                *latency_ms,
+                *frame_rate,
+            )?;
             writer.write_i64(*captured_at_us);
             writer.write_i32(*dropped_frames);
             writer.write_i32(*latency_ms);
@@ -409,13 +436,21 @@ fn decode_payload(
             reason_code: reader.read_string("reasonCode")?,
             message: reader.read_string("message")?,
         },
-        4 => SessionFramePayload::StreamMetadata {
-            mime_type: reader.read_string("mimeType")?,
-            width: reader.read_i32("width")?,
-            height: reader.read_i32("height")?,
-            frame_rate: reader.read_i32("frameRate")?,
-            profile: reader.read_string("profile")?,
-        },
+        4 => {
+            let mime_type = reader.read_string("mimeType")?;
+            let width = reader.read_i32("width")?;
+            let height = reader.read_i32("height")?;
+            let frame_rate = reader.read_i32("frameRate")?;
+            let profile = reader.read_string("profile")?;
+            validate_stream_metadata_for_decode(width, height, frame_rate)?;
+            SessionFramePayload::StreamMetadata {
+                mime_type,
+                width,
+                height,
+                frame_rate,
+                profile,
+            }
+        }
         5 => {
             let chunk_index = reader.read_i32("chunkIndex")?;
             if chunk_index < 0 {
@@ -429,12 +464,24 @@ fn decode_payload(
                 h264_bytes: reader.read_bytes_with_len("h264Bytes")?,
             }
         }
-        6 => SessionFramePayload::MetricsSnapshot {
-            captured_at_us: reader.read_i64("capturedAtUs")?,
-            dropped_frames: reader.read_i32("droppedFrames")?,
-            latency_ms: reader.read_i32("latencyMs")?,
-            frame_rate: reader.read_i32("frameRate")?,
-        },
+        6 => {
+            let captured_at_us = reader.read_i64("capturedAtUs")?;
+            let dropped_frames = reader.read_i32("droppedFrames")?;
+            let latency_ms = reader.read_i32("latencyMs")?;
+            let frame_rate = reader.read_i32("frameRate")?;
+            validate_metrics_snapshot_for_decode(
+                captured_at_us,
+                dropped_frames,
+                latency_ms,
+                frame_rate,
+            )?;
+            SessionFramePayload::MetricsSnapshot {
+                captured_at_us,
+                dropped_frames,
+                latency_ms,
+                frame_rate,
+            }
+        }
         7 => {
             let command = reader.read_string("command")?;
             let count = reader.read_u16("argumentCount")? as usize;
@@ -459,6 +506,114 @@ fn decode_payload(
         ));
     }
     Ok(decoded)
+}
+
+fn validate_stream_metadata_for_encode(
+    width: i32,
+    height: i32,
+    frame_rate: i32,
+) -> Result<(), SessionFrameEncodeError> {
+    validate_positive_for_encode(width, "stream metadata width")?;
+    validate_positive_for_encode(height, "stream metadata height")?;
+    validate_positive_for_encode(frame_rate, "stream metadata frameRate")?;
+    Ok(())
+}
+
+fn validate_metrics_snapshot_for_encode(
+    captured_at_us: i64,
+    dropped_frames: i32,
+    latency_ms: i32,
+    frame_rate: i32,
+) -> Result<(), SessionFrameEncodeError> {
+    validate_non_negative_for_encode(captured_at_us, "metrics snapshot capturedAtUs")?;
+    validate_non_negative_for_encode(dropped_frames, "metrics snapshot droppedFrames")?;
+    validate_non_negative_for_encode(latency_ms, "metrics snapshot latencyMs")?;
+    validate_non_negative_for_encode(frame_rate, "metrics snapshot frameRate")?;
+    Ok(())
+}
+
+fn validate_positive_for_encode<T>(
+    value: T,
+    field: &'static str,
+) -> Result<(), SessionFrameEncodeError>
+where
+    T: PartialOrd + From<u8>,
+{
+    if value <= T::from(0) {
+        return Err(SessionFrameEncodeError::InvalidPayload(format!(
+            "{field} must be positive"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_non_negative_for_encode<T>(
+    value: T,
+    field: &'static str,
+) -> Result<(), SessionFrameEncodeError>
+where
+    T: PartialOrd + From<u8>,
+{
+    if value < T::from(0) {
+        return Err(SessionFrameEncodeError::InvalidPayload(format!(
+            "{field} must be non-negative"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_stream_metadata_for_decode(
+    width: i32,
+    height: i32,
+    frame_rate: i32,
+) -> Result<(), SessionFrameDecodeError> {
+    validate_positive_for_decode(width, "stream metadata width")?;
+    validate_positive_for_decode(height, "stream metadata height")?;
+    validate_positive_for_decode(frame_rate, "stream metadata frameRate")?;
+    Ok(())
+}
+
+fn validate_metrics_snapshot_for_decode(
+    captured_at_us: i64,
+    dropped_frames: i32,
+    latency_ms: i32,
+    frame_rate: i32,
+) -> Result<(), SessionFrameDecodeError> {
+    validate_non_negative_for_decode(captured_at_us, "metrics snapshot capturedAtUs")?;
+    validate_non_negative_for_decode(dropped_frames, "metrics snapshot droppedFrames")?;
+    validate_non_negative_for_decode(latency_ms, "metrics snapshot latencyMs")?;
+    validate_non_negative_for_decode(frame_rate, "metrics snapshot frameRate")?;
+    Ok(())
+}
+
+fn validate_positive_for_decode<T>(
+    value: T,
+    field: &'static str,
+) -> Result<(), SessionFrameDecodeError>
+where
+    T: PartialOrd + From<u8>,
+{
+    if value <= T::from(0) {
+        return Err(SessionFrameDecodeError::InvalidPayload(format!(
+            "{field} must be positive"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_non_negative_for_decode<T>(
+    value: T,
+    field: &'static str,
+) -> Result<(), SessionFrameDecodeError>
+where
+    T: PartialOrd + From<u8>,
+{
+    if value < T::from(0) {
+        return Err(SessionFrameDecodeError::InvalidPayload(format!(
+            "{field} must be non-negative"
+        )));
+    }
+    Ok(())
 }
 
 struct Writer {

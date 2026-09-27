@@ -289,6 +289,84 @@ fn session_frame_rejects_malformed_utf8_without_replacement() {
 }
 
 #[test]
+fn session_frame_rejects_invalid_stream_metadata_and_metrics_values() {
+    for (field, width, height, frame_rate) in [
+        ("width", 0, 1080, 30),
+        ("height", 1920, 0, 30),
+        ("frameRate", 1920, 1080, 0),
+    ] {
+        let frame = SessionFrame::new(
+            1,
+            "s",
+            SessionFramePayload::StreamMetadata {
+                mime_type: "video/h264".to_string(),
+                width,
+                height,
+                frame_rate,
+                profile: "baseline".to_string(),
+            },
+        );
+        assert_eq!(
+            SessionFrameCodec::encode(&frame),
+            Err(SessionFrameEncodeError::InvalidPayload(format!(
+                "stream metadata {field} must be positive"
+            )))
+        );
+
+        let payload = bytes()
+            .string("video/h264")
+            .int(width)
+            .int(height)
+            .int(frame_rate)
+            .string("baseline")
+            .finish();
+        assert_eq!(
+            SessionFrameCodec::decode(&raw_frame(4, payload)),
+            Err(SessionFrameDecodeError::InvalidPayload(format!(
+                "stream metadata {field} must be positive"
+            )))
+        );
+    }
+
+    for (field, captured_at_us, dropped_frames, latency_ms, frame_rate) in [
+        ("capturedAtUs", -1, 0, 0, 0),
+        ("droppedFrames", 0, -1, 0, 0),
+        ("latencyMs", 0, 0, -1, 0),
+        ("frameRate", 0, 0, 0, -1),
+    ] {
+        let frame = SessionFrame::new(
+            1,
+            "s",
+            SessionFramePayload::MetricsSnapshot {
+                captured_at_us,
+                dropped_frames,
+                latency_ms,
+                frame_rate,
+            },
+        );
+        assert_eq!(
+            SessionFrameCodec::encode(&frame),
+            Err(SessionFrameEncodeError::InvalidPayload(format!(
+                "metrics snapshot {field} must be non-negative"
+            )))
+        );
+
+        let payload = bytes()
+            .long(captured_at_us)
+            .int(dropped_frames)
+            .int(latency_ms)
+            .int(frame_rate)
+            .finish();
+        assert_eq!(
+            SessionFrameCodec::decode(&raw_frame(6, payload)),
+            Err(SessionFrameDecodeError::InvalidPayload(format!(
+                "metrics snapshot {field} must be non-negative"
+            )))
+        );
+    }
+}
+
+#[test]
 fn session_frame_rejects_duplicate_camera_control_argument_keys() {
     let payload = bytes()
         .string("setZoom")
@@ -343,6 +421,11 @@ impl Bytes {
     }
 
     fn int(mut self, value: i32) -> Self {
+        self.0.extend_from_slice(&value.to_be_bytes());
+        self
+    }
+
+    fn long(mut self, value: i64) -> Self {
         self.0.extend_from_slice(&value.to_be_bytes());
         self
     }

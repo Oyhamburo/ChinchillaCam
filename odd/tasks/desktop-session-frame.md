@@ -39,6 +39,14 @@ Add a small pure Rust `SessionFrame v1` companion for desktop tests that matches
 - If naturally touching parser allocation around counted fields, prefer lazy allocation to address advisory `R3-untrusted-capability-preallocation`; otherwise leave it as a separate finite hardening task before externally reachable LAN.
 - No transport/network/crypto/auth/decoder/virtual-camera work.
 
+## Slice B3 metadata/metrics validation parity scope
+
+- Match Android validation parity for existing `StreamMetadata` and `MetricsSnapshot` payloads.
+- Reject `StreamMetadata` `width`, `height`, and `frame_rate` values that are not positive on both encode and decode.
+- Reject `MetricsSnapshot` `captured_at_us`, `dropped_frames`, `latency_ms`, and `frame_rate` values that are negative on both encode and decode.
+- Preserve valid golden wire bytes and do not change transport/network/crypto/auth/decoder/virtual-camera behavior.
+- Keep the diff under the ~400 changed-line review budget.
+
 ## Deferred slices
 
 - Broader payload validation beyond current slices
@@ -98,6 +106,12 @@ Add a small pure Rust `SessionFrame v1` companion for desktop tests that matches
 - Slice B2 diff budget: independently verified 60 + 62 + 16 = 138 changed lines across 3 files, within <=400 advisory budget.
 - Slice B2 independent verification: `gentle-ai-verify` PASS.
 - Slice B2 commit local: `66598ac feat(desktop): add session metadata metrics payloads`.
+- Slice B3 RED: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml session_frame_rejects_invalid` failed because invalid `StreamMetadata` encoded successfully instead of returning `InvalidPayload("stream metadata width must be positive")`.
+- Slice B3 GREEN focused: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml session_frame_rejects_invalid` passed with 1 targeted test.
+- Slice B3 GREEN full crate: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` passed with 44 AOA + 6 encoded video sink + 13 session frame + 7 trusted-phone store tests + doctests.
+- Slice B3 format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
+- Slice B3 `git diff --check`: passed with no output.
+- Slice B3 independent verification: `gentle-ai-verify` PASS; confirmed encode/decode validation parity, valid golden fixtures unchanged, scope, no deferred transport/network/crypto/auth/decoder/virtual-camera work. Final self-check diff budget: 272 insertions + 20 deletions = 292 changed lines across 3 files.
 
 ## Review workload note
 
