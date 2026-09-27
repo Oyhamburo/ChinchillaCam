@@ -38,6 +38,26 @@ fn trusted_phone_store_persists_identity_without_private_keys() {
 }
 
 #[test]
+fn trusted_phone_store_initializes_missing_parent_directory() {
+    let path = unique_store_path("fresh-install")
+        .join("new")
+        .join("subdir")
+        .join("store.txt");
+    let store = FileTrustedPhoneStore::new(&path);
+    let identity = TrustedPhoneIdentity::new("phone-fresh", "Fresh Phone", vec![7, 8, 9]).unwrap();
+
+    store.trust(identity.clone()).unwrap();
+
+    assert_eq!(
+        FileTrustedPhoneStore::new(&path)
+            .trusted_identity("phone-fresh")
+            .unwrap(),
+        Some(identity)
+    );
+    cleanup(path);
+}
+
+#[test]
 fn trusted_phone_store_revokes_identity_for_normal_lookup() {
     let path = unique_store_path("revoke");
     let store = FileTrustedPhoneStore::new(&path);

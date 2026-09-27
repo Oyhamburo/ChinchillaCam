@@ -62,3 +62,26 @@ Deferred gates before real app use remain: symlink/path ownership checks, owner-
 - Race-fix diff before commit: independently verified 193 insertions / 5 deletions = 198 changed lines.
 - Independent verification: `gentle-ai-verify` PASS; confirmed deterministic stale-revocation coverage, full read+mutate+write lock, unique temp files, fail-closed lock/write errors, no expanded claims.
 - Commit local: this commit, `fix(desktop): serialize trusted phone store writes`.
+
+
+## T13c fresh-install lock correction scope
+
+Second withheld-grant readback found a fresh-install blocker: lock acquisition attempted to create `.lock` in the store parent before the parent directory exists. First-run trust in a new per-user config directory must initialize successfully.
+
+Correction scope in a separate local commit, without amending prior T13c commits:
+
+- Add RED test for `FileTrustedPhoneStore::new(tempdir/new/subdir/store).trust(identity)` succeeding when parents are absent.
+- Create/validate the parent directory before lock acquisition, while keeping later owner-only permissions/symlink/path-hardening as deferred gates before product use.
+- Preserve fail-closed lock/write errors and the stale-revocation race fix.
+- No secure-pairing, QR, transport, TLS, OS keychain, or hardware claim.
+
+## T13c fresh-install correction evidence
+
+- RED: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml trusted_phone_store_initializes_missing_parent_directory` failed with `Io("No such file or directory (os error 2)")` during first `trust()`.
+- GREEN focused: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml trusted_phone` passed with 6 trusted-phone tests.
+- GREEN full crate: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` passed with 44 AOA + 6 encoded video sink + 12 session frame + 6 trusted-phone tests + doctests.
+- Format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
+- `git diff --check`: passed with no output.
+- Correction diff before commit: independently verified 56 insertions / 7 deletions = 63 changed lines.
+- Independent verification: `gentle-ai-verify` PASS; confirmed first trust initializes absent parents, parent is created before lock acquisition, lock/write errors still fail closed, stale-revocation coverage remains, and no expanded claims.
+- Commit local: this commit, `fix(desktop): initialize trust store directory before locking`.

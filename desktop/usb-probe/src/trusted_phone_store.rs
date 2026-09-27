@@ -166,13 +166,7 @@ impl FileTrustedPhoneStore {
     }
 
     fn save_records(&self, records: &[TrustedPhoneRecord]) -> Result<(), TrustedPhoneStoreError> {
-        if let Some(parent) = self
-            .path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            fs::create_dir_all(parent)?;
-        }
+        self.ensure_parent_dir()?;
         let mut text = String::from(MAGIC);
         text.push('\n');
         for record in records {
@@ -186,6 +180,7 @@ impl FileTrustedPhoneStore {
     }
 
     fn acquire_write_lock(&self) -> Result<StorePathLock, TrustedPhoneStoreError> {
+        self.ensure_parent_dir()?;
         let lock_path = self.path.with_extension("lock");
         let started = Instant::now();
         loop {
@@ -207,6 +202,17 @@ impl FileTrustedPhoneStore {
                 Err(err) => return Err(err.into()),
             }
         }
+    }
+
+    fn ensure_parent_dir(&self) -> Result<(), TrustedPhoneStoreError> {
+        if let Some(parent) = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
+        Ok(())
     }
 
     fn unique_temp_path(&self) -> PathBuf {
