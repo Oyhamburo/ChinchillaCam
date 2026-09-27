@@ -57,6 +57,7 @@ Use TDD: RED focused tests for sink mapping/failure behavior and controller sink
 - Controller metrics text reports fake-egress accepted/dropped counts without recording accepted chunks as local discarded bytes; FPS remains explicitly unavailable for fake egress until a separate metrics API can track delivered chunks honestly.
 - Default no-sink local discard behavior remains unchanged.
 - Factory failure is typed as visible Error and stops the newly launched handle before publishing it.
+- Controller sink-close exceptions during stop/failure are contained so the active sink reference is cleared, visible state remains stopped/error, and later starts create a fresh sink.
 - Focused controller restart/failure/factory/metrics tests: PASS.
 - Full `:android:usb-probe:testDebugUnitTest --rerun-tasks`, `:android:usb-probe:assembleDebug`, `git diff --check`, and independent verify: PASS.
 - T15d2 commit id: `1a045fa244c626c0c9f491ac4e836179b6c137d9`.

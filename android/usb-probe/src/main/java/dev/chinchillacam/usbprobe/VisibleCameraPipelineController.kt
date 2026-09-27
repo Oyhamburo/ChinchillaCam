@@ -139,8 +139,9 @@ class VisibleCameraPipelineController(
         val stoppedHandle = handle
         handle = null
         stoppedHandle?.stop()
-        closeActiveSink()
-        return setError(detail)
+        val closeError = closeActiveSink()
+        val errorDetail = if (closeError == null) detail else "$detail Egreso fake se cerró con errores: $closeError"
+        return setError(errorDetail)
     }
 
     private fun stopWithMessage(successMessage: String): VisibleCameraPipelineUiState {
@@ -148,36 +149,20 @@ class VisibleCameraPipelineController(
         val stoppedHandle = handle
         handle = null
         metrics.reset()
-        closeActiveSink()
+        val closeError = closeActiveSink()
         if (stoppedHandle == null) {
-            state = VisibleCameraPipelineUiState(
-                status = VisibleCameraPipelineStatus.Stopped,
-                title = "Cámara local",
-                detail = successMessage,
-                primaryAction = "Iniciar cámara local",
-                primaryActionEnabled = true,
-                metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
-            )
+            state = if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("egreso fake close failed: $closeError"))
             return state
         }
         state = when (val stopped = stoppedHandle.stop()) {
             CameraEncoderPipelineStopResult.Stopped,
-            CameraEncoderPipelineStopResult.AlreadyStopped -> VisibleCameraPipelineUiState(
-                status = VisibleCameraPipelineStatus.Stopped,
-                title = "Cámara local",
-                detail = successMessage,
-                primaryAction = "Iniciar cámara local",
-                primaryActionEnabled = true,
-                metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
-            )
-            is CameraEncoderPipelineStopResult.Failed -> VisibleCameraPipelineUiState(
-                status = VisibleCameraPipelineStatus.Error,
-                title = "Cámara local",
-                detail = "La cámara se detuvo con errores: ${stopped.reasons.joinToString()}",
-                primaryAction = "Iniciar cámara local",
-                primaryActionEnabled = true,
-                metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
-            )
+            CameraEncoderPipelineStopResult.AlreadyStopped -> {
+                if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("egreso fake close failed: $closeError"))
+            }
+            is CameraEncoderPipelineStopResult.Failed -> {
+                val reasons = stopped.reasons + listOfNotNull(closeError?.let { "egreso fake close failed: $it" })
+                stopErrorState(reasons)
+            }
         }
         return state
     }
@@ -197,10 +182,34 @@ class VisibleCameraPipelineController(
         return state
     }
 
-    private fun closeActiveSink() {
-        activeEncodedVideoSink?.close()
+    private fun closeActiveSink(): String? {
+        val sink = activeEncodedVideoSink ?: return null
         activeEncodedVideoSink = null
+        return try {
+            sink.close()
+            null
+        } catch (error: RuntimeException) {
+            error.message ?: error::class.java.simpleName
+        }
     }
+
+    private fun stoppedState(detail: String): VisibleCameraPipelineUiState = VisibleCameraPipelineUiState(
+        status = VisibleCameraPipelineStatus.Stopped,
+        title = "Cámara local",
+        detail = detail,
+        primaryAction = "Iniciar cámara local",
+        primaryActionEnabled = true,
+        metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
+    )
+
+    private fun stopErrorState(reasons: List<String>): VisibleCameraPipelineUiState = VisibleCameraPipelineUiState(
+        status = VisibleCameraPipelineStatus.Error,
+        title = "Cámara local",
+        detail = "La cámara se detuvo con errores: ${reasons.joinToString()}",
+        primaryAction = "Iniciar cámara local",
+        primaryActionEnabled = true,
+        metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
+    )
 
     private fun fakeEgressMetricsText(stats: EncodedVideoSessionFrameSinkStats): String = listOf(
         "FPS: no disponible para egreso fake en T15d2",

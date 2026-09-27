@@ -243,6 +243,35 @@ class VisibleCameraPipelineControllerTest {
     }
 
     @Test
+    fun throwingFakeEgressCloseDoesNotRetainClosedSinkAcrossRestart() {
+        val firstHandle = RecordingVisibleHandle()
+        val secondHandle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(byteArrayOf(2), presentationTimeUs = 2L, isCodecConfig = false, isKeyFrame = false),
+        )))
+        val firstTransport = ControllerRecordingEncodedVideoTransport(closeFailure = IllegalStateException("close boom"))
+        val secondTransport = ControllerRecordingEncodedVideoTransport()
+        val transports = listOf(firstTransport, secondTransport)
+        var nextTransport = 0
+        val controller = VisibleCameraPipelineController(
+            QueueVisibleLauncher(
+                VisibleCameraPipelineLaunchResult.Running(firstHandle),
+                VisibleCameraPipelineLaunchResult.Running(secondHandle),
+            ),
+            sampleConfig(),
+            encodedVideoSinkFactory = { EncodedVideoSessionFrameSink(transports[nextTransport++]) },
+        )
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val stopped = controller.stopFromUser()
+        controller.start(sampleSnapshot(), "camera-1", true)
+        val restarted = controller.drainOnce(maxOutputs = 4)
+
+        assertEquals("La cámara se detuvo con errores: egreso fake close failed: close boom", stopped.detail)
+        assertEquals(1, secondTransport.payloads.size)
+        assertEquals(VisibleCameraPipelineStatus.Running, restarted.status)
+    }
+
+    @Test
     fun restartAfterExplicitStopCreatesFreshFakeEgressSink() {
         val firstHandle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
             EncodedVideoChunk(byteArrayOf(1), presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = false),
@@ -508,6 +537,7 @@ private class BlockingVisibleLauncher(
 
 private class ControllerRecordingEncodedVideoTransport(
     private val result: EncodedVideoSessionFrameWriteResult = EncodedVideoSessionFrameWriteResult.Written,
+    private val closeFailure: RuntimeException? = null,
 ) : EncodedVideoSessionFrameTransport {
     val payloads = mutableListOf<SessionPayload.VideoChunkV2>()
     var closeCount = 0
@@ -519,5 +549,6 @@ private class ControllerRecordingEncodedVideoTransport(
 
     override fun close() {
         closeCount += 1
+        closeFailure?.let { throw it }
     }
 }
