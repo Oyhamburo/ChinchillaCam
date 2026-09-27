@@ -89,6 +89,30 @@ class H264EncoderBoundaryTest {
 
 
 
+
+    @Test
+    fun outputFormatsKeepsOnlyLast16TruncatedDescriptionsAsReadOnlySnapshot() {
+        val codec = FakeH264CodecSession(FakeEncoderSurface("codec-input"))
+        repeat(20) { index ->
+            codec.outputs += H264CodecOutput.FormatChanged("format-$index-" + "x".repeat(600))
+        }
+        val session = startedSession(codec)
+
+        val result = session.drain(maxOutputs = 20)
+        val formats = session.outputFormats
+
+        assertEquals(H264DrainResult.TryAgainLater, result)
+        assertEquals(16, formats.size)
+        assertTrue(formats.first().startsWith("format-4-"))
+        assertTrue(formats.last().startsWith("format-19-"))
+        assertTrue(formats.all { it.length == 512 })
+
+        codec.outputs += H264CodecOutput.FormatChanged("format-20")
+        session.drain(maxOutputs = 1)
+        assertTrue(formats.first().startsWith("format-4-"))
+        assertEquals("format-20", session.outputFormats.last())
+    }
+
     @Test
     fun formatChangedCsdReachesFragmentingType8EgressOnceBeforeKeyFrame() {
         val codec = FakeH264CodecSession(FakeEncoderSurface("codec-input"))

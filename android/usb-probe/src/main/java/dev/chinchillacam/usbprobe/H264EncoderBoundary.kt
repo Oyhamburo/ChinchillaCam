@@ -136,7 +136,9 @@ class H264EncoderSession(
     private val codecSession: CloseableH264CodecSession,
     private val maxPendingChunks: Int,
 ) {
-    val outputFormats = mutableListOf<String>()
+    private val outputFormatHistory = ArrayDeque<String>()
+    val outputFormats: List<String>
+        @Synchronized get() = outputFormatHistory.toList()
     private var pendingChunks: Int = 0
     private var stopped: Boolean = false
     private var lastFormatChangedCodecConfigBytes: ByteArray? = null
@@ -160,7 +162,7 @@ class H264EncoderSession(
                     H264DrainResult.Chunks(chunks)
                 }
                 is H264CodecOutput.FormatChanged -> {
-                    outputFormats += output.description
+                    recordOutputFormat(output.description)
                     val codecConfigBytes = output.codecConfigBytes()
                     if (codecConfigBytes != null && codecConfigBytes.isNotEmpty()) {
                         lastFormatChangedCodecConfigBytes = codecConfigBytes.copyOf()
@@ -227,6 +229,11 @@ class H264EncoderSession(
         }
     }
 
+    private fun recordOutputFormat(description: String) {
+        if (outputFormatHistory.size == MAX_OUTPUT_FORMAT_HISTORY) outputFormatHistory.removeFirst()
+        outputFormatHistory.addLast(description.take(MAX_OUTPUT_FORMAT_DESCRIPTION_CHARS))
+    }
+
     private fun isDuplicateFormatChangedCodecConfig(chunk: EncodedVideoChunk): Boolean {
         val lastConfig = lastFormatChangedCodecConfigBytes ?: return false
         return chunk.isCodecConfig && !chunk.isKeyFrame && chunk.bytes.contentEquals(lastConfig)
@@ -257,6 +264,11 @@ class H264EncoderSession(
             isCodecConfig = (info.flags and H264BufferFlags.CODEC_CONFIG) != 0,
             isKeyFrame = (info.flags and H264BufferFlags.KEY_FRAME) != 0,
         )
+    }
+
+    private companion object {
+        const val MAX_OUTPUT_FORMAT_HISTORY = 16
+        const val MAX_OUTPUT_FORMAT_DESCRIPTION_CHARS = 512
     }
 }
 

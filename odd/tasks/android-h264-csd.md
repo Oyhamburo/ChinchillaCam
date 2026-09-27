@@ -133,3 +133,39 @@ Agregar evidencia automatizada sin cambios productivos de que el CSD emitido por
 - `:android:usb-probe:lintDebug` — PASS.
 - `git diff --check` — PASS.
 - Independent verifier — PASS.
+
+## T21b0b3 — límite de memoria para formatos observados
+
+### Alcance permitido
+
+- `android/usb-probe/src/main/java/dev/chinchillacam/usbprobe/H264EncoderBoundary.kt`
+- `android/usb-probe/src/test/java/dev/chinchillacam/usbprobe/H264EncoderBoundaryTest.kt`
+- `odd/tasks/android-h264-csd.md`
+
+### Objetivo
+
+Evitar crecimiento no acotado de descripciones `outputFormats` observadas por el encoder, manteniendo una vista de sólo lectura para pruebas/diagnóstico.
+
+### Evidencia RED esperada
+
+- Más de 16 `FormatChanged` sin CSD no debe crecer la memoria: sólo se conservan las últimas 16 descripciones en orden.
+- Cada descripción guardada se trunca a 512 caracteres.
+- La vista pública no debe permitir mutar ni saltarse el límite interno.
+- El drain sin buffers después de esos cambios sigue devolviendo `TryAgainLater`.
+
+### Límites
+
+- No cambia emisión de CSD, backpressure, wire protocol, Activity, USB real, LAN ni TLS.
+
+### Evidencia GREEN T21b0b3
+
+- RED: la prueba focused falló porque `outputFormats` conservaba todas las descripciones y no truncaba el texto largo.
+- `outputFormats` ahora expone una instantánea defensiva de sólo lectura lógico; mutar la historia interna después no altera snapshots previos.
+- Se conservan sólo las últimas 16 descripciones en orden y cada descripción se trunca a 512 caracteres.
+- Un drain compuesto sólo por `FormatChanged` sin CSD sigue devolviendo `TryAgainLater`.
+- La emisión CSD, backpressure y transporte quedan sin cambios.
+- Full `:android:usb-probe:testDebugUnitTest --rerun-tasks` — PASS.
+- `:android:usb-probe:assembleDebug` — PASS.
+- `:android:usb-probe:lintDebug` — PASS.
+- `git diff --check` — PASS.
+- Independent verifier — PASS.
