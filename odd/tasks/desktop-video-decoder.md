@@ -49,8 +49,20 @@ Agregar un límite honesto entre el receptor desktop real y un decoder H.264, si
 - Verificar que `reset_for_new_session()` más un decoder fresco permite una secuencia nueva.
 - Mantener fuera de alcance pixels decodificados, FPS, backend OS, OBS/webcam, USB real, LAN o auth.
 
+## Alcance T21b0a
+
+- Slice puro de parser/config H.264 desde `8d7f441 test(desktop): cover decoder fragment flow`.
+- Agregar API explícita para input framing `AnnexB`, `AvccLengthPrefixed` o `Unknown`; no autodetectar Annex-B/AVCC de forma ambigua.
+- Soportar sólo CSD Annex-B con start codes de 3 o 4 bytes, NAL bytes sin start code en la salida.
+- Rechazar `AvccLengthPrefixed` y `Unknown` con `UnsupportedFraming`.
+- Límites: config hasta 256 KiB, máximo 64 NAL units, parameter set hasta 128 KiB, exactamente un SPS type 7 y un PPS type 8.
+- Rechazar NAL vacío, SPS/PPS faltante, duplicado, over limit, header inválido, truncation/adversarial input y ceros finales ambiguos, sin panic ni overflow.
+- No implementar decode, pixels, VideoToolbox, CoreMedia, Media Foundation ni inferencia mágica desde buffers Android raw.
+- T21b0b preservará `csd-0`/`csd-1` Android en otro worktree/corte.
+
 ## Siguientes cortes
 
+- T21b0b: preservar `csd-0`/`csd-1` Android como bytes reales antes de depender de ellos en desktop.
 - T21b: backend macOS VideoToolbox real, sólo con investigación oficial y grant fresco.
 - T21c: backend Windows Media Foundation real en runner/host Windows o con estrategia cfg clara.
 
@@ -58,3 +70,4 @@ Agregar un límite honesto entre el receptor desktop real y un decoder H.264, si
 
 - ODD/Engram mirror creado antes de editar source.
 - T21a2 ODD/Engram transition registrada antes de editar tests.
+- T21b0a ODD/Engram transition registrada antes de editar source.
