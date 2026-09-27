@@ -35,3 +35,6 @@ Add a pure Rust reassembler for decoded `SessionFramePayload::VideoChunkFragment
 - Format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
 - `git diff --check`: passed with no output.
 - Independent verification: `gentle-ai-verify` PASS after bounds-before-allocation fix.
+- G3a commit: `b48ced3 feat(desktop): add video fragment reassembler`.
+- G3b adds fail-closed edge tests for sequential sessions, concurrent session, duplicate/out-of-order, metadata mismatch, overflow, early-complete, incomplete-final, non-fragment rejection, and reset.
+- G3b focused/full cargo, fmt, `git diff --check`, and independent `gentle-ai-verify` PASS. Diff budget: 236 test/doc changed lines, within <=400.
