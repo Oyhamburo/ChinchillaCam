@@ -7,8 +7,16 @@ use usb_probe::{
 const MAX_USB_SESSION_FRAME_BYTES: usize = 65_528;
 
 fn video_bulk_frame(presentation_time_us: i64, payload: Vec<u8>) -> BulkFrame {
+    video_bulk_frame_with_sequence(7, presentation_time_us, payload)
+}
+
+fn video_bulk_frame_with_sequence(
+    sequence: i32,
+    presentation_time_us: i64,
+    payload: Vec<u8>,
+) -> BulkFrame {
     let session = SessionFrame::new(
-        7,
+        sequence,
         "session-a",
         SessionFramePayload::VideoChunk {
             chunk_index: 3,
@@ -23,7 +31,30 @@ fn video_bulk_frame(presentation_time_us: i64, payload: Vec<u8>) -> BulkFrame {
     .unwrap()
 }
 
+#[allow(dead_code)]
 fn video_fragment_bulk_frame(
+    session_id: &str,
+    kind: VideoFrameKind,
+    presentation_time_us: i64,
+    fragment_index: i32,
+    fragment_count: i32,
+    total_h264_bytes: i32,
+    payload: Vec<u8>,
+) -> BulkFrame {
+    video_fragment_bulk_frame_with_sequence(
+        9,
+        session_id,
+        kind,
+        presentation_time_us,
+        fragment_index,
+        fragment_count,
+        total_h264_bytes,
+        payload,
+    )
+}
+
+fn video_fragment_bulk_frame_with_sequence(
+    sequence: i32,
     session_id: &str,
     kind: VideoFrameKind,
     presentation_time_us: i64,
@@ -58,7 +89,7 @@ fn video_fragment_bulk_frame(
             payload,
         ),
     };
-    let session = SessionFrame::new(9, session_id, payload);
+    let session = SessionFrame::new(sequence, session_id, payload);
     BulkFrame::new(
         USB_SESSION_FRAME_STREAM_ID,
         SessionFrameCodec::encode(&session).unwrap(),
@@ -71,8 +102,17 @@ fn video_v2_bulk_frame(
     presentation_time_us: i64,
     payload: Vec<u8>,
 ) -> BulkFrame {
+    video_v2_bulk_frame_with_sequence(8, kind, presentation_time_us, payload)
+}
+
+fn video_v2_bulk_frame_with_sequence(
+    sequence: i32,
+    kind: VideoFrameKind,
+    presentation_time_us: i64,
+    payload: Vec<u8>,
+) -> BulkFrame {
     let session = SessionFrame::new(
-        8,
+        sequence,
         "session-a",
         match kind {
             VideoFrameKind::Key => {
@@ -134,7 +174,8 @@ fn desktop_receiver_session_type9_first_fragment_returns_ok_without_sink_push() 
         StaticFrameKindClassifier::known(EncodedVideoFrameKind::Delta),
     );
     let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
-    let frame = video_fragment_bulk_frame(
+    let frame = video_fragment_bulk_frame_with_sequence(
+        0,
         "session-fragment",
         VideoFrameKind::Key,
         55_555,
@@ -156,7 +197,8 @@ fn desktop_receiver_session_type9_final_fragment_emits_concatenated_chunk() {
 
     receiver
         .receive(
-            &video_fragment_bulk_frame(
+            &video_fragment_bulk_frame_with_sequence(
+                0,
                 "session-fragment",
                 VideoFrameKind::CodecConfig,
                 66_666,
@@ -170,7 +212,8 @@ fn desktop_receiver_session_type9_final_fragment_emits_concatenated_chunk() {
         .unwrap();
     receiver
         .receive(
-            &video_fragment_bulk_frame(
+            &video_fragment_bulk_frame_with_sequence(
+                1,
                 "session-fragment",
                 VideoFrameKind::CodecConfig,
                 66_666,
@@ -194,8 +237,9 @@ fn desktop_receiver_session_type9_final_fragment_emits_concatenated_chunk() {
 fn desktop_receiver_session_type9_pending_rejects_type8_and_type5_until_reset() {
     let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(PanicIfCalledClassifier);
     let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
-    let partial = || {
-        video_fragment_bulk_frame(
+    let partial = |sequence| {
+        video_fragment_bulk_frame_with_sequence(
+            sequence,
             "session-fragment",
             VideoFrameKind::Key,
             77_777,
@@ -205,8 +249,9 @@ fn desktop_receiver_session_type9_pending_rejects_type8_and_type5_until_reset() 
             vec![0x00],
         )
     };
-    let final_fragment = || {
-        video_fragment_bulk_frame(
+    let final_fragment = |sequence| {
+        video_fragment_bulk_frame_with_sequence(
+            sequence,
             "session-fragment",
             VideoFrameKind::Key,
             77_777,
@@ -217,29 +262,32 @@ fn desktop_receiver_session_type9_pending_rejects_type8_and_type5_until_reset() 
         )
     };
 
-    receiver.receive(&partial(), &mut queue).unwrap();
+    receiver.receive(&partial(0), &mut queue).unwrap();
     assert_eq!(
         receiver.receive(
-            &video_v2_bulk_frame(VideoFrameKind::Delta, 77_778, vec![0x41]),
+            &video_v2_bulk_frame_with_sequence(1, VideoFrameKind::Delta, 77_778, vec![0x41]),
             &mut queue,
         ),
         Err(DesktopReceiverError::UnexpectedSessionPayload { type_id: 8 })
     );
     assert!(queue.is_empty());
     assert_eq!(
-        receiver.receive(&final_fragment(), &mut queue),
+        receiver.receive(&final_fragment(2), &mut queue),
         Err(DesktopReceiverError::Closed)
     );
 
     receiver.reset_for_new_session();
-    receiver.receive(&partial(), &mut queue).unwrap();
+    receiver.receive(&partial(0), &mut queue).unwrap();
     assert_eq!(
-        receiver.receive(&video_bulk_frame(77_779, vec![0x65]), &mut queue),
+        receiver.receive(
+            &video_bulk_frame_with_sequence(1, 77_779, vec![0x65]),
+            &mut queue
+        ),
         Err(DesktopReceiverError::UnexpectedSessionPayload { type_id: 5 })
     );
     assert!(queue.is_empty());
     assert_eq!(
-        receiver.receive(&final_fragment(), &mut queue),
+        receiver.receive(&final_fragment(2), &mut queue),
         Err(DesktopReceiverError::Closed)
     );
 }
@@ -490,8 +538,15 @@ fn desktop_receiver_reports_video_chunk_v2_queue_backpressure() {
     assert!(queue.pop_front().is_none());
 }
 
-fn type9_part(session_id: &str, pts: i64, fragment_index: i32, payload: &[u8]) -> BulkFrame {
-    video_fragment_bulk_frame(
+fn type9_part(
+    sequence: i32,
+    session_id: &str,
+    pts: i64,
+    fragment_index: i32,
+    payload: &[u8],
+) -> BulkFrame {
+    video_fragment_bulk_frame_with_sequence(
+        sequence,
         session_id,
         VideoFrameKind::Key,
         pts,
@@ -508,11 +563,14 @@ fn assert_accepts_fresh_two_fragment_sequence(
     pts: i64,
 ) {
     receiver
-        .receive(&type9_part("session-after-reset", pts, 0, &[0x00]), queue)
+        .receive(
+            &type9_part(0, "session-after-reset", pts, 0, &[0x00]),
+            queue,
+        )
         .unwrap();
     receiver
         .receive(
-            &type9_part("session-after-reset", pts, 1, &[0x01, 0x65]),
+            &type9_part(1, "session-after-reset", pts, 1, &[0x01, 0x65]),
             queue,
         )
         .unwrap();
@@ -528,11 +586,11 @@ fn assert_accepts_fresh_two_fragment_sequence(
 fn desktop_receiver_session_type9_pending_wrong_bulk_stream_closes_until_reset() {
     let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(PanicIfCalledClassifier);
     let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
-    let final_fragment = type9_part("session-fragment", 101_001, 1, &[0x01, 0x65]);
+    let final_fragment = type9_part(1, "session-fragment", 101_001, 1, &[0x01, 0x65]);
 
     receiver
         .receive(
-            &type9_part("session-fragment", 101_001, 0, &[0x00]),
+            &type9_part(0, "session-fragment", 101_001, 0, &[0x00]),
             &mut queue,
         )
         .unwrap();
@@ -560,11 +618,11 @@ fn desktop_receiver_session_type9_pending_wrong_bulk_stream_closes_until_reset()
 fn desktop_receiver_session_type9_pending_malformed_session_frame_closes_until_reset() {
     let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(PanicIfCalledClassifier);
     let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
-    let final_fragment = type9_part("session-fragment", 202_001, 1, &[0x01, 0x65]);
+    let final_fragment = type9_part(1, "session-fragment", 202_001, 1, &[0x01, 0x65]);
 
     receiver
         .receive(
-            &type9_part("session-fragment", 202_001, 0, &[0x00]),
+            &type9_part(0, "session-fragment", 202_001, 0, &[0x00]),
             &mut queue,
         )
         .unwrap();
@@ -592,7 +650,8 @@ fn desktop_receiver_session_type9_final_queue_full_closes_until_reset() {
 
     receiver
         .receive(
-            &video_fragment_bulk_frame(
+            &video_fragment_bulk_frame_with_sequence(
+                0,
                 "session-fill",
                 VideoFrameKind::Delta,
                 303_000,
@@ -606,13 +665,13 @@ fn desktop_receiver_session_type9_final_queue_full_closes_until_reset() {
         .unwrap();
     receiver
         .receive(
-            &type9_part("session-fragment", 303_001, 0, &[0x00]),
+            &type9_part(1, "session-fragment", 303_001, 0, &[0x00]),
             &mut queue,
         )
         .unwrap();
     assert_eq!(
         receiver.receive(
-            &type9_part("session-fragment", 303_001, 1, &[0x01, 0x65]),
+            &type9_part(2, "session-fragment", 303_001, 1, &[0x01, 0x65]),
             &mut queue,
         ),
         Err(DesktopReceiverError::SinkRejected(
@@ -622,7 +681,7 @@ fn desktop_receiver_session_type9_final_queue_full_closes_until_reset() {
     assert_eq!(queue.len(), 1);
     assert_eq!(
         receiver.receive(
-            &type9_part("session-fragment", 303_001, 1, &[0x01, 0x65]),
+            &type9_part(3, "session-fragment", 303_001, 1, &[0x01, 0x65]),
             &mut queue,
         ),
         Err(DesktopReceiverError::Closed)
@@ -640,13 +699,13 @@ fn desktop_receiver_session_type9_final_queue_bytes_full_closes_until_reset() {
 
     receiver
         .receive(
-            &type9_part("session-fragment", 404_001, 0, &[0x00]),
+            &type9_part(0, "session-fragment", 404_001, 0, &[0x00]),
             &mut queue,
         )
         .unwrap();
     assert_eq!(
         receiver.receive(
-            &type9_part("session-fragment", 404_001, 1, &[0x01, 0x65]),
+            &type9_part(1, "session-fragment", 404_001, 1, &[0x01, 0x65]),
             &mut queue,
         ),
         Err(DesktopReceiverError::SinkRejected(
@@ -660,7 +719,7 @@ fn desktop_receiver_session_type9_final_queue_bytes_full_closes_until_reset() {
     assert!(queue.is_empty());
     assert_eq!(
         receiver.receive(
-            &type9_part("session-fragment", 404_001, 1, &[0x01, 0x65]),
+            &type9_part(2, "session-fragment", 404_001, 1, &[0x01, 0x65]),
             &mut queue,
         ),
         Err(DesktopReceiverError::Closed)
