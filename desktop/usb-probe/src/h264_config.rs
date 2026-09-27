@@ -143,14 +143,14 @@ fn validate_parameter_set_len(nal_unit_type: u8, length: usize) -> Result<(), H2
     Ok(())
 }
 
-fn validate_nal_header(header: u8) -> Result<(), H264ConfigError> {
+pub(crate) fn validate_nal_header(header: u8) -> Result<(), H264ConfigError> {
     if header & 0x80 != 0 || header & 0x1f == 0 {
         return Err(H264ConfigError::InvalidNalHeader { header });
     }
     Ok(())
 }
 
-fn find_start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
+pub(crate) fn find_start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
     if bytes.len().saturating_sub(from) < 3 {
         return None;
     }

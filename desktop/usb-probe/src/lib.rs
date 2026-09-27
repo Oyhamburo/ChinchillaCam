@@ -1,5 +1,6 @@
 mod desktop_receiver;
 mod encoded_video_sink;
+mod h264_access_unit;
 mod h264_config;
 mod session_frame;
 mod trusted_phone_store;
@@ -13,6 +14,10 @@ pub use desktop_receiver::{
 pub use encoded_video_sink::{
     BoundedEncodedVideoQueue, EncodedVideoChunk, EncodedVideoChunkLimits, EncodedVideoFrameKind,
     EncodedVideoSink, EncodedVideoSinkError, PresentationTimestamp,
+};
+pub use h264_access_unit::{
+    convert_h264_access_unit_to_length_prefixed, H264AccessUnitError, MAX_H264_ACCESS_UNIT_BYTES,
+    MAX_H264_ACCESS_UNIT_NAL_UNITS,
 };
 pub use h264_config::{
     parse_h264_config, H264ConfigError, H264InputFraming, H264ParameterSets, MAX_H264_CONFIG_BYTES,
