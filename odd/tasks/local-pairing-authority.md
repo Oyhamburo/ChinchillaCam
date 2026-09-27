@@ -4,7 +4,7 @@
 
 ## Alcance M3
 
-Construir el contrato local de sesión entre Android y desktop antes de transportes sostenidos: framing tipado, payload QR, confianza persistida local y enforcement de una computadora activa.
+Construir el contrato local de sesión entre Android y desktop antes de transportes sostenidos: framing tipado, payload QR, seams de confianza, autoridad de una computadora activa y gates explícitos antes de cualquier LAN autenticado. La persistencia completa Android+desktop queda abierta hasta T13b/T13c.
 
 ## Reglas de seguridad
 
@@ -22,9 +22,11 @@ Construir el contrato local de sesión entre Android y desktop antes de transpor
 - [x] T12: payload QR local. Incluir identificador de PC, clave pública o material de confianza, expiración y versión; tests de expiración y corrupción accidental por checksum sin clave.
   - 2026-09-26: Implementación pura añadida en `PairingQrPayload.kt`; tests en `PairingQrPayloadTest.kt`. Validado localmente con `testDebugUnitTest --rerun-tasks` y `git diff --check`.
   - 2026-09-26: Semántica ajustada: el checksum sin clave solo detecta corrupción accidental y campos extra/desconocidos; no autentica ni resiste manipulación maliciosa.
-- [x] T13: persistencia de confianza local Android-only con revocación fake/in-memory; desktop queda para integración separada.
-  - T13a en este worktree será Android-only/in-memory seam; desktop queda aislado en otro worktree hasta decisión fresca de integración.
-  - 2026-09-26: T13a Android-only/in-memory seam implementado en `TrustedDesktopStore.kt`; tests en `TrustedDesktopStoreTest.kt`. Validado localmente con `testDebugUnitTest --rerun-tasks` antes de actualizar este estado.
+- [ ] T13: persistencia de confianza local en Android y desktop con revocación. No está completo.
+  - [x] T13a: seam Android-only/in-memory con revocación fake; implementado en `TrustedDesktopStore.kt` con tests en `TrustedDesktopStoreTest.kt`.
+  - [ ] T13b: persistencia Android segura/local para confianza y revocación.
+  - [ ] T13c: persistencia desktop de confianza/revocación en worktree desktop separado.
+  - Gate: T17 LAN autenticado sigue bloqueado hasta T13b+T13c y prueba de posesión/confirmación explícita.
 - [x] T14: una computadora activa. Rechazar segunda sesión activa con mensaje español; handoff explícito como acción separada.
   - 2026-09-26: Modelo puro Android añadido en `ActiveDesktopAuthority.kt`; tests en `ActiveDesktopAuthorityTest.kt`. Valida primera activación confiada, renovación, rechazo de segunda PC activa, handoff explícito, cancelación, rechazos de confianza, stop e invalidación sin fallback.
 
@@ -151,9 +153,9 @@ Alcance T11:
 - Hallazgos advisory no bloqueantes: `R3-001` en `ActiveDesktopAuthority.kt:196-198` y `R3-002` en `ActiveDesktopAuthority.kt:179`. No abrieron corrección para T14.
 
 
-## Cierre M3 local
+## Estado M3 local parcial
 
-M3 queda cerrado localmente como contrato de autoridad previo a transportes: framing tipado, payload QR local, trust store Android in-memory, hardening de parser QR y autoridad de una computadora activa.
+M3 queda parcialmente implementado como contrato previo a transportes: framing tipado, payload QR local, trust store Android in-memory, hardening de parser QR y autoridad de una computadora activa. No está cerrado como milestone completo porque faltan T13b persistencia Android segura/local y T13c persistencia desktop/revocación.
 
 Evidencia final local:
 
@@ -163,10 +165,11 @@ Evidencia final local:
 - `git diff --check`: sin salida.
 - Revisiones nativas RDD aprobadas y reconocidas: T11 `review-0321f52b8e7283e3`, T12/T11b/T13a `review-1a21ff7d946cbfa5`, T12b `review-676a75b529ab8cab`, T14 `review-32d058495f927285`.
 
-Límites de cierre:
+Límites del estado parcial:
 
 - Sin transportes USB/Wi‑Fi de producto aún.
+- Sin persistencia completa Android+desktop de confianza/revocación.
 - Sin listener LAN externo.
 - El checksum QR no autentica ni resiste manipulación maliciosa; solo detecta corrupción accidental.
-- Antes de T17 siguen obligatorios: prueba de posesión de clave privada, nonce single-use/expiry, confirmación explícita de confianza, threat model y TLS estándar/identidad de par esperada.
+- Antes de T17 siguen obligatorios: T13b, T13c, prueba de posesión de clave privada, nonce single-use/expiry, confirmación explícita de confianza, threat model y TLS estándar/identidad de par esperada.
 - Sin claims Samsung/Windows/macOS/físicos.

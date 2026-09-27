@@ -104,10 +104,10 @@ Para cada unidad de trabajo:
 
 10. **T11 — Protocolo de sesión y framing de video.** Extender framing para handshake, stream metadata, video chunks, metrics y control messages.
 11. **T12 — QR pairing payload.** Diseñar payload local con claves/identificador de PC, expiración y tests; el checksum sin clave solo detecta corrupción accidental, no autentica.
-12. **T13 — Persistencia de confianza local.** Guardar confianza en Android y desktop; revocación local.
+12. **T13 — Persistencia de confianza local.** Guardar confianza en Android y desktop; revocación local. Estado: T13a Android in-memory seam hecho; T13b Android persistente y T13c desktop persistente siguen pendientes.
 13. **T14 — One-active-computer enforcement.** Rechazar segunda sesión activa con mensaje claro; handoff explícito. Plan: autoridad local pura antes de transporte, sin fallback silencioso ni LAN.
 
-Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN autenticado debe existir prueba de posesión de la clave privada correspondiente al `trustMaterial` del QR, nonce de uso único con expiración, confirmación explícita de confianza y threat model/plan testeable con TLS estándar e identidad de par pinneada/esperada.
+Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN autenticado debe existir T13b Android persistente, T13c desktop persistente/revocación, prueba de posesión de la clave privada correspondiente al `trustMaterial` del QR, nonce de uso único con expiración, confirmación explícita de confianza y threat model/plan testeable con TLS estándar e identidad de par pinneada/esperada.
 
 ### M4 — Transportes autenticados y cambio de modo
 
@@ -152,7 +152,7 @@ Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN auten
 
 ## Próxima unidad autorizada
 
-La próxima unidad recomendada es **M4/T15 — USB video transport sobre AOA bulk**, empezando con un transport seam/fakes y frames de sesión anidados; sin prueba física todavía, sin listener LAN y sin reinterpretar endianess del `SessionFrame`.
+La próxima unidad recomendada puede seguir siendo **M4/T15 — USB video transport sobre AOA bulk** porque no abre LAN ni depende de persistencia completa; M3 permanece parcial hasta T13b/T13c. Empezar con seams/fakes y frames de sesión anidados; sin prueba física todavía y sin reinterpretar endianess del `SessionFrame`.
 
 Antes de escribir source para T8b se debe:
 
