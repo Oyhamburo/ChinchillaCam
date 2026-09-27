@@ -22,13 +22,19 @@ Add a small pure Rust `SessionFrame v1` companion for desktop tests that matches
 - Nesting evidence that the existing outer `BulkFrame` remains little-endian while the inner `SessionFrame` is big-endian.
 - Rejections for frame too large, truncated header/payload, trailing bytes, unsupported version, unknown type, negative sequence, empty session id, malformed UTF-8, and duplicate camera-control argument keys.
 
+## Slice B1 handshake payload scope
+
+- Add `HandshakeHello` and `HandshakeReject` payload encode/decode only.
+- Include exact Android Kotlin v1 golden fixtures for both payloads, derived from sibling `SessionFrame.kt` at commit `f8504a91c27efb1be0004470b1ee30334d5ddc8b`.
+- Preserve existing Slice A/A1 behavior and 1 MiB encode/decode cap.
+- Keep the diff under the ~400 changed-line review budget.
+- No `StreamMetadata`, `MetricsSnapshot`, transport/network/crypto/auth/decoder/virtual-camera work.
+
 ## Deferred slices
 
-- `HandshakeHello`
-- `HandshakeReject`
 - `StreamMetadata`
 - `MetricsSnapshot`
-- Broader payload validation beyond Slice A tests
+- Broader payload validation beyond current slices
 - Any transport/network/crypto/auth/decoder/virtual-camera work
 
 ## Authorized edit surfaces for this shrink pass
@@ -57,14 +63,24 @@ Add a small pure Rust `SessionFrame v1` companion for desktop tests that matches
 - Independent verification: `gentle-ai-verify` PASS; confirmed Android golden bytes, big-endian inner frame, little-endian BulkFrame nesting, UTF-8/duplicate-key rejection, and no transport/network/crypto/auth/decoder/virtual-camera work.
 - Commit local: `f1de9db feat(desktop): add session frame slice`.
 - Native review: `review-e20ab89368bc203a` for committed range `caf25f9..f1de9db` approved and acknowledged; authority burned. Target `sha256:e149c5f5b39d2ebb8c1bb75d4fa4a455270829feea73a537b760877fd51c4646`; consumed revision `sha256:0e77c803470eb7fa7c087a42a2ab642ad040d4b2728f961647d59239e16343a2`.
-- Advisory informativo no bloqueante: `R3-encode-decode-size-asymmetry`; tratar como trabajo futuro separado, no como razón para reabrir este candidato.
+- Slice A1 commit: `460b65c fix(desktop): cap session frame encode size`.
+- Slice A1 native review: `review-1eda5d845fc64a60` approved and acknowledged; authority burned. Advisory informativo no bloqueante: `R3-generic-field-error`; parser diagnostic improvement is future work only if it materially helps debugging.
 - Slice A1 RED: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml session_frame` failed on missing `SessionFrameCodec::DEFAULT_MAX_FRAME_SIZE` and `SessionFrameEncodeError::FrameTooLarge`.
 - Slice A1 GREEN: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml session_frame` passed with 8 session frame tests.
 - Slice A1 full crate test: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` passed with 44 AOA + 6 encoded video sink + 8 session frame tests + doctests.
 - Slice A1 format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
 - Slice A1 `git diff --check`: passed with no output.
 - Slice A1 independent verification: `gentle-ai-verify` PASS; confirmed pre-encode frame-size check before `encode_payload`/final allocation, existing golden/roundtrip behavior, and no deferred payload or transport/network/crypto/auth/decoder/virtual-camera work.
-- Slice A1 commit local: pending.
+- Slice A1 commit local: `460b65c fix(desktop): cap session frame encode size`.
+- Slice A1 native review: `review-1eda5d845fc64a60` approved and acknowledged; authority burned.
+- Slice B1 RED: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml session_frame_encodes_android_golden_handshake` failed on missing `SessionFramePayload::HandshakeHello` and `SessionFramePayload::HandshakeReject` variants.
+- Slice B1 GREEN focused: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml session_frame` passed with 10 session frame tests.
+- Slice B1 GREEN full crate: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` passed with 44 AOA + 6 encoded video sink + 10 session frame tests + doctests.
+- Slice B1 format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
+- Slice B1 `git diff --check`: passed with no output.
+- Slice B1 diff budget: verified independently at 155 insertions / 5 deletions (160 changed lines) across 3 files, within <=400 advisory budget.
+- Slice B1 independent verification: initial `gentle-ai-verify` functionally PASSed focused/full tests and scope checks but returned FAIL only because diff-size command was not authorized; follow-up `gentle-ai-verify` PASSed the diff budget with `git diff --numstat`/`--stat`.
+- Slice B1 commit local: pending.
 
 ## Review workload note
 

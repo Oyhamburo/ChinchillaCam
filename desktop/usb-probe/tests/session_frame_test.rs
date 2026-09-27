@@ -14,6 +14,46 @@ const HANDSHAKE_ACCEPT_GOLDEN: &[u8] = &[
     0, 2, b'o', b'k',
 ];
 
+// Golden bytes copied from the same Android SessionFrameCodec contract for:
+// SessionFrame(1, 0, "session-a", SessionPayload.HandshakeHello("android-phone", "ChinchillaCam", listOf("h264", "metrics")))
+const HANDSHAKE_HELLO_GOLDEN: &[u8] = &[
+    b'C', b'C', b'S', b'F', 1, 1, 0, 0, 0, 0, 0, 9, b's', b'e', b's', b's', b'i', b'o', b'n', b'-',
+    b'a', 0, 0, 0, 47, 0, 13, b'a', b'n', b'd', b'r', b'o', b'i', b'd', b'-', b'p', b'h', b'o',
+    b'n', b'e', 0, 13, b'C', b'h', b'i', b'n', b'c', b'h', b'i', b'l', b'l', b'a', b'C', b'a',
+    b'm', 0, 2, 0, 4, b'h', b'2', b'6', b'4', 0, 7, b'm', b'e', b't', b'r', b'i', b'c', b's',
+];
+
+// Golden bytes copied from the same Android SessionFrameCodec contract for:
+// SessionFrame(1, 2, "session-a", SessionPayload.HandshakeReject("busy", "Ya hay una computadora activa"))
+const HANDSHAKE_REJECT_GOLDEN: &[u8] = &[
+    b'C', b'C', b'S', b'F', 1, 3, 0, 0, 0, 2, 0, 9, b's', b'e', b's', b's', b'i', b'o', b'n', b'-',
+    b'a', 0, 0, 0, 37, 0, 4, b'b', b'u', b's', b'y', 0, 29, b'Y', b'a', b' ', b'h', b'a', b'y',
+    b' ', b'u', b'n', b'a', b' ', b'c', b'o', b'm', b'p', b'u', b't', b'a', b'd', b'o', b'r', b'a',
+    b' ', b'a', b'c', b't', b'i', b'v', b'a',
+];
+
+#[test]
+fn session_frame_encodes_android_golden_handshake_hello_big_endian() {
+    let frame = SessionFrame::new(
+        0,
+        "session-a",
+        SessionFramePayload::HandshakeHello {
+            device_id: "android-phone".to_string(),
+            app_name: "ChinchillaCam".to_string(),
+            capabilities: vec!["h264".to_string(), "metrics".to_string()],
+        },
+    );
+
+    assert_eq!(
+        SessionFrameCodec::encode(&frame).unwrap(),
+        HANDSHAKE_HELLO_GOLDEN
+    );
+    assert_eq!(
+        SessionFrameCodec::decode(HANDSHAKE_HELLO_GOLDEN).unwrap(),
+        frame
+    );
+}
+
 #[test]
 fn session_frame_encodes_android_golden_handshake_accept_big_endian() {
     let frame = SessionFrame::new(
@@ -31,6 +71,27 @@ fn session_frame_encodes_android_golden_handshake_accept_big_endian() {
     );
     assert_eq!(
         SessionFrameCodec::decode(HANDSHAKE_ACCEPT_GOLDEN).unwrap(),
+        frame
+    );
+}
+
+#[test]
+fn session_frame_encodes_android_golden_handshake_reject_big_endian() {
+    let frame = SessionFrame::new(
+        2,
+        "session-a",
+        SessionFramePayload::HandshakeReject {
+            reason_code: "busy".to_string(),
+            message: "Ya hay una computadora activa".to_string(),
+        },
+    );
+
+    assert_eq!(
+        SessionFrameCodec::encode(&frame).unwrap(),
+        HANDSHAKE_REJECT_GOLDEN
+    );
+    assert_eq!(
+        SessionFrameCodec::decode(HANDSHAKE_REJECT_GOLDEN).unwrap(),
         frame
     );
 }

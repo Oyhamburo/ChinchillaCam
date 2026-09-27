@@ -42,8 +42,17 @@ impl SessionFrame {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionFramePayload {
+    HandshakeHello {
+        device_id: String,
+        app_name: String,
+        capabilities: Vec<String>,
+    },
     HandshakeAccept {
         desktop_id: String,
+        message: String,
+    },
+    HandshakeReject {
+        reason_code: String,
         message: String,
     },
     VideoChunk {
@@ -60,7 +69,9 @@ pub enum SessionFramePayload {
 impl SessionFramePayload {
     fn type_id(&self) -> u8 {
         match self {
+            Self::HandshakeHello { .. } => 1,
             Self::HandshakeAccept { .. } => 2,
+            Self::HandshakeReject { .. } => 3,
             Self::VideoChunk { .. } => 5,
             Self::CameraControlCommand { .. } => 7,
         }
@@ -202,8 +213,33 @@ impl SessionFrameCodec {
 
 fn encoded_payload_size(payload: &SessionFramePayload) -> Result<usize, SessionFrameEncodeError> {
     match payload {
+        SessionFramePayload::HandshakeHello {
+            device_id,
+            app_name,
+            capabilities,
+        } => {
+            write_len_fits_u16(capabilities.len(), "capability count")?;
+            let mut size = checked_add(
+                encoded_bytes_with_len_size(device_id.len())?,
+                encoded_bytes_with_len_size(app_name.len())?,
+                "payload",
+            )?;
+            size = checked_add(size, 2, "payload")?;
+            for capability in capabilities {
+                size = checked_add(
+                    size,
+                    encoded_bytes_with_len_size(capability.len())?,
+                    "payload",
+                )?;
+            }
+            Ok(size)
+        }
         SessionFramePayload::HandshakeAccept {
             desktop_id,
+            message,
+        }
+        | SessionFramePayload::HandshakeReject {
+            reason_code: desktop_id,
             message,
         } => checked_add(
             encoded_bytes_with_len_size(desktop_id.len())?,
@@ -246,11 +282,30 @@ fn encoded_bytes_with_len_size(length: usize) -> Result<usize, SessionFrameEncod
 fn encode_payload(payload: &SessionFramePayload) -> Result<Vec<u8>, SessionFrameEncodeError> {
     let mut writer = Writer::new();
     match payload {
+        SessionFramePayload::HandshakeHello {
+            device_id,
+            app_name,
+            capabilities,
+        } => {
+            writer.write_string(device_id)?;
+            writer.write_string(app_name)?;
+            writer.write_u16_len(capabilities.len(), "capability count")?;
+            for capability in capabilities {
+                writer.write_string(capability)?;
+            }
+        }
         SessionFramePayload::HandshakeAccept {
             desktop_id,
             message,
         } => {
             writer.write_string(desktop_id)?;
+            writer.write_string(message)?;
+        }
+        SessionFramePayload::HandshakeReject {
+            reason_code,
+            message,
+        } => {
+            writer.write_string(reason_code)?;
             writer.write_string(message)?;
         }
         SessionFramePayload::VideoChunk {
@@ -285,8 +340,26 @@ fn decode_payload(
 ) -> Result<SessionFramePayload, SessionFrameDecodeError> {
     let mut reader = Reader::new(payload);
     let decoded = match type_id {
+        1 => {
+            let device_id = reader.read_string("deviceId")?;
+            let app_name = reader.read_string("appName")?;
+            let count = reader.read_u16("capabilityCount")? as usize;
+            let mut capabilities = Vec::with_capacity(count);
+            for _ in 0..count {
+                capabilities.push(reader.read_string("capability")?);
+            }
+            SessionFramePayload::HandshakeHello {
+                device_id,
+                app_name,
+                capabilities,
+            }
+        }
         2 => SessionFramePayload::HandshakeAccept {
             desktop_id: reader.read_string("desktopId")?,
+            message: reader.read_string("message")?,
+        },
+        3 => SessionFramePayload::HandshakeReject {
+            reason_code: reader.read_string("reasonCode")?,
             message: reader.read_string("message")?,
         },
         5 => {
