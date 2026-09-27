@@ -30,6 +30,7 @@ sealed class UsbSessionFrameIoReadResult {
     data class Oversize(
         val declaredBytes: Int,
         val maxPayloadBytes: Int,
+        val sessionClosed: Boolean = false,
     ) : UsbSessionFrameIoReadResult()
 
     data class WrongStreamId(
@@ -77,9 +78,11 @@ class UsbSessionFrameIoAdapter(
 
         val declaredPayloadBytes = header.readLittleEndianInt(offset = 4)
         if (declaredPayloadBytes < 0 || declaredPayloadBytes > maxPayloadBytes) {
+            session.close()
             return UsbSessionFrameIoReadResult.Oversize(
                 declaredBytes = declaredPayloadBytes,
                 maxPayloadBytes = maxPayloadBytes,
+                sessionClosed = true,
             )
         }
 

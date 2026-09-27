@@ -74,13 +74,20 @@ class UsbSessionFrameIoAdapterTest {
     }
 
     @Test
-    fun readRejectsOversizeDeclaredPayloadBeforeReadingPayloadBytes() {
+    fun readRejectsOversizeDeclaredPayloadAndClosesSessionBeforeReadingPayloadBytes() {
         val input = littleEndianHeader(USB_SESSION_FRAME_STREAM_ID, payloadLength = 5) + byteArrayOf(9, 9, 9, 9, 9)
         val adapter = UsbSessionFrameIoAdapter(maxPayloadBytes = 4, streamId = USB_SESSION_FRAME_STREAM_ID)
+        val closeable = RecordingCloseable()
+        val session = sessionFor(inputBytes = input, closeable = closeable)
 
         assertEquals(
-            UsbSessionFrameIoReadResult.Oversize(declaredBytes = 5, maxPayloadBytes = 4),
-            adapter.read(sessionFor(inputBytes = input)),
+            UsbSessionFrameIoReadResult.Oversize(declaredBytes = 5, maxPayloadBytes = 4, sessionClosed = true),
+            adapter.read(session),
+        )
+        assertEquals(true, closeable.closed)
+        assertEquals(
+            UsbSessionFrameIoReadResult.EofEmpty,
+            adapter.read(sessionFor(inputBytes = byteArrayOf())),
         )
     }
 
@@ -129,10 +136,11 @@ class UsbSessionFrameIoAdapterTest {
     private fun sessionFor(
         inputBytes: ByteArray,
         output: ByteArrayOutputStream = ByteArrayOutputStream(),
+        closeable: RecordingCloseable = RecordingCloseable(),
     ): AccessoryIoSession = AccessoryIoSession(
         input = ByteArrayInputStream(inputBytes),
         output = output,
-        closeable = AutoCloseableCloseable(),
+        closeable = closeable,
     )
 
     private fun littleEndianHeader(streamId: Int, payloadLength: Int): ByteArray =
@@ -145,7 +153,12 @@ class UsbSessionFrameIoAdapterTest {
         ((this ushr 24) and 0xff).toByte(),
     )
 
-    private class AutoCloseableCloseable : java.io.Closeable {
-        override fun close() = Unit
+    private class RecordingCloseable : java.io.Closeable {
+        var closed: Boolean = false
+            private set
+
+        override fun close() {
+            closed = true
+        }
     }
 }
