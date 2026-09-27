@@ -1,7 +1,12 @@
+mod desktop_receiver;
 mod encoded_video_sink;
 mod session_frame;
 mod trusted_phone_store;
 
+pub use desktop_receiver::{
+    receive_desktop_video_frame, DesktopReceiverError, StaticFrameKindClassifier,
+    VideoFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
+};
 pub use encoded_video_sink::{
     BoundedEncodedVideoQueue, EncodedVideoChunk, EncodedVideoChunkLimits, EncodedVideoFrameKind,
     EncodedVideoSink, EncodedVideoSinkError, PresentationTimestamp,
