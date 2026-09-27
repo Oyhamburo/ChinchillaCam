@@ -60,4 +60,4 @@ Crear un receptor fake de escritorio para pruebas que acepte un `BulkFrame` ya r
 - `git diff --check`: pasó sin salida.
 - Diff budget: 340 inserciones / 0 borrados en 4 archivos T20a, dentro del corte <=400 líneas.
 - Revisión independiente: `gentle-ai-verify` PASS; confirmó stream id `0x01020304`, decode de `SessionFrame`, rechazos tipados, seam de clasificación Key/CodecConfig/Delta, y ausencia de decoder/hardware/LAN/crypto/cámara virtual.
-- El commit T20a es `e95110b`; revisión nativa pendiente.
+- T20a `e95110b` + corrección de procedencia `1cd0271`: revisión nativa de `55e751c..1cd0271` aprobada y ACK completado en `review-2d5dead8813633b7`; autoridad consumida. No representa prueba de USB físico ni de decoder.
