@@ -71,7 +71,7 @@ Antes de T15c/T17 sostenido, `SessionFrameCodec.encode` debe respetar el mismo l
 
 Alcance T11c Android:
 
-- Agregar test RED para `SessionFrameCodec.encode` que rechace un `VideoChunk` cuyo frame completo exceda 1 MiB.
+- Agregar test RED para `SessionFrameCodec.encode` que rechace un frame completo que exceda 1 MiB. En Android, `VideoChunk.h264Bytes` ya está limitado por campo u16, así que el caso oversized usa payload agregado de handshake/capabilities; el máximo `VideoChunk` queda cubierto por el límite de campo y debajo del límite de frame.
 - Mantener roundtrip de un frame que queda justo por debajo del límite.
 - Exponer error local claro en encode; sin transporte, sin USB real, sin LAN.
 - No cambiar el formato wire salvo agregar la validación de tamaño.
