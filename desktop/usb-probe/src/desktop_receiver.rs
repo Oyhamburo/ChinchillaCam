@@ -1,7 +1,7 @@
 use crate::{
     BulkFrame, EncodedVideoChunk, EncodedVideoChunkLimits, EncodedVideoFrameKind, EncodedVideoSink,
     EncodedVideoSinkError, PresentationTimestamp, SessionFrame, SessionFrameCodec,
-    SessionFrameDecodeError, SessionFramePayload,
+    SessionFrameDecodeError, SessionFramePayload, VideoFrameKind,
 };
 
 pub const USB_SESSION_FRAME_STREAM_ID: u32 = 0x0102_0304;
@@ -68,31 +68,46 @@ where
     let session_frame = SessionFrameCodec::decode(bulk_frame.payload())
         .map_err(DesktopReceiverError::MalformedSessionFrame)?;
 
-    let SessionFramePayload::VideoChunk {
-        presentation_time_us,
-        h264_bytes,
-        ..
-    } = session_frame.payload()
-    else {
-        return Err(DesktopReceiverError::UnexpectedSessionPayload {
-            type_id: session_payload_type_id(session_frame.payload()),
-        });
+    let (presentation_time_us, h264_bytes, frame_kind) = match session_frame.payload() {
+        SessionFramePayload::VideoChunk {
+            presentation_time_us,
+            h264_bytes,
+            ..
+        } => {
+            if *presentation_time_us < 0 {
+                return Err(DesktopReceiverError::NegativePresentationTimestamp(
+                    *presentation_time_us,
+                ));
+            }
+            let frame_kind = classifier
+                .classify_frame_kind(&session_frame)?
+                .ok_or(DesktopReceiverError::UnknownFrameKind)?;
+            (*presentation_time_us, h264_bytes, frame_kind)
+        }
+        SessionFramePayload::VideoChunkV2 {
+            presentation_time_us,
+            kind,
+            h264_bytes,
+            ..
+        } => {
+            if *presentation_time_us < 0 {
+                return Err(DesktopReceiverError::NegativePresentationTimestamp(
+                    *presentation_time_us,
+                ));
+            }
+            (*presentation_time_us, h264_bytes, encoded_frame_kind(*kind))
+        }
+        other => {
+            return Err(DesktopReceiverError::UnexpectedSessionPayload {
+                type_id: session_payload_type_id(other),
+            });
+        }
     };
-
-    if *presentation_time_us < 0 {
-        return Err(DesktopReceiverError::NegativePresentationTimestamp(
-            *presentation_time_us,
-        ));
-    }
-
-    let frame_kind = classifier
-        .classify_frame_kind(&session_frame)?
-        .ok_or(DesktopReceiverError::UnknownFrameKind)?;
     let limits = EncodedVideoChunkLimits::new(SessionFrameCodec::DEFAULT_MAX_FRAME_SIZE)
         .expect("non-zero fixed desktop receiver payload limit");
     let chunk = EncodedVideoChunk::new(
         bulk_frame.stream_id(),
-        PresentationTimestamp::from_micros(*presentation_time_us as u64),
+        PresentationTimestamp::from_micros(presentation_time_us as u64),
         frame_kind,
         h264_bytes.clone(),
         &limits,
@@ -101,6 +116,14 @@ where
 
     sink.push_encoded_video(chunk)
         .map_err(DesktopReceiverError::SinkRejected)
+}
+
+fn encoded_frame_kind(kind: VideoFrameKind) -> EncodedVideoFrameKind {
+    match kind {
+        VideoFrameKind::Delta => EncodedVideoFrameKind::Delta,
+        VideoFrameKind::Key => EncodedVideoFrameKind::Key,
+        VideoFrameKind::CodecConfig => EncodedVideoFrameKind::CodecConfig,
+    }
 }
 
 fn session_payload_type_id(payload: &SessionFramePayload) -> u8 {

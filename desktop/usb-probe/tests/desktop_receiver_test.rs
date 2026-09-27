@@ -1,6 +1,7 @@
 use usb_probe::{
     BoundedEncodedVideoQueue, BulkFrame, DesktopReceiverError, EncodedVideoFrameKind, SessionFrame,
-    SessionFrameCodec, SessionFramePayload, StaticFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
+    SessionFrameCodec, SessionFramePayload, StaticFrameKindClassifier, VideoFrameKind,
+    VideoFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
 };
 
 fn video_bulk_frame(presentation_time_us: i64, payload: Vec<u8>) -> BulkFrame {
@@ -11,6 +12,33 @@ fn video_bulk_frame(presentation_time_us: i64, payload: Vec<u8>) -> BulkFrame {
             chunk_index: 3,
             presentation_time_us,
             h264_bytes: payload,
+        },
+    );
+    BulkFrame::new(
+        USB_SESSION_FRAME_STREAM_ID,
+        SessionFrameCodec::encode(&session).unwrap(),
+    )
+    .unwrap()
+}
+
+fn video_v2_bulk_frame(
+    kind: VideoFrameKind,
+    presentation_time_us: i64,
+    payload: Vec<u8>,
+) -> BulkFrame {
+    let session = SessionFrame::new(
+        8,
+        "session-a",
+        match kind {
+            VideoFrameKind::Key => {
+                SessionFramePayload::video_chunk_v2_key(4, presentation_time_us, payload)
+            }
+            VideoFrameKind::CodecConfig => {
+                SessionFramePayload::video_chunk_v2_codec_config(4, presentation_time_us, payload)
+            }
+            VideoFrameKind::Delta => {
+                SessionFramePayload::video_chunk_v2_delta(4, presentation_time_us, payload)
+            }
         },
     );
     BulkFrame::new(
@@ -54,6 +82,39 @@ fn desktop_receiver_preserves_injected_frame_kind_classification() {
         assert_eq!(chunk.presentation_timestamp().as_micros(), 33_366);
         assert_eq!(chunk.frame_kind(), frame_kind);
         assert_eq!(chunk.payload(), &[0x00, 0x00, 0x01, 0x65]);
+    }
+}
+
+#[test]
+fn desktop_receiver_accepts_video_chunk_v2_direct_frame_kind_without_classifier() {
+    for (wire_kind, expected_kind, payload) in [
+        (
+            VideoFrameKind::Key,
+            EncodedVideoFrameKind::Key,
+            vec![0x00, 0x00, 0x01, 0x65],
+        ),
+        (
+            VideoFrameKind::CodecConfig,
+            EncodedVideoFrameKind::CodecConfig,
+            vec![0x00, 0x00, 0x01, 0x67],
+        ),
+        (
+            VideoFrameKind::Delta,
+            EncodedVideoFrameKind::Delta,
+            vec![0x41],
+        ),
+    ] {
+        let mut queue = BoundedEncodedVideoQueue::new(3).unwrap();
+        let mut classifier = PanicIfCalledClassifier;
+        let frame = video_v2_bulk_frame(wire_kind, 44_488, payload.clone());
+
+        usb_probe::receive_desktop_video_frame(&frame, &mut classifier, &mut queue).unwrap();
+
+        let chunk = queue.pop_front().unwrap();
+        assert_eq!(chunk.stream_id(), USB_SESSION_FRAME_STREAM_ID);
+        assert_eq!(chunk.presentation_timestamp().as_micros(), 44_488);
+        assert_eq!(chunk.frame_kind(), expected_kind);
+        assert_eq!(chunk.payload(), payload.as_slice());
     }
 }
 
@@ -126,6 +187,23 @@ fn desktop_receiver_rejects_unknown_injected_frame_kind() {
 }
 
 #[test]
+fn desktop_receiver_rejects_unknown_video_chunk_v2_kind_as_malformed_frame() {
+    let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
+    let mut classifier = PanicIfCalledClassifier;
+    let mut encoded = video_v2_bulk_frame(VideoFrameKind::Key, 1, vec![0x65])
+        .payload()
+        .to_vec();
+    encoded[37] = 99;
+    let frame = BulkFrame::new(USB_SESSION_FRAME_STREAM_ID, encoded).unwrap();
+
+    assert!(matches!(
+        usb_probe::receive_desktop_video_frame(&frame, &mut classifier, &mut queue),
+        Err(DesktopReceiverError::MalformedSessionFrame(_))
+    ));
+    assert!(queue.is_empty());
+}
+
+#[test]
 fn desktop_receiver_reports_queue_backpressure_without_dropping_existing_chunk() {
     let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
     let mut classifier = StaticFrameKindClassifier::known(EncodedVideoFrameKind::Delta);
@@ -152,4 +230,44 @@ fn desktop_receiver_reports_queue_backpressure_without_dropping_existing_chunk()
     assert_eq!(retained.presentation_timestamp().as_micros(), 1);
     assert_eq!(retained.payload(), &[0x65]);
     assert!(queue.pop_front().is_none());
+}
+
+#[test]
+fn desktop_receiver_reports_video_chunk_v2_queue_backpressure() {
+    let mut queue = BoundedEncodedVideoQueue::new(1).unwrap();
+    let mut classifier = PanicIfCalledClassifier;
+
+    usb_probe::receive_desktop_video_frame(
+        &video_v2_bulk_frame(VideoFrameKind::Delta, 1, vec![0x65]),
+        &mut classifier,
+        &mut queue,
+    )
+    .unwrap();
+
+    assert_eq!(
+        usb_probe::receive_desktop_video_frame(
+            &video_v2_bulk_frame(VideoFrameKind::Key, 2, vec![0x65]),
+            &mut classifier,
+            &mut queue,
+        ),
+        Err(DesktopReceiverError::SinkRejected(
+            usb_probe::EncodedVideoSinkError::QueueFull { capacity: 1 }
+        ))
+    );
+
+    let retained = queue.pop_front().unwrap();
+    assert_eq!(retained.presentation_timestamp().as_micros(), 1);
+    assert_eq!(retained.frame_kind(), EncodedVideoFrameKind::Delta);
+    assert!(queue.pop_front().is_none());
+}
+
+struct PanicIfCalledClassifier;
+
+impl VideoFrameKindClassifier for PanicIfCalledClassifier {
+    fn classify_frame_kind(
+        &mut self,
+        _frame: &SessionFrame,
+    ) -> Result<Option<EncodedVideoFrameKind>, DesktopReceiverError> {
+        panic!("v2 receiver path must not call legacy frame kind classifier")
+    }
 }
