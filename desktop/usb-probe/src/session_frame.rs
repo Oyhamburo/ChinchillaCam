@@ -4,6 +4,8 @@ const SESSION_FRAME_MAGIC: &[u8; 4] = b"CCSF";
 const SUPPORTED_SESSION_FRAME_VERSION: u8 = 1;
 const DEFAULT_MAX_SESSION_FRAME_SIZE: usize = 1024 * 1024;
 const HEADER_WITHOUT_SESSION_BYTES: usize = 16;
+const MAX_VIDEO_CHUNK_FRAGMENT_COUNT: i32 = 1024;
+const MAX_FRAGMENTED_H264_BYTES: i32 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFrame {
@@ -73,6 +75,15 @@ pub enum SessionFramePayload {
         kind: VideoFrameKind,
         h264_bytes: Vec<u8>,
     },
+    VideoChunkFragmentV1 {
+        chunk_index: i32,
+        presentation_time_us: i64,
+        kind: VideoFrameKind,
+        fragment_index: i32,
+        fragment_count: i32,
+        total_h264_bytes: i32,
+        fragment_h264_bytes: Vec<u8>,
+    },
     MetricsSnapshot {
         captured_at_us: i64,
         dropped_frames: i32,
@@ -139,6 +150,83 @@ impl SessionFramePayload {
         }
     }
 
+    pub fn video_chunk_fragment_v1_delta(
+        chunk_index: i32,
+        presentation_time_us: i64,
+        fragment_index: i32,
+        fragment_count: i32,
+        total_h264_bytes: i32,
+        fragment_h264_bytes: Vec<u8>,
+    ) -> Self {
+        Self::video_chunk_fragment_v1(
+            chunk_index,
+            presentation_time_us,
+            VideoFrameKind::Delta,
+            fragment_index,
+            fragment_count,
+            total_h264_bytes,
+            fragment_h264_bytes,
+        )
+    }
+
+    pub fn video_chunk_fragment_v1_key(
+        chunk_index: i32,
+        presentation_time_us: i64,
+        fragment_index: i32,
+        fragment_count: i32,
+        total_h264_bytes: i32,
+        fragment_h264_bytes: Vec<u8>,
+    ) -> Self {
+        Self::video_chunk_fragment_v1(
+            chunk_index,
+            presentation_time_us,
+            VideoFrameKind::Key,
+            fragment_index,
+            fragment_count,
+            total_h264_bytes,
+            fragment_h264_bytes,
+        )
+    }
+
+    pub fn video_chunk_fragment_v1_codec_config(
+        chunk_index: i32,
+        presentation_time_us: i64,
+        fragment_index: i32,
+        fragment_count: i32,
+        total_h264_bytes: i32,
+        fragment_h264_bytes: Vec<u8>,
+    ) -> Self {
+        Self::video_chunk_fragment_v1(
+            chunk_index,
+            presentation_time_us,
+            VideoFrameKind::CodecConfig,
+            fragment_index,
+            fragment_count,
+            total_h264_bytes,
+            fragment_h264_bytes,
+        )
+    }
+
+    fn video_chunk_fragment_v1(
+        chunk_index: i32,
+        presentation_time_us: i64,
+        kind: VideoFrameKind,
+        fragment_index: i32,
+        fragment_count: i32,
+        total_h264_bytes: i32,
+        fragment_h264_bytes: Vec<u8>,
+    ) -> Self {
+        Self::VideoChunkFragmentV1 {
+            chunk_index,
+            presentation_time_us,
+            kind,
+            fragment_index,
+            fragment_count,
+            total_h264_bytes,
+            fragment_h264_bytes,
+        }
+    }
+
     fn type_id(&self) -> u8 {
         match self {
             Self::HandshakeHello { .. } => 1,
@@ -149,6 +237,7 @@ impl SessionFramePayload {
             Self::MetricsSnapshot { .. } => 6,
             Self::CameraControlCommand { .. } => 7,
             Self::VideoChunkV2 { .. } => 8,
+            Self::VideoChunkFragmentV1 { .. } => 9,
         }
     }
 }
@@ -170,12 +259,23 @@ impl VideoFrameKind {
     }
 
     fn from_wire(value: u8) -> Result<Self, SessionFrameDecodeError> {
+        Self::from_wire_named(value, "video chunk v2")
+    }
+
+    fn from_fragment_wire(value: u8) -> Result<Self, SessionFrameDecodeError> {
+        Self::from_wire_named(value, "video chunk fragment v1")
+    }
+
+    fn from_wire_named(
+        value: u8,
+        payload_name: &'static str,
+    ) -> Result<Self, SessionFrameDecodeError> {
         match value {
             0 => Ok(Self::Delta),
             1 => Ok(Self::Key),
             2 => Ok(Self::CodecConfig),
             other => Err(SessionFrameDecodeError::InvalidPayload(format!(
-                "unknown video chunk v2 kind: {other}"
+                "unknown {payload_name} kind: {other}"
             ))),
         }
     }
@@ -392,6 +492,29 @@ fn encoded_payload_size(payload: &SessionFramePayload) -> Result<usize, SessionF
                 "payload",
             )
         }
+        SessionFramePayload::VideoChunkFragmentV1 {
+            chunk_index,
+            presentation_time_us,
+            fragment_index,
+            fragment_count,
+            total_h264_bytes,
+            fragment_h264_bytes,
+            ..
+        } => {
+            validate_video_chunk_fragment_v1_for_encode(
+                *chunk_index,
+                *presentation_time_us,
+                *fragment_index,
+                *fragment_count,
+                *total_h264_bytes,
+                fragment_h264_bytes,
+            )?;
+            checked_add(
+                25,
+                encoded_bytes_with_len_size(fragment_h264_bytes.len())?,
+                "payload",
+            )
+        }
         SessionFramePayload::MetricsSnapshot {
             captured_at_us,
             dropped_frames,
@@ -491,6 +614,31 @@ fn encode_payload(payload: &SessionFramePayload) -> Result<Vec<u8>, SessionFrame
             writer.write_i64(*presentation_time_us);
             writer.write_u8(kind.wire_value());
             writer.write_bytes_with_len_field(h264_bytes, "h264Bytes")?;
+        }
+        SessionFramePayload::VideoChunkFragmentV1 {
+            chunk_index,
+            presentation_time_us,
+            kind,
+            fragment_index,
+            fragment_count,
+            total_h264_bytes,
+            fragment_h264_bytes,
+        } => {
+            validate_video_chunk_fragment_v1_for_encode(
+                *chunk_index,
+                *presentation_time_us,
+                *fragment_index,
+                *fragment_count,
+                *total_h264_bytes,
+                fragment_h264_bytes,
+            )?;
+            writer.write_i32(*chunk_index);
+            writer.write_i64(*presentation_time_us);
+            writer.write_u8(kind.wire_value());
+            writer.write_i32(*fragment_index);
+            writer.write_i32(*fragment_count);
+            writer.write_i32(*total_h264_bytes);
+            writer.write_bytes_with_len_field(fragment_h264_bytes, "fragmentH264Bytes")?;
         }
         SessionFramePayload::MetricsSnapshot {
             captured_at_us,
@@ -623,6 +771,32 @@ fn decode_payload(
                 h264_bytes,
             }
         }
+        9 => {
+            let chunk_index = reader.read_i32("chunkIndex")?;
+            let presentation_time_us = reader.read_i64("presentationTimeUs")?;
+            let kind = VideoFrameKind::from_fragment_wire(reader.read_u8("kind")?)?;
+            let fragment_index = reader.read_i32("fragmentIndex")?;
+            let fragment_count = reader.read_i32("fragmentCount")?;
+            let total_h264_bytes = reader.read_i32("totalH264Bytes")?;
+            let fragment_h264_bytes = reader.read_bytes_with_len("fragmentH264Bytes")?;
+            validate_video_chunk_fragment_v1_for_decode(
+                chunk_index,
+                presentation_time_us,
+                fragment_index,
+                fragment_count,
+                total_h264_bytes,
+                &fragment_h264_bytes,
+            )?;
+            SessionFramePayload::VideoChunkFragmentV1 {
+                chunk_index,
+                presentation_time_us,
+                kind,
+                fragment_index,
+                fragment_count,
+                total_h264_bytes,
+                fragment_h264_bytes,
+            }
+        }
         other => return Err(SessionFrameDecodeError::UnknownType(other)),
     };
 
@@ -632,6 +806,75 @@ fn decode_payload(
         ));
     }
     Ok(decoded)
+}
+
+fn validate_video_chunk_fragment_v1_for_encode(
+    chunk_index: i32,
+    presentation_time_us: i64,
+    fragment_index: i32,
+    fragment_count: i32,
+    total_h264_bytes: i32,
+    fragment_h264_bytes: &[u8],
+) -> Result<(), SessionFrameEncodeError> {
+    validate_non_negative_for_encode(chunk_index, "video chunk fragment v1 chunk index")?;
+    validate_non_negative_for_encode(
+        presentation_time_us,
+        "video chunk fragment v1 presentationTimeUs",
+    )?;
+    validate_non_negative_for_encode(fragment_index, "video chunk fragment v1 fragment index")?;
+    validate_video_chunk_fragment_v1_common_for_encode(
+        fragment_index,
+        fragment_count,
+        total_h264_bytes,
+        fragment_h264_bytes,
+    )?;
+    write_len_fits_u16(fragment_h264_bytes.len(), "fragmentH264Bytes")?;
+    Ok(())
+}
+
+fn validate_video_chunk_fragment_v1_common_for_encode(
+    fragment_index: i32,
+    fragment_count: i32,
+    total_h264_bytes: i32,
+    fragment_h264_bytes: &[u8],
+) -> Result<(), SessionFrameEncodeError> {
+    if fragment_count <= 0 {
+        return Err(SessionFrameEncodeError::InvalidPayload(
+            "video chunk fragment v1 fragment count must be positive".to_string(),
+        ));
+    }
+    if fragment_count > MAX_VIDEO_CHUNK_FRAGMENT_COUNT {
+        return Err(SessionFrameEncodeError::InvalidPayload(format!(
+            "video chunk fragment v1 fragment count must be <= {MAX_VIDEO_CHUNK_FRAGMENT_COUNT}"
+        )));
+    }
+    if fragment_index >= fragment_count {
+        return Err(SessionFrameEncodeError::InvalidPayload(
+            "video chunk fragment v1 fragment index must be less than fragment count".to_string(),
+        ));
+    }
+    if total_h264_bytes <= 0 {
+        return Err(SessionFrameEncodeError::InvalidPayload(
+            "video chunk fragment v1 total h264Bytes must be positive".to_string(),
+        ));
+    }
+    if total_h264_bytes > MAX_FRAGMENTED_H264_BYTES {
+        return Err(SessionFrameEncodeError::InvalidPayload(format!(
+            "video chunk fragment v1 total h264Bytes must be <= {MAX_FRAGMENTED_H264_BYTES}"
+        )));
+    }
+    if fragment_h264_bytes.is_empty() {
+        return Err(SessionFrameEncodeError::InvalidPayload(
+            "video chunk fragment v1 fragment h264Bytes must not be empty".to_string(),
+        ));
+    }
+    if fragment_h264_bytes.len() > total_h264_bytes as usize {
+        return Err(SessionFrameEncodeError::InvalidPayload(
+            "video chunk fragment v1 fragment h264Bytes must not exceed total h264Bytes"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_video_chunk_v2_for_encode(
@@ -700,6 +943,59 @@ where
         return Err(SessionFrameEncodeError::InvalidPayload(format!(
             "{field} must be non-negative"
         )));
+    }
+    Ok(())
+}
+
+fn validate_video_chunk_fragment_v1_for_decode(
+    chunk_index: i32,
+    presentation_time_us: i64,
+    fragment_index: i32,
+    fragment_count: i32,
+    total_h264_bytes: i32,
+    fragment_h264_bytes: &[u8],
+) -> Result<(), SessionFrameDecodeError> {
+    validate_non_negative_for_decode(chunk_index, "video chunk fragment v1 chunk index")?;
+    validate_non_negative_for_decode(
+        presentation_time_us,
+        "video chunk fragment v1 presentationTimeUs",
+    )?;
+    validate_non_negative_for_decode(fragment_index, "video chunk fragment v1 fragment index")?;
+    if fragment_count <= 0 {
+        return Err(SessionFrameDecodeError::InvalidPayload(
+            "video chunk fragment v1 fragment count must be positive".to_string(),
+        ));
+    }
+    if fragment_count > MAX_VIDEO_CHUNK_FRAGMENT_COUNT {
+        return Err(SessionFrameDecodeError::InvalidPayload(format!(
+            "video chunk fragment v1 fragment count must be <= {MAX_VIDEO_CHUNK_FRAGMENT_COUNT}"
+        )));
+    }
+    if fragment_index >= fragment_count {
+        return Err(SessionFrameDecodeError::InvalidPayload(
+            "video chunk fragment v1 fragment index must be less than fragment count".to_string(),
+        ));
+    }
+    if total_h264_bytes <= 0 {
+        return Err(SessionFrameDecodeError::InvalidPayload(
+            "video chunk fragment v1 total h264Bytes must be positive".to_string(),
+        ));
+    }
+    if total_h264_bytes > MAX_FRAGMENTED_H264_BYTES {
+        return Err(SessionFrameDecodeError::InvalidPayload(format!(
+            "video chunk fragment v1 total h264Bytes must be <= {MAX_FRAGMENTED_H264_BYTES}"
+        )));
+    }
+    if fragment_h264_bytes.is_empty() {
+        return Err(SessionFrameDecodeError::InvalidPayload(
+            "video chunk fragment v1 fragment h264Bytes must not be empty".to_string(),
+        ));
+    }
+    if fragment_h264_bytes.len() > total_h264_bytes as usize {
+        return Err(SessionFrameDecodeError::InvalidPayload(
+            "video chunk fragment v1 fragment h264Bytes must not exceed total h264Bytes"
+                .to_string(),
+        ));
     }
     Ok(())
 }

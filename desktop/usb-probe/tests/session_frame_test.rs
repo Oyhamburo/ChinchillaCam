@@ -57,6 +57,11 @@ const VIDEO_CHUNK_V2_GOLDEN: &[u8] = &[
     0, 0, 0, 1, 0, 1, 0x65,
 ];
 
+const VIDEO_CHUNK_FRAGMENT_V1_GOLDEN: &[u8] = &[
+    b'C', b'C', b'S', b'F', 1, 9, 0, 0, 0, 0, 0, 1, b's', 0, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 0x11, 0x70, 0, 1, 0x65,
+];
+
 #[test]
 fn session_frame_encodes_android_golden_handshake_hello_big_endian() {
     let frame = SessionFrame::new(
@@ -206,6 +211,44 @@ fn session_frame_encodes_android_golden_video_chunk_v2_with_frame_kind() {
         SessionFrameCodec::decode(VIDEO_CHUNK_V2_GOLDEN).unwrap(),
         frame
     );
+}
+
+#[test]
+fn session_frame_encodes_android_golden_video_chunk_fragment_v1() {
+    let frame = SessionFrame::new(
+        0,
+        "s",
+        SessionFramePayload::video_chunk_fragment_v1_key(0, 0, 0, 2, 70_000, vec![0x65]),
+    );
+
+    assert_eq!(
+        SessionFrameCodec::encode(&frame).unwrap(),
+        VIDEO_CHUNK_FRAGMENT_V1_GOLDEN
+    );
+    assert_eq!(
+        SessionFrameCodec::decode(VIDEO_CHUNK_FRAGMENT_V1_GOLDEN).unwrap(),
+        frame
+    );
+}
+
+#[test]
+fn session_frame_roundtrips_video_chunk_fragment_v1_kinds() {
+    for payload in [
+        SessionFramePayload::video_chunk_fragment_v1_delta(7, 123, 0, 1, 1, vec![0x41]),
+        SessionFramePayload::video_chunk_fragment_v1_codec_config(
+            8,
+            456,
+            1,
+            2,
+            4,
+            vec![0x67, 0x42],
+        ),
+    ] {
+        let frame = SessionFrame::new(3, "session-a", payload);
+        let encoded = SessionFrameCodec::encode(&frame).unwrap();
+
+        assert_eq!(SessionFrameCodec::decode(&encoded).unwrap(), frame);
+    }
 }
 
 #[test]
