@@ -53,3 +53,5 @@ Teach the desktop receiver to accept `SessionFramePayload::VideoChunkV2` and map
 - `git diff --check`: passed with no output.
 - Diff budget: code diff is 185 lines and final ODD doc is 55 lines = 240 total, within <=400.
 - Independent verification: `gentle-ai-verify` PASS; confirmed v2 direct kind mapping, no v2 classifier call, legacy type 5 classifier path preserved, v2 unknown kind malformed, queue-full behavior, and no real USB/decode/LAN/hardware/crypto claims.
+- Source commit: `4a0b14f feat(desktop): consume video chunk v2 kinds`.
+- Native review: `review-dc6a180765a603ce` approved and acknowledged; authority burned. Target `sha256:a0242b14cc8be6b84e898fede21ace522581aacc544828f0f4b66c4219391047`; consumed revision `sha256:f54b52424bf6ec3908c20526b5afbd9c0f9edbbd00d1fed645a2fb900935fa8c`.
