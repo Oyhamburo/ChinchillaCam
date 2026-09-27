@@ -76,6 +76,8 @@ sealed class PendingPairingStartResult {
         object NonceReplay : Rejected()
         object NonceCacheFull : Rejected()
         object AlreadyPending : Rejected()
+        data class InvalidProofTime(val field: String) : Rejected()
+        data class InvalidQr(val field: String) : Rejected()
     }
 }
 
@@ -94,7 +96,7 @@ class PendingPairingCoordinator(
     private var pending: PendingPairingSummary? = null
 
     init {
-        require(maxLiveNonces > 0) { "maxLiveNonces must be positive" }
+        require(maxLiveNonces in 1..64) { "maxLiveNonces must be between 1 and 64" }
     }
 
     @Synchronized
@@ -105,20 +107,23 @@ class PendingPairingCoordinator(
         val now = clock.instant().epochSecond
         pruneExpiredNonces(now)
         if (pending != null) return PendingPairingStartResult.Rejected.AlreadyPending
+        validateQrPayload(qrPayload)?.let { return it }
         if (qrPayload.expiresAtEpochSeconds <= now) return PendingPairingStartResult.Rejected.Expired("qr")
-        val nonceKey = nonceKey(qrPayload.nonce)
+        val qrNonce = qrPayload.nonce.copyOf()
+        val fingerprint = PairingTrustFingerprint.fromTrustMaterial(qrPayload.trustMaterial.copyOf())
+        val nonceKey = nonceKey(qrNonce)
         if (liveNonceExpiries.containsKey(nonceKey)) return PendingPairingStartResult.Rejected.NonceReplay
         if (liveNonceExpiries.size >= maxLiveNonces) return PendingPairingStartResult.Rejected.NonceCacheFull
 
-        val fingerprint = PairingTrustFingerprint.fromTrustMaterial(qrPayload.trustMaterial)
         val challengeMaterial = challengeNonceSource.nextChallenge()
         if (challengeMaterial.expiresAtEpochSeconds <= now) return PendingPairingStartResult.Rejected.Expired("challenge")
         require(challengeMaterial.challengeNonce.isNotEmpty()) { "challenge nonce must not be empty" }
         require(challengeMaterial.sessionId.isNotBlank()) { "session id must not be blank" }
+        liveNonceExpiries[nonceKey] = qrPayload.expiresAtEpochSeconds
         val challenge = PairingProofChallenge(
             desktopId = qrPayload.desktopId,
             trustMaterialFingerprint = fingerprint,
-            qrNonce = qrPayload.nonce,
+            qrNonce = qrNonce,
             challengeNonce = challengeMaterial.challengeNonce,
             sessionId = challengeMaterial.sessionId,
             qrExpiresAtEpochSeconds = qrPayload.expiresAtEpochSeconds,
@@ -130,11 +135,13 @@ class PendingPairingCoordinator(
             is PairingProofVerificationResult.Verified -> verification
         }
         if (verified.expiresAtEpochSeconds <= now) return PendingPairingStartResult.Rejected.Expired("proof")
-        bindingMismatch(qrPayload, fingerprint, challengeMaterial, verified)?.let { return it }
+        if (verified.verifiedAtEpochSeconds < 0 || verified.verifiedAtEpochSeconds > now || verified.verifiedAtEpochSeconds >= verified.expiresAtEpochSeconds) {
+            return PendingPairingStartResult.Rejected.InvalidProofTime("verifiedAt")
+        }
+        bindingMismatch(qrPayload, fingerprint, qrNonce, challengeMaterial, verified)?.let { return it }
 
         val expiresAt = minOf(qrPayload.expiresAtEpochSeconds, challengeMaterial.expiresAtEpochSeconds, verified.expiresAtEpochSeconds)
-        liveNonceExpiries[nonceKey] = expiresAt
-        val summary = PendingPairingSummary(qrPayload.desktopId, qrPayload.desktopName, fingerprint, qrPayload.nonce, challengeMaterial.challengeNonce, challengeMaterial.sessionId, expiresAt)
+        val summary = PendingPairingSummary(qrPayload.desktopId, qrPayload.desktopName, fingerprint, qrNonce, challengeMaterial.challengeNonce, challengeMaterial.sessionId, expiresAt)
         pending = summary
         return PendingPairingStartResult.PendingConfirmation(summary)
     }
@@ -146,15 +153,23 @@ class PendingPairingCoordinator(
         return PendingPairingCancelResult.Cancelled
     }
 
+    private fun validateQrPayload(qrPayload: PairingQrPayload): PendingPairingStartResult.Rejected.InvalidQr? = when {
+        qrPayload.desktopId.isEmpty() -> PendingPairingStartResult.Rejected.InvalidQr("desktopId")
+        qrPayload.nonce.isEmpty() -> PendingPairingStartResult.Rejected.InvalidQr("nonce")
+        qrPayload.trustMaterial.isEmpty() -> PendingPairingStartResult.Rejected.InvalidQr("trustMaterial")
+        else -> null
+    }
+
     private fun bindingMismatch(
         qrPayload: PairingQrPayload,
         fingerprint: PairingTrustFingerprint,
+        qrNonce: ByteArray,
         challenge: PairingChallengeMaterial,
         verified: PairingProofVerificationResult.Verified,
     ): PendingPairingStartResult.Rejected.BindingMismatch? = when {
         verified.desktopId != qrPayload.desktopId -> PendingPairingStartResult.Rejected.BindingMismatch("desktopId")
         verified.trustMaterialFingerprint != fingerprint -> PendingPairingStartResult.Rejected.BindingMismatch("trustMaterialFingerprint")
-        !verified.qrNonce.contentEquals(qrPayload.nonce) -> PendingPairingStartResult.Rejected.BindingMismatch("qrNonce")
+        !verified.qrNonce.contentEquals(qrNonce) -> PendingPairingStartResult.Rejected.BindingMismatch("qrNonce")
         !verified.challengeNonce.contentEquals(challenge.challengeNonce) -> PendingPairingStartResult.Rejected.BindingMismatch("challengeNonce")
         verified.sessionId != challenge.sessionId -> PendingPairingStartResult.Rejected.BindingMismatch("sessionId")
         else -> null

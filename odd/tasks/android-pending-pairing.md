@@ -63,3 +63,12 @@ Build the pure Android state model for future desktop pairing without Activity, 
 - `:android:usb-probe:assembleDebug` — PASS.
 - `git diff --check` — PASS.
 - Independent verifier: PASS.
+
+## M3b1 security follow-up evidence
+
+- RED: regression tests covered QR nonce retention for full QR lifetime after shorter proof expiry, nonce consumption on rejected/mismatched proof, invalid proof verified-at bounds, invalid direct QR metadata, constructor cache bounds, and mutable QR byte snapshotting before verifier callbacks.
+- GREEN focused tests: pending coordinator security regression suite — PASS.
+- Full follow-up `:android:usb-probe:testDebugUnitTest --rerun-tasks` — PASS.
+- Follow-up `:android:usb-probe:assembleDebug` — PASS.
+- Follow-up `git diff --check` — PASS.
+- Independent follow-up verifier: PASS.

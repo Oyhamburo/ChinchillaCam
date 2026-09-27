@@ -77,6 +77,76 @@ class PendingPairingCoordinatorTest {
         assertEquals(PendingPairingStartResult.Rejected.NonceReplay, coordinator.start(qr(nonce = byteArrayOf(0)), byteArrayOf(1)))
     }
 
+
+    @Test
+    fun rejectedOrMismatchedProofConsumesQrNonceUntilQrExpiry() {
+        val rejected = coordinator(verifier = RecordingVerifier { _, _ -> PairingProofVerificationResult.Rejected("tls rejected") })
+        assertEquals(PendingPairingStartResult.Rejected.ProofRejected("tls rejected"), rejected.start(qr(nonce = byteArrayOf(9)), byteArrayOf(1)))
+        assertEquals(PendingPairingStartResult.Rejected.NonceReplay, rejected.start(qr(nonce = byteArrayOf(9)), byteArrayOf(1)))
+
+        val mismatch = coordinator(verifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(sessionId = "other") })
+        assertEquals(PendingPairingStartResult.Rejected.BindingMismatch("sessionId"), mismatch.start(qr(nonce = byteArrayOf(10)), byteArrayOf(1)))
+        assertEquals(PendingPairingStartResult.Rejected.NonceReplay, mismatch.start(qr(nonce = byteArrayOf(10)), byteArrayOf(1)))
+    }
+
+    @Test
+    fun qrNonceReplayUsesQrLifetimeEvenWhenProofExpiresFirst() {
+        val coordinator = coordinator(verifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(expiresAtEpochSeconds = 110) })
+        assertTrue(coordinator.start(qr(nonce = byteArrayOf(11), expiresAt = 200), byteArrayOf(1)) is PendingPairingStartResult.PendingConfirmation)
+        coordinator.cancel()
+
+        val later = PendingPairingCoordinator(
+            clock = Clock.fixed(Instant.ofEpochSecond(120), ZoneOffset.UTC),
+            challengeNonceSource = QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(0x10), "session-1", expiresAtEpochSeconds = 200)),
+            proofVerifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(verifiedAtEpochSeconds = 120, expiresAtEpochSeconds = 190) },
+        )
+        // Same coordinator memory only: prove via original coordinator clock-independent nonce cache by using a proof that would otherwise be valid now.
+        assertEquals(PendingPairingStartResult.Rejected.NonceReplay, coordinator.start(qr(nonce = byteArrayOf(11), expiresAt = 200), byteArrayOf(1)))
+        assertTrue(later.start(qr(nonce = byteArrayOf(11), expiresAt = 200), byteArrayOf(1)) is PendingPairingStartResult.PendingConfirmation)
+    }
+
+    @Test
+    fun rejectsInvalidVerifiedAtAndConstructorCap() {
+        val future = coordinator(verifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(verifiedAtEpochSeconds = 101) })
+        assertEquals(PendingPairingStartResult.Rejected.InvalidProofTime("verifiedAt"), future.start(qr(nonce = byteArrayOf(12)), byteArrayOf(1)))
+
+        val negative = coordinator(verifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(verifiedAtEpochSeconds = -1) })
+        assertEquals(PendingPairingStartResult.Rejected.InvalidProofTime("verifiedAt"), negative.start(qr(nonce = byteArrayOf(13)), byteArrayOf(1)))
+
+        val atExpiry = coordinator(verifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge).copy(verifiedAtEpochSeconds = 150, expiresAtEpochSeconds = 150) })
+        assertEquals(PendingPairingStartResult.Rejected.InvalidProofTime("verifiedAt"), atExpiry.start(qr(nonce = byteArrayOf(14)), byteArrayOf(1)))
+
+        assertTrue(runCatching { PendingPairingCoordinator(Clock.fixed(Instant.ofEpochSecond(100), ZoneOffset.UTC), QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(1), "s", 200)), RecordingVerifier { challenge, _ -> verifiedFrom(challenge) }, maxLiveNonces = 0) }.exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { PendingPairingCoordinator(Clock.fixed(Instant.ofEpochSecond(100), ZoneOffset.UTC), QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(1), "s", 200)), RecordingVerifier { challenge, _ -> verifiedFrom(challenge) }, maxLiveNonces = 65) }.exceptionOrNull() is IllegalArgumentException)
+    }
+
+    @Test
+    fun invalidDirectQrMetadataReturnsTypedRejection() {
+        assertEquals(PendingPairingStartResult.Rejected.InvalidQr("desktopId"), coordinator().start(qr().copy(desktopId = ""), byteArrayOf(1)))
+        assertEquals(PendingPairingStartResult.Rejected.InvalidQr("nonce"), coordinator().start(qr(nonce = byteArrayOf()), byteArrayOf(1)))
+        assertEquals(PendingPairingStartResult.Rejected.InvalidQr("trustMaterial"), coordinator().start(qr().copy(trustMaterial = byteArrayOf()), byteArrayOf(1)))
+    }
+
+
+    @Test
+    fun snapshotsMutableQrBytesBeforeVerifierCallback() {
+        lateinit var qr: PairingQrPayload
+        val verifier = RecordingVerifier { challenge, _ ->
+            qr.nonce[0] = 0x7f
+            qr.trustMaterial[0] = 0x7e
+            verifiedFrom(challenge)
+        }
+        val coordinator = coordinator(verifier = verifier)
+        qr = qr(nonce = byteArrayOf(0x21), expiresAt = 200)
+
+        val result = coordinator.start(qr, byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+
+        assertArrayEquals(byteArrayOf(0x21), result.summary.qrNonce)
+        assertEquals(PairingTrustFingerprint.fromTrustMaterial(byteArrayOf(0x05, 0x06)), result.summary.trustMaterialFingerprint)
+        coordinator.cancel()
+        assertEquals(PendingPairingStartResult.Rejected.NonceReplay, coordinator.start(qr(nonce = byteArrayOf(0x21), expiresAt = 200), byteArrayOf(1)))
+    }
+
     private fun coordinator(
         verifier: PairingProofVerifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge) },
         challenges: ChallengeNonceSource = QueueChallengeSource(PairingChallengeMaterial(byteArrayOf(0x10), "session-1", expiresAtEpochSeconds = 200)),
