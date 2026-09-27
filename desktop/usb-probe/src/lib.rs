@@ -1,8 +1,13 @@
 mod encoded_video_sink;
+mod session_frame;
 
 pub use encoded_video_sink::{
     BoundedEncodedVideoQueue, EncodedVideoChunk, EncodedVideoChunkLimits, EncodedVideoFrameKind,
     EncodedVideoSink, EncodedVideoSinkError, PresentationTimestamp,
+};
+pub use session_frame::{
+    SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,
+    SessionFramePayload,
 };
 
 use std::{
