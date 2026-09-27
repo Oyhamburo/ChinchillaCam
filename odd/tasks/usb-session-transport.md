@@ -17,7 +17,7 @@ Modelar transporte USB lógico sobre AOA bulk usando fakes y el framing ya exist
 
 ## Plan secuencial
 
-- [ ] T15a: seam puro `UsbSessionFrameTransport` con fake in-memory. Enviar/recibir `SessionFrame` serializado dentro de `AccessoryFrame`, stream id dedicado, límites de payload y errores tipados; sin `UsbManager`, sin hardware.
+- [x] T15a: seam puro `UsbSessionFrameTransport` con fake in-memory. Enviar/recibir `SessionFrame` serializado dentro de `AccessoryFrame`, stream id dedicado, límites de payload y errores tipados; sin `UsbManager`, sin hardware. Validado con `:android:usb-probe:testDebugUnitTest` y `:android:usb-probe:assembleDebug`.
 - [ ] T15b: adapter sobre `AccessoryIoSession` testeado con streams fake; lectura de frame completo, short read, oversize, EOF y cierre limpio.
 - [ ] T15c: backpressure/timeouts fake para stream sostenido; no prueba física.
 
