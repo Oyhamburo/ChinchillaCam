@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use crate::VideoDecoderError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PresentationTimestamp {
     micros: u64,
@@ -48,6 +50,7 @@ pub enum EncodedVideoSinkError {
         incoming: usize,
         max: usize,
     },
+    Decoder(VideoDecoderError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

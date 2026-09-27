@@ -2,6 +2,7 @@ mod desktop_receiver;
 mod encoded_video_sink;
 mod session_frame;
 mod trusted_phone_store;
+mod video_decoder;
 mod video_fragment_reassembler;
 
 pub use desktop_receiver::{
@@ -20,6 +21,7 @@ pub use trusted_phone_store::{
     FileTrustedPhoneStore, TrustedPhoneIdentity, TrustedPhoneStoreError,
     TrustedPhoneStoreWriteCoordinator,
 };
+pub use video_decoder::{DecodingEncodedVideoSink, VideoDecoder, VideoDecoderError};
 pub use video_fragment_reassembler::{
     ReassembledVideoChunk, VideoFragmentReassembler, VideoFragmentReassemblerError,
 };
