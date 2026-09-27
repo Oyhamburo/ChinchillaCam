@@ -1,5 +1,6 @@
 package dev.chinchillacam.usbprobe
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -9,6 +10,11 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 class VisibleCameraPipelineControllerTest {
+    private val h264CsdBytes = byteArrayOf(
+        0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f,
+        0x00, 0x00, 0x00, 0x01, 0x68, 0xce.toByte(), 0x06, 0xe2.toByte(),
+    )
+
     @Test
     fun startRequiresFreshCameraPermissionBeforeLaunching() {
         val launcher = RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Failed("unused"))
@@ -136,6 +142,44 @@ class VisibleCameraPipelineControllerTest {
         assertTrue(state.metricsText.contains("Chunks aceptados: 2"))
         assertTrue(state.metricsText.contains("Chunks descartados: 0"))
         assertFalse(state.metricsText.contains("Bytes descartados"))
+    }
+
+
+    @Test
+    fun controllerDeliversCsdBeforeVideoFramesAndFpsExcludesConfig() {
+        val handle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
+            EncodedVideoChunk(h264CsdBytes, presentationTimeUs = 0L, isCodecConfig = true, isKeyFrame = false),
+            EncodedVideoChunk(byteArrayOf(0, 0, 0, 1, 0x65), presentationTimeUs = 100L, isCodecConfig = false, isKeyFrame = true),
+            EncodedVideoChunk(byteArrayOf(0, 0, 0, 1, 0x41), presentationTimeUs = 200L, isCodecConfig = false, isKeyFrame = false),
+        )))
+        val fake = UsbSessionFrameSustainedFakeTransport(maxPayloadBytes = 65_528, outgoingCapacityFrames = 4)
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Running(handle)),
+            sampleConfig(),
+            encodedVideoSinkFactory = {
+                FragmentingEncodedVideoEgressSink(
+                    EncodedVideoFragmentingSessionFrameSink(EncodedVideoSustainedFakeTransportAdapter("s", fake)),
+                )
+            },
+        )
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        val state = controller.drainOnce(maxOutputs = 3)
+
+        val payloads = listOf(
+            decodeOutgoing(fake).payload as SessionPayload.VideoChunkV2,
+            decodeOutgoing(fake).payload as SessionPayload.VideoChunkV2,
+            decodeOutgoing(fake).payload as SessionPayload.VideoChunkV2,
+        )
+        assertEquals(listOf(0, 1, 2), payloads.map { it.chunkIndex })
+        assertEquals(listOf(0L, 100L, 200L), payloads.map { it.presentationTimeUs })
+        assertEquals(listOf(SessionVideoFrameKind.CODEC_CONFIG, SessionVideoFrameKind.KEY, SessionVideoFrameKind.DELTA), payloads.map { it.frameKind })
+        assertArrayEquals(h264CsdBytes, payloads[0].h264Bytes)
+        assertEquals(listOf(3), handle.consumed)
+        assertTrue(state.metricsText.contains("FPS: 2.0"))
+        assertTrue(state.metricsText.contains("Chunks aceptados: 3"))
+        assertTrue(state.metricsText.contains("Chunks descartados: 0"))
+        assertEquals(null, fake.removeOutgoingEncodedAccessoryFrame())
     }
 
     @Test

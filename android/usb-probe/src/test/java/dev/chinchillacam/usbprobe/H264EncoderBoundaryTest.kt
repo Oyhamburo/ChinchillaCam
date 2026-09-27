@@ -88,6 +88,42 @@ class H264EncoderBoundaryTest {
 
 
 
+
+    @Test
+    fun formatChangedCsdReachesFragmentingType8EgressOnceBeforeKeyFrame() {
+        val codec = FakeH264CodecSession(FakeEncoderSurface("codec-input"))
+        codec.outputs += H264CodecOutput.FormatChanged("avc-format", codecConfigBytes = H264_CSD_BYTES)
+        codec.outputs += H264CodecOutput.Buffer(
+            index = 5,
+            buffer = ByteBuffer.wrap(byteArrayOf(0, 0, 0, 1, 0x65)),
+            info = H264BufferInfo(offset = 0, size = 5, presentationTimeUs = 100L, flags = H264BufferFlags.KEY_FRAME),
+        )
+        val session = startedSession(codec)
+        val fake = UsbSessionFrameSustainedFakeTransport(maxPayloadBytes = 65_528, outgoingCapacityFrames = 4)
+        val egress = FragmentingEncodedVideoEgressSink(
+            EncodedVideoFragmentingSessionFrameSink(EncodedVideoSustainedFakeTransportAdapter("s", fake)),
+        )
+
+        val chunks = (session.drain(maxOutputs = 2) as H264DrainResult.Chunks).chunks
+        chunks.forEach { chunk -> assertEquals(EncodedVideoEgressSinkResult.Accepted, egress.write(chunk)) }
+
+        val configFrame = decodeSustainedOutgoing(fake)
+        val keyFrame = decodeSustainedOutgoing(fake)
+        val config = configFrame.payload as SessionPayload.VideoChunkV2
+        val key = keyFrame.payload as SessionPayload.VideoChunkV2
+        assertEquals(0, configFrame.sequence)
+        assertEquals(1, keyFrame.sequence)
+        assertEquals(0, config.chunkIndex)
+        assertEquals(1, key.chunkIndex)
+        assertEquals(0L, config.presentationTimeUs)
+        assertEquals(100L, key.presentationTimeUs)
+        assertEquals(SessionVideoFrameKind.CODEC_CONFIG, config.frameKind)
+        assertEquals(SessionVideoFrameKind.KEY, key.frameKind)
+        assertArrayEquals(H264_CSD_BYTES, config.h264Bytes)
+        assertArrayEquals(byteArrayOf(0, 0, 0, 1, 0x65), key.h264Bytes)
+        assertEquals(null, fake.removeOutgoingEncodedAccessoryFrame())
+    }
+
     @Test
     fun extractsAvcCsdFromByteBufferPositionToLimitWithoutMutatingSources() {
         val source0 = ByteBuffer.wrap(byteArrayOf(9, 0, 0, 0, 1, 0x67, 0x42, 0, 0x1f, 9))
@@ -303,6 +339,13 @@ class H264EncoderBoundaryTest {
         codec: FakeH264CodecSession,
         maxPendingChunks: Int = 4,
     ): H264EncoderSession = H264EncoderSession(codec.inputSurface, codec, maxPendingChunks)
+
+
+    private fun decodeSustainedOutgoing(fake: UsbSessionFrameSustainedFakeTransport): SessionFrame {
+        val accessoryBytes = fake.removeOutgoingEncodedAccessoryFrame() ?: error("expected queued frame")
+        val accessory = AccessoryFrameCodec.decode(accessoryBytes, maxPayloadBytes = 65_536).getOrThrow()
+        return SessionFrameCodec.decode(accessory.payload).getOrThrow()
+    }
 
     private fun sampleConfig(): H264EncoderConfig = H264EncoderConfig(
         width = 1280,

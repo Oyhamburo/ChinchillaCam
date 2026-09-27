@@ -99,3 +99,37 @@ Extraer `csd-0` y `csd-1` desde `MediaFormat` en `INFO_OUTPUT_FORMAT_CHANGED`, v
 - `:android:usb-probe:lintDebug` — PASS.
 - `git diff --check` — PASS.
 - Independent verifier — PASS.
+
+## T21b1 — pruebas de cadena CSD Android
+
+### Alcance permitido
+
+- `android/usb-probe/src/test/java/dev/chinchillacam/usbprobe/H264EncoderBoundaryTest.kt`
+- `android/usb-probe/src/test/java/dev/chinchillacam/usbprobe/VisibleCameraPipelineControllerTest.kt`
+- `odd/tasks/android-h264-csd.md`
+
+### Objetivo
+
+Agregar evidencia automatizada sin cambios productivos de que el CSD emitido por el seam del encoder llega una sola vez, antes del keyframe, al egreso fake type8 y que las métricas de FPS no cuentan configuración.
+
+### Límites
+
+- Sólo pruebas con fakes en JVM local.
+- Sin Activity, dispositivo MediaCodec, USB real, LAN, TLS ni claims de hardware.
+- Sin cambios productivos salvo defecto real observado.
+
+### Evidencia esperada
+
+- Encoder fake `FormatChanged` con CSD combinado seguido de keyframe produce frames type8 `CODEC_CONFIG` PTS `0` antes de `KEY` PTS `100`, con `sequence` y `chunkIndex` `0` y `1`.
+- Controller con handle fake entrega config/key/delta al egreso fragmenting, acepta 3, descarta 0 y reporta `FPS: 2.0` excluyendo config.
+
+### Evidencia GREEN T21b1
+
+- No se cambió código productivo; las pruebas nuevas pasaron sin detectar defecto productivo.
+- La cadena `H264EncoderSession` fake → `FragmentingEncodedVideoEgressSink` → `UsbSessionFrameSustainedFakeTransport` decodifica type8 con CSD exacto `CODEC_CONFIG` PTS `0`, `sequence=0`, `chunkIndex=0`, antes del keyframe PTS `100`, `sequence=1`, `chunkIndex=1`, y sin CSD duplicado.
+- El controller con handle fake entrega config/key/delta al egreso fragmenting en orden type8, acepta 3, descarta 0 y reporta `FPS: 2.0`, excluyendo config.
+- Full `:android:usb-probe:testDebugUnitTest --rerun-tasks` — PASS.
+- `:android:usb-probe:assembleDebug` — PASS.
+- `:android:usb-probe:lintDebug` — PASS.
+- `git diff --check` — PASS.
+- Independent verifier — PASS.
