@@ -8,6 +8,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class H264EncoderBoundaryTest {
+    private val H264_CSD_BYTES = byteArrayOf(
+        0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f,
+        0x00, 0x00, 0x00, 0x01, 0x68, 0xce.toByte(), 0x06, 0xe2.toByte(),
+    )
+
     @Test
     fun startsSurfaceInputEncoderWithExplicitConfiguration() {
         val inputSurface = FakeEncoderSurface("codec-input")
@@ -80,6 +85,71 @@ class H264EncoderBoundaryTest {
         assertFalse(result.chunks[1].isCodecConfig)
         assertTrue(result.chunks[1].isKeyFrame)
         assertEquals(listOf(4, 5), codec.releasedOutputBuffers)
+    }
+
+
+    @Test
+    fun emitsCodecConfigFromFormatChangedBeforeKeyFrame() {
+        val codec = FakeH264CodecSession(FakeEncoderSurface("codec-input"))
+        val mutableCsd = H264_CSD_BYTES.copyOf()
+        codec.outputs += H264CodecOutput.FormatChanged("avc-format", codecConfigBytes = mutableCsd)
+        mutableCsd[4] = 0x66
+        codec.outputs += H264CodecOutput.Buffer(
+            index = 5,
+            buffer = ByteBuffer.wrap(byteArrayOf(0, 0, 0, 1, 101)),
+            info = H264BufferInfo(offset = 0, size = 5, presentationTimeUs = 200L, flags = H264BufferFlags.KEY_FRAME),
+        )
+        val session = startedSession(codec)
+
+        val result = session.drain(maxOutputs = 2) as H264DrainResult.Chunks
+
+        assertEquals(listOf("avc-format"), session.outputFormats)
+        assertEquals(2, result.chunks.size)
+        assertArrayEquals(H264_CSD_BYTES, result.chunks[0].bytes)
+        assertEquals(0L, result.chunks[0].presentationTimeUs)
+        assertTrue(result.chunks[0].isCodecConfig)
+        assertFalse(result.chunks[0].isKeyFrame)
+        assertArrayEquals(byteArrayOf(0, 0, 0, 1, 101), result.chunks[1].bytes)
+        assertEquals(200L, result.chunks[1].presentationTimeUs)
+        assertFalse(result.chunks[1].isCodecConfig)
+        assertTrue(result.chunks[1].isKeyFrame)
+        assertEquals(listOf(5), codec.releasedOutputBuffers)
+    }
+
+    @Test
+    fun formatChangedCodecConfigCountsAgainstMaxOutputsAndPendingBackpressure() {
+        val codec = FakeH264CodecSession(FakeEncoderSurface("codec-input"))
+        codec.outputs += H264CodecOutput.FormatChanged("avc-format", codecConfigBytes = H264_CSD_BYTES)
+        codec.outputs += H264CodecOutput.Buffer(5, ByteBuffer.wrap(byteArrayOf(101)), H264BufferInfo(0, 1, 200L, H264BufferFlags.KEY_FRAME))
+        val session = startedSession(codec, maxPendingChunks = 1)
+
+        val first = session.drain(maxOutputs = 1) as H264DrainResult.Chunks
+        val blocked = session.drain(maxOutputs = 1)
+        session.consumePending(1)
+        val second = session.drain(maxOutputs = 1) as H264DrainResult.Chunks
+
+        assertArrayEquals(H264_CSD_BYTES, first.chunks.single().bytes)
+        assertEquals(H264DrainResult.BackpressureExceeded(maxPendingChunks = 1), blocked)
+        assertArrayEquals(byteArrayOf(101), second.chunks.single().bytes)
+        assertEquals(listOf(5), codec.releasedOutputBuffers)
+    }
+
+    @Test
+    fun formatChangedWithoutValidCodecConfigDoesNotInventConfigChunk() {
+        val codec = FakeH264CodecSession(FakeEncoderSurface("codec-input"))
+        codec.outputs += H264CodecOutput.FormatChanged("missing-csd")
+        codec.outputs += H264CodecOutput.FormatChanged("empty-csd", codecConfigBytes = byteArrayOf())
+        codec.outputs += H264CodecOutput.Buffer(5, ByteBuffer.wrap(byteArrayOf(101)), H264BufferInfo(0, 1, 200L, H264BufferFlags.KEY_FRAME))
+        val session = startedSession(codec)
+
+        val result = session.drain(maxOutputs = 3) as H264DrainResult.Chunks
+
+        assertEquals(listOf("missing-csd", "empty-csd"), session.outputFormats)
+        assertEquals(1, result.chunks.size)
+        assertArrayEquals(byteArrayOf(101), result.chunks.single().bytes)
+        assertTrue(result.chunks.single().isKeyFrame)
+        assertFalse(result.chunks.single().isCodecConfig)
+        assertEquals(listOf(5), codec.releasedOutputBuffers)
     }
 
     @Test

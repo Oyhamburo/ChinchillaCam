@@ -89,7 +89,14 @@ data class H264BufferInfo(
 
 sealed class H264CodecOutput {
     object TryAgainLater : H264CodecOutput()
-    data class FormatChanged(val description: String) : H264CodecOutput()
+    class FormatChanged(
+        val description: String,
+        codecConfigBytes: ByteArray? = null,
+    ) : H264CodecOutput() {
+        private val codecConfigBytesCopy = codecConfigBytes?.copyOf()
+
+        fun codecConfigBytes(): ByteArray? = codecConfigBytesCopy?.copyOf()
+    }
     data class Buffer(
         val index: Int,
         val buffer: ByteBuffer?,
@@ -151,7 +158,19 @@ class H264EncoderSession(
                 } else {
                     H264DrainResult.Chunks(chunks)
                 }
-                is H264CodecOutput.FormatChanged -> outputFormats += output.description
+                is H264CodecOutput.FormatChanged -> {
+                    outputFormats += output.description
+                    val codecConfigBytes = output.codecConfigBytes()
+                    if (codecConfigBytes != null && codecConfigBytes.isNotEmpty()) {
+                        pendingChunks += 1
+                        chunks += EncodedVideoChunk(
+                            bytes = codecConfigBytes,
+                            presentationTimeUs = 0L,
+                            isCodecConfig = true,
+                            isKeyFrame = false,
+                        )
+                    }
+                }
                 is H264CodecOutput.Buffer -> {
                     val chunk = try {
                         copyChunk(output.buffer, output.info)
