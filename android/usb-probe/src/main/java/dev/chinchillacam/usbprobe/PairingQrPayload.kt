@@ -5,7 +5,6 @@ import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 import java.security.MessageDigest
-import java.util.Base64
 
 private const val PAIRING_QR_PREFIX = "CHINCHILLACAM-PAIR"
 private const val SUPPORTED_PAIRING_QR_VERSION = 1
@@ -224,14 +223,98 @@ private fun validateByteFieldForDecode(value: ByteArray, field: String, maxBytes
     else -> null
 }
 
-private fun decodeBase64UrlField(value: String, field: String): Result<ByteArray> = try {
-    if (value.isEmpty()) Result.failure(PairingQrPayloadDecodeError.InvalidField(field))
-    else Result.success(Base64.getUrlDecoder().decode(value))
-} catch (_: IllegalArgumentException) {
-    Result.failure(PairingQrPayloadDecodeError.InvalidField(field))
-}
+private fun decodeBase64UrlField(value: String, field: String): Result<ByteArray> =
+    Base64UrlNoPadding.decode(value).fold(
+        onSuccess = { Result.success(it) },
+        onFailure = { Result.failure(PairingQrPayloadDecodeError.InvalidField(field)) },
+    )
 
-private fun ByteArray.toBase64Url(): String = Base64.getUrlEncoder().withoutPadding().encodeToString(this)
+private fun ByteArray.toBase64Url(): String = Base64UrlNoPadding.encode(this)
+
+private object Base64UrlNoPadding {
+    private const val ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    private val DECODE = IntArray(128) { -1 }.also { table ->
+        ALPHABET.forEachIndexed { index, char -> table[char.code] = index }
+    }
+
+    fun encode(bytes: ByteArray): String {
+        val output = StringBuilder(((bytes.size + 2) / 3) * 4)
+        var index = 0
+        while (index + 3 <= bytes.size) {
+            appendTriple(output, bytes[index].toInt() and 0xff, bytes[index + 1].toInt() and 0xff, bytes[index + 2].toInt() and 0xff)
+            index += 3
+        }
+        val remaining = bytes.size - index
+        if (remaining == 1) {
+            val first = bytes[index].toInt() and 0xff
+            output.append(ALPHABET[first ushr 2])
+            output.append(ALPHABET[(first and 0x03) shl 4])
+        } else if (remaining == 2) {
+            val first = bytes[index].toInt() and 0xff
+            val second = bytes[index + 1].toInt() and 0xff
+            output.append(ALPHABET[first ushr 2])
+            output.append(ALPHABET[((first and 0x03) shl 4) or (second ushr 4)])
+            output.append(ALPHABET[(second and 0x0f) shl 2])
+        }
+        return output.toString()
+    }
+
+    fun decode(value: String): Result<ByteArray> {
+        if (value.isEmpty()) return Result.failure(IllegalArgumentException("empty base64url"))
+        val firstPadding = value.indexOf('=')
+        val dataLength = if (firstPadding >= 0) firstPadding else value.length
+        if (firstPadding >= 0 && value.drop(firstPadding).any { it != '=' }) return Result.failure(IllegalArgumentException("bad padding"))
+        val padding = value.length - dataLength
+        if (padding > 2) return Result.failure(IllegalArgumentException("bad padding"))
+        val remainder = dataLength % 4
+        if (remainder == 1) return Result.failure(IllegalArgumentException("bad length"))
+        val expectedPadding = when (remainder) {
+            0 -> 0
+            2 -> 2
+            3 -> 1
+            else -> 0
+        }
+        if (padding != 0 && padding != expectedPadding) return Result.failure(IllegalArgumentException("bad padding"))
+        val output = ArrayList<Byte>((dataLength * 3) / 4)
+        var index = 0
+        while (index + 4 <= dataLength) {
+            val a = decodeChar(value[index]) ?: return Result.failure(IllegalArgumentException("bad char"))
+            val b = decodeChar(value[index + 1]) ?: return Result.failure(IllegalArgumentException("bad char"))
+            val c = decodeChar(value[index + 2]) ?: return Result.failure(IllegalArgumentException("bad char"))
+            val d = decodeChar(value[index + 3]) ?: return Result.failure(IllegalArgumentException("bad char"))
+            output += ((a shl 2) or (b ushr 4)).toByte()
+            output += (((b and 0x0f) shl 4) or (c ushr 2)).toByte()
+            output += (((c and 0x03) shl 6) or d).toByte()
+            index += 4
+        }
+        when (dataLength - index) {
+            0 -> Unit
+            2 -> {
+                val a = decodeChar(value[index]) ?: return Result.failure(IllegalArgumentException("bad char"))
+                val b = decodeChar(value[index + 1]) ?: return Result.failure(IllegalArgumentException("bad char"))
+                output += ((a shl 2) or (b ushr 4)).toByte()
+            }
+            3 -> {
+                val a = decodeChar(value[index]) ?: return Result.failure(IllegalArgumentException("bad char"))
+                val b = decodeChar(value[index + 1]) ?: return Result.failure(IllegalArgumentException("bad char"))
+                val c = decodeChar(value[index + 2]) ?: return Result.failure(IllegalArgumentException("bad char"))
+                output += ((a shl 2) or (b ushr 4)).toByte()
+                output += (((b and 0x0f) shl 4) or (c ushr 2)).toByte()
+            }
+            else -> return Result.failure(IllegalArgumentException("bad length"))
+        }
+        return Result.success(output.toByteArray())
+    }
+
+    private fun appendTriple(output: StringBuilder, first: Int, second: Int, third: Int) {
+        output.append(ALPHABET[first ushr 2])
+        output.append(ALPHABET[((first and 0x03) shl 4) or (second ushr 4)])
+        output.append(ALPHABET[((second and 0x0f) shl 2) or (third ushr 6)])
+        output.append(ALPHABET[third and 0x3f])
+    }
+
+    private fun decodeChar(char: Char): Int? = if (char.code < DECODE.size) DECODE[char.code].takeIf { it >= 0 } else null
+}
 
 private fun String.percentEncode(): String = URLEncoder.encode(this, Charsets.UTF_8.name()).replace("+", "%20")
 

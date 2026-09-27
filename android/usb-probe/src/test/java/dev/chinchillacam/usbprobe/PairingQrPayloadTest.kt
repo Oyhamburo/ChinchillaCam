@@ -4,6 +4,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Base64
 
 class PairingQrPayloadTest {
     private val payload = PairingQrPayload(
@@ -35,6 +36,77 @@ class PairingQrPayloadTest {
         assertEquals(first, second)
         assertTrue(first.startsWith("CHINCHILLACAM-PAIR:v1:"))
         assertTrue(first.contains("desktopId=desktop-01&desktopName=Studio%20Desktop&expiresAt=1700000600&nonce=ECAwQA&trustMaterial=ASNFZw"))
+    }
+
+
+    @Test
+    fun urlSafeBase64VectorsPreserveQrWireFormat() {
+        val vectorPayload = payload.copy(
+            nonce = byteArrayOf(0x00, 0xfb.toByte(), 0xff.toByte(), 0x01, 0x02),
+            trustMaterial = byteArrayOf(0xfb.toByte(), 0xff.toByte()),
+        )
+
+        val encoded = PairingQrPayloadCodec.encode(vectorPayload)
+        val decoded = PairingQrPayloadCodec.decode(encoded, nowEpochSeconds = 1L).getOrThrow()
+
+        assertTrue(encoded.contains("nonce=APv_AQI"))
+        assertTrue(encoded.contains("trustMaterial=-_8"))
+        assertArrayEquals(byteArrayOf(0x00, 0xfb.toByte(), 0xff.toByte(), 0x01, 0x02), decoded.nonce)
+        assertArrayEquals(byteArrayOf(0xfb.toByte(), 0xff.toByte()), decoded.trustMaterial)
+    }
+
+    @Test
+    fun fullQrGoldenStaysExactlyStable() {
+        assertEquals(
+            "CHINCHILLACAM-PAIR:v1:desktopId=desktop-01&desktopName=Studio%20Desktop&expiresAt=1700000600&nonce=ECAwQA&trustMaterial=ASNFZw&checksum=05ba0a34a583a6cd156dfe2a675fa0c2",
+            PairingQrPayloadCodec.encode(payload),
+        )
+    }
+
+    @Test
+    fun acceptsCompatiblePaddedUrlBase64ButRejectsInvalidPaddingAndCharacters() {
+        val encoded = PairingQrPayloadCodec.encode(payload)
+        val padded = encoded
+            .replace("nonce=ECAwQA", "nonce=ECAwQA%3D%3D")
+            .replace("checksum=05ba0a34a583a6cd156dfe2a675fa0c2", "checksum=40bda25a52f92cd3e28731fa9e3e2f53")
+        val paddedOneByte = encoded
+            .replace("nonce=ECAwQA", "nonce=AA%3D%3D")
+            .replace("checksum=05ba0a34a583a6cd156dfe2a675fa0c2", "checksum=82fe6c70ca9b77d741791c815c88f6fd")
+        val paddedTwoBytes = encoded
+            .replace("nonce=ECAwQA", "nonce=AAA%3D")
+            .replace("checksum=05ba0a34a583a6cd156dfe2a675fa0c2", "checksum=8535f2f9dd91f4ecb2129243ee475fb5")
+        val badPadding = encoded.replace("nonce=ECAwQA", "nonce=E%3DCAwQA")
+        val shortPadding = encoded.replace("nonce=ECAwQA", "nonce=AA%3D")
+        val fullBlockPadding = encoded.replace("nonce=ECAwQA", "nonce=AAAA%3D")
+        val excessPadding = encoded.replace("nonce=ECAwQA", "nonce=AAAA%3D%3D")
+        val impossiblePadding = encoded.replace("nonce=ECAwQA", "nonce=A%3D%3D%3D")
+        val badLength = encoded.replace("nonce=ECAwQA", "nonce=A")
+        val badChar = encoded.replace("nonce=ECAwQA", "nonce=ECAwQA*")
+
+        assertArrayEquals(payload.nonce, PairingQrPayloadCodec.decode(padded, nowEpochSeconds = 1L).getOrThrow().nonce)
+        assertArrayEquals(byteArrayOf(0), PairingQrPayloadCodec.decode(paddedOneByte, nowEpochSeconds = 1L).getOrThrow().nonce)
+        assertArrayEquals(byteArrayOf(0, 0), PairingQrPayloadCodec.decode(paddedTwoBytes, nowEpochSeconds = 1L).getOrThrow().nonce)
+        listOf(badPadding, shortPadding, fullBlockPadding, excessPadding, impossiblePadding, badLength, badChar).forEach { invalid ->
+            assertEquals(PairingQrPayloadDecodeError.InvalidField("nonce"), PairingQrPayloadCodec.decode(invalid, nowEpochSeconds = 1L).exceptionOrNull())
+        }
+    }
+
+
+    @Test
+    fun urlSafeBase64MatchesJvmOracleForDeterministicByteLengths() {
+        for (size in 1..64) {
+            val bytes = ByteArray(size) { index -> ((index * 37 + size) and 0xff).toByte() }
+            if (size >= 2) {
+                bytes[size - 2] = 0xfb.toByte()
+                bytes[size - 1] = 0xff.toByte()
+            }
+            val encoded = PairingQrPayloadCodec.encode(payload.copy(nonce = bytes, trustMaterial = byteArrayOf(1)))
+            val nonceField = encoded.substringAfter("&nonce=").substringBefore("&trustMaterial=")
+            val oracle = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+
+            assertEquals("size $size", oracle, nonceField)
+            assertArrayEquals("size $size", bytes, PairingQrPayloadCodec.decode(encoded, nowEpochSeconds = 1L).getOrThrow().nonce)
+        }
     }
 
     @Test
