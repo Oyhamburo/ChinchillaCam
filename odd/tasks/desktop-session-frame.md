@@ -30,11 +30,19 @@ Add a small pure Rust `SessionFrame v1` companion for desktop tests that matches
 - Keep the diff under the ~400 changed-line review budget.
 - No `StreamMetadata`, `MetricsSnapshot`, transport/network/crypto/auth/decoder/virtual-camera work.
 
+## Slice B2 metadata/metrics payload scope
+
+- Add `StreamMetadata` and `MetricsSnapshot` payload encode/decode only.
+- Include exact Android Kotlin v1 golden fixtures for both payloads, derived from sibling `SessionFrame.kt` at commit `f8504a91c27efb1be0004470b1ee30334d5ddc8b`.
+- Preserve existing Slice A/A1/B1 behavior and 1 MiB encode/decode cap.
+- Keep diff under the ~400 changed-line review budget.
+- If naturally touching parser allocation around counted fields, prefer lazy allocation to address advisory `R3-untrusted-capability-preallocation`; otherwise leave it as a separate finite hardening task before externally reachable LAN.
+- No transport/network/crypto/auth/decoder/virtual-camera work.
+
 ## Deferred slices
 
-- `StreamMetadata`
-- `MetricsSnapshot`
 - Broader payload validation beyond current slices
+- Persistent trusted-phone identity store/revocation planning after payload slices
 - Any transport/network/crypto/auth/decoder/virtual-camera work
 
 ## Authorized edit surfaces for this shrink pass
@@ -80,7 +88,16 @@ Add a small pure Rust `SessionFrame v1` companion for desktop tests that matches
 - Slice B1 `git diff --check`: passed with no output.
 - Slice B1 diff budget: verified independently at 155 insertions / 5 deletions (160 changed lines) across 3 files, within <=400 advisory budget.
 - Slice B1 independent verification: initial `gentle-ai-verify` functionally PASSed focused/full tests and scope checks but returned FAIL only because diff-size command was not authorized; follow-up `gentle-ai-verify` PASSed the diff budget with `git diff --numstat`/`--stat`.
-- Slice B1 commit local: pending.
+- Slice B1 commit local: `bd2a031 feat(desktop): add session handshake payloads`.
+- Slice B1 native review: `review-a00478532891dc07` approved and acknowledged; authority burned. Advisory informativo no bloqueante: `R3-untrusted-capability-preallocation`; avoid preallocating from attacker-controlled count before externally reachable LAN.
+- Slice B2 RED: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml session_frame_encodes_android_golden` failed on missing `SessionFramePayload::StreamMetadata` and `SessionFramePayload::MetricsSnapshot` variants.
+- Slice B2 GREEN focused: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml session_frame` passed with 12 session frame tests.
+- Slice B2 GREEN full crate: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` passed with 44 AOA + 6 encoded video sink + 12 session frame tests + doctests.
+- Slice B2 format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
+- Slice B2 `git diff --check`: passed with no output.
+- Slice B2 diff budget: independently verified 60 + 62 + 16 = 138 changed lines across 3 files, within <=400 advisory budget.
+- Slice B2 independent verification: `gentle-ai-verify` PASS.
+- Slice B2 commit local: `66598ac feat(desktop): add session metadata metrics payloads`.
 
 ## Review workload note
 

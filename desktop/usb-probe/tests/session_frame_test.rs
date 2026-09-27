@@ -32,6 +32,21 @@ const HANDSHAKE_REJECT_GOLDEN: &[u8] = &[
     b' ', b'a', b'c', b't', b'i', b'v', b'a',
 ];
 
+// Golden bytes copied from the same Android SessionFrameCodec contract for:
+// SessionFrame(1, 3, "session-a", SessionPayload.StreamMetadata("video/h264", 1920, 1080, 30, "baseline"))
+const STREAM_METADATA_GOLDEN: &[u8] = &[
+    b'C', b'C', b'S', b'F', 1, 4, 0, 0, 0, 3, 0, 9, b's', b'e', b's', b's', b'i', b'o', b'n', b'-',
+    b'a', 0, 0, 0, 34, 0, 10, b'v', b'i', b'd', b'e', b'o', b'/', b'h', b'2', b'6', b'4', 0, 0, 7,
+    128, 0, 0, 4, 56, 0, 0, 0, 30, 0, 8, b'b', b'a', b's', b'e', b'l', b'i', b'n', b'e',
+];
+
+// Golden bytes copied from the same Android SessionFrameCodec contract for:
+// SessionFrame(1, 5, "session-a", SessionPayload.MetricsSnapshot(123456790L, 42, 18, 30))
+const METRICS_SNAPSHOT_GOLDEN: &[u8] = &[
+    b'C', b'C', b'S', b'F', 1, 6, 0, 0, 0, 5, 0, 9, b's', b'e', b's', b's', b'i', b'o', b'n', b'-',
+    b'a', 0, 0, 0, 20, 0, 0, 0, 0, 7, 91, 205, 22, 0, 0, 0, 42, 0, 0, 0, 18, 0, 0, 0, 30,
+];
+
 #[test]
 fn session_frame_encodes_android_golden_handshake_hello_big_endian() {
     let frame = SessionFrame::new(
@@ -92,6 +107,53 @@ fn session_frame_encodes_android_golden_handshake_reject_big_endian() {
     );
     assert_eq!(
         SessionFrameCodec::decode(HANDSHAKE_REJECT_GOLDEN).unwrap(),
+        frame
+    );
+}
+
+#[test]
+fn session_frame_encodes_android_golden_stream_metadata_big_endian() {
+    let frame = SessionFrame::new(
+        3,
+        "session-a",
+        SessionFramePayload::StreamMetadata {
+            mime_type: "video/h264".to_string(),
+            width: 1920,
+            height: 1080,
+            frame_rate: 30,
+            profile: "baseline".to_string(),
+        },
+    );
+
+    assert_eq!(
+        SessionFrameCodec::encode(&frame).unwrap(),
+        STREAM_METADATA_GOLDEN
+    );
+    assert_eq!(
+        SessionFrameCodec::decode(STREAM_METADATA_GOLDEN).unwrap(),
+        frame
+    );
+}
+
+#[test]
+fn session_frame_encodes_android_golden_metrics_snapshot_big_endian() {
+    let frame = SessionFrame::new(
+        5,
+        "session-a",
+        SessionFramePayload::MetricsSnapshot {
+            captured_at_us: 123_456_790,
+            dropped_frames: 42,
+            latency_ms: 18,
+            frame_rate: 30,
+        },
+    );
+
+    assert_eq!(
+        SessionFrameCodec::encode(&frame).unwrap(),
+        METRICS_SNAPSHOT_GOLDEN
+    );
+    assert_eq!(
+        SessionFrameCodec::decode(METRICS_SNAPSHOT_GOLDEN).unwrap(),
         frame
     );
 }

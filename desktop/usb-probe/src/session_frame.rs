@@ -55,10 +55,23 @@ pub enum SessionFramePayload {
         reason_code: String,
         message: String,
     },
+    StreamMetadata {
+        mime_type: String,
+        width: i32,
+        height: i32,
+        frame_rate: i32,
+        profile: String,
+    },
     VideoChunk {
         chunk_index: i32,
         presentation_time_us: i64,
         h264_bytes: Vec<u8>,
+    },
+    MetricsSnapshot {
+        captured_at_us: i64,
+        dropped_frames: i32,
+        latency_ms: i32,
+        frame_rate: i32,
     },
     CameraControlCommand {
         command: String,
@@ -72,7 +85,9 @@ impl SessionFramePayload {
             Self::HandshakeHello { .. } => 1,
             Self::HandshakeAccept { .. } => 2,
             Self::HandshakeReject { .. } => 3,
+            Self::StreamMetadata { .. } => 4,
             Self::VideoChunk { .. } => 5,
+            Self::MetricsSnapshot { .. } => 6,
             Self::CameraControlCommand { .. } => 7,
         }
     }
@@ -246,6 +261,13 @@ fn encoded_payload_size(payload: &SessionFramePayload) -> Result<usize, SessionF
             encoded_bytes_with_len_size(message.len())?,
             "payload",
         ),
+        SessionFramePayload::StreamMetadata {
+            mime_type, profile, ..
+        } => checked_add(
+            checked_add(encoded_bytes_with_len_size(mime_type.len())?, 12, "payload")?,
+            encoded_bytes_with_len_size(profile.len())?,
+            "payload",
+        ),
         SessionFramePayload::VideoChunk {
             chunk_index,
             h264_bytes,
@@ -262,6 +284,7 @@ fn encoded_payload_size(payload: &SessionFramePayload) -> Result<usize, SessionF
                 "payload",
             )
         }
+        SessionFramePayload::MetricsSnapshot { .. } => Ok(20),
         SessionFramePayload::CameraControlCommand { command, arguments } => {
             write_len_fits_u16(arguments.len(), "argument count")?;
             let mut size = checked_add(encoded_bytes_with_len_size(command.len())?, 2, "payload")?;
@@ -308,6 +331,19 @@ fn encode_payload(payload: &SessionFramePayload) -> Result<Vec<u8>, SessionFrame
             writer.write_string(reason_code)?;
             writer.write_string(message)?;
         }
+        SessionFramePayload::StreamMetadata {
+            mime_type,
+            width,
+            height,
+            frame_rate,
+            profile,
+        } => {
+            writer.write_string(mime_type)?;
+            writer.write_i32(*width);
+            writer.write_i32(*height);
+            writer.write_i32(*frame_rate);
+            writer.write_string(profile)?;
+        }
         SessionFramePayload::VideoChunk {
             chunk_index,
             presentation_time_us,
@@ -321,6 +357,17 @@ fn encode_payload(payload: &SessionFramePayload) -> Result<Vec<u8>, SessionFrame
             writer.write_i32(*chunk_index);
             writer.write_i64(*presentation_time_us);
             writer.write_bytes_with_len(h264_bytes)?;
+        }
+        SessionFramePayload::MetricsSnapshot {
+            captured_at_us,
+            dropped_frames,
+            latency_ms,
+            frame_rate,
+        } => {
+            writer.write_i64(*captured_at_us);
+            writer.write_i32(*dropped_frames);
+            writer.write_i32(*latency_ms);
+            writer.write_i32(*frame_rate);
         }
         SessionFramePayload::CameraControlCommand { command, arguments } => {
             writer.write_string(command)?;
@@ -362,6 +409,13 @@ fn decode_payload(
             reason_code: reader.read_string("reasonCode")?,
             message: reader.read_string("message")?,
         },
+        4 => SessionFramePayload::StreamMetadata {
+            mime_type: reader.read_string("mimeType")?,
+            width: reader.read_i32("width")?,
+            height: reader.read_i32("height")?,
+            frame_rate: reader.read_i32("frameRate")?,
+            profile: reader.read_string("profile")?,
+        },
         5 => {
             let chunk_index = reader.read_i32("chunkIndex")?;
             if chunk_index < 0 {
@@ -375,6 +429,12 @@ fn decode_payload(
                 h264_bytes: reader.read_bytes_with_len("h264Bytes")?,
             }
         }
+        6 => SessionFramePayload::MetricsSnapshot {
+            captured_at_us: reader.read_i64("capturedAtUs")?,
+            dropped_frames: reader.read_i32("droppedFrames")?,
+            latency_ms: reader.read_i32("latencyMs")?,
+            frame_rate: reader.read_i32("frameRate")?,
+        },
         7 => {
             let command = reader.read_string("command")?;
             let count = reader.read_u16("argumentCount")? as usize;
