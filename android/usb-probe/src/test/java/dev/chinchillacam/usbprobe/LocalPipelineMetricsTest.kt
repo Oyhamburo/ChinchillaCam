@@ -45,6 +45,63 @@ class LocalPipelineMetricsTest {
     }
 
     @Test
+    fun deliveredChunksContributeFpsWithoutDiscardCounters() {
+        val clock = FakeMetricsClock(nowUs = 0L)
+        val metrics = LocalPipelineMetricsTracker(clock)
+
+        metrics.recordDeliveredChunks(listOf(chunk(100_000L), chunk(200_000L)))
+
+        val snapshot = metrics.snapshot()
+        assertEquals(MetricValue.Known(2.0), snapshot.encodedFps)
+        assertEquals(0, snapshot.encodedChunksDiscarded)
+        assertEquals(0L, snapshot.encodedBytesDiscarded)
+        assertEquals(MetricEstimate.Unknown, snapshot.estimatedEncodeLatencyUs)
+    }
+
+    @Test
+    fun deliveredChunksDeduplicateSamePtsPerBatchAndIgnoreCodecConfig() {
+        val clock = FakeMetricsClock(nowUs = 0L)
+        val metrics = LocalPipelineMetricsTracker(clock)
+
+        metrics.recordDeliveredChunks(listOf(
+            codecConfigChunk(0L),
+            chunk(100_000L),
+            chunk(100_000L),
+            chunk(-1L),
+            chunk(200_000L),
+        ))
+
+        assertEquals(MetricValue.Known(2.0), metrics.snapshot().encodedFps)
+        assertEquals(0, metrics.snapshot().encodedChunksDiscarded)
+        assertEquals(0L, metrics.snapshot().encodedBytesDiscarded)
+    }
+
+    @Test
+    fun resetClearsDeliveredSamplesToUnknownFps() {
+        val metrics = LocalPipelineMetricsTracker(FakeMetricsClock(0L))
+        metrics.recordDeliveredChunks(listOf(chunk(100_000L)))
+
+        metrics.reset()
+
+        assertEquals(MetricValue.Unknown, metrics.snapshot().encodedFps)
+        assertEquals(0, metrics.snapshot().encodedChunksDiscarded)
+        assertEquals(0L, metrics.snapshot().encodedBytesDiscarded)
+    }
+
+    @Test
+    fun recordDrainLegacyDiscardAccountingRemainsUnchangedAfterDeliveredApi() {
+        val metrics = LocalPipelineMetricsTracker(FakeMetricsClock(0L))
+
+        metrics.recordDeliveredChunks(listOf(chunk(100_000L)))
+        metrics.recordDrain(H264DrainResult.Chunks(listOf(chunk(200_000L), codecConfigChunk(300_000L))))
+
+        val snapshot = metrics.snapshot()
+        assertEquals(MetricValue.Known(2.0), snapshot.encodedFps)
+        assertEquals(2, snapshot.encodedChunksDiscarded)
+        assertEquals(8, snapshot.encodedBytesDiscarded)
+    }
+
+    @Test
     fun countsBackpressureDropsFromBoundedDiscardPath() {
         val metrics = LocalPipelineMetricsTracker(FakeMetricsClock(0L))
 

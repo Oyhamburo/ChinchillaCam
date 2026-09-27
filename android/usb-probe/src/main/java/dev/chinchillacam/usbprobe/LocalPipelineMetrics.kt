@@ -51,19 +51,11 @@ class LocalPipelineMetricsTracker(
 
     @Synchronized
     fun recordDrain(result: H264DrainResult) {
-        val nowUs = clock.nowUs()
-        hasObservedDrainWindow = true
-        prune(nowUs)
+        val nowUs = beginObservedWindow()
         when (result) {
             is H264DrainResult.Chunks -> {
                 val chunks = result.chunks
-                val frameCount = chunks
-                    .asSequence()
-                    .filter { !it.isCodecConfig && it.presentationTimeUs >= 0L }
-                    .map { it.presentationTimeUs }
-                    .distinct()
-                    .count()
-                if (frameCount > 0) samples += Sample(nowUs, frameCount)
+                recordFrameSamples(nowUs, chunks)
                 chunksDiscarded += chunks.size
                 bytesDiscarded += chunks.sumOf { it.bytes.size.toLong() }
                 latestLatency = MetricEstimate.Unknown
@@ -73,6 +65,14 @@ class LocalPipelineMetricsTracker(
             H264DrainResult.Stopped,
             H264DrainResult.TryAgainLater -> Unit
         }
+        prune(nowUs)
+    }
+
+    @Synchronized
+    fun recordDeliveredChunks(chunks: List<EncodedVideoChunk>) {
+        val nowUs = beginObservedWindow()
+        recordFrameSamples(nowUs, chunks)
+        latestLatency = MetricEstimate.Unknown
         prune(nowUs)
     }
 
@@ -92,6 +92,23 @@ class LocalPipelineMetricsTracker(
             backpressureDrops = backpressureDrops,
             estimatedEncodeLatencyUs = latestLatency,
         )
+    }
+
+    private fun beginObservedWindow(): Long {
+        val nowUs = clock.nowUs()
+        hasObservedDrainWindow = true
+        prune(nowUs)
+        return nowUs
+    }
+
+    private fun recordFrameSamples(nowUs: Long, chunks: List<EncodedVideoChunk>) {
+        val frameCount = chunks
+            .asSequence()
+            .filter { !it.isCodecConfig && it.presentationTimeUs >= 0L }
+            .map { it.presentationTimeUs }
+            .distinct()
+            .count()
+        if (frameCount > 0) samples += Sample(nowUs, frameCount)
     }
 
     private fun prune(nowUs: Long) {
