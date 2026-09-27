@@ -131,6 +131,25 @@ fn trusted_phone_store_prevents_stale_trust_from_overwriting_concurrent_revoke()
 }
 
 #[test]
+fn trusted_phone_store_rejects_oversized_persistent_file_before_parse() {
+    let path = unique_store_path("too-large");
+    let file = fs::File::create(&path).unwrap();
+    file.set_len(65_537).unwrap();
+
+    let err = FileTrustedPhoneStore::new(&path)
+        .trusted_identity("phone")
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        TrustedPhoneStoreError::StoreTooLarge {
+            length: 65_537,
+            max: 65_536
+        }
+    ));
+    cleanup(path);
+}
+
+#[test]
 fn trusted_phone_store_rejects_corrupt_persistent_file() {
     let path = unique_store_path("corrupt");
     fs::write(&path, "not-chinchillacam-trust\n").unwrap();

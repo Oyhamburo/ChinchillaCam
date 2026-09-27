@@ -14,6 +14,7 @@ const MAGIC: &str = "CHINCHILLACAM_TRUSTED_PHONES_V1";
 const MAX_PHONE_ID_LEN: usize = 128;
 const MAX_LABEL_LEN: usize = 256;
 const MAX_PUBLIC_KEY_LEN: usize = 4096;
+const MAX_STORE_FILE_LEN: u64 = 65_536;
 const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const LOCK_RETRY: Duration = Duration::from_millis(5);
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -56,6 +57,7 @@ impl TrustedPhoneIdentity {
 pub enum TrustedPhoneStoreError {
     InvalidIdentity(String),
     CorruptStore(String),
+    StoreTooLarge { length: u64, max: u64 },
     Io(String),
 }
 
@@ -151,11 +153,18 @@ impl FileTrustedPhoneStore {
     }
 
     fn load_records(&self) -> Result<Vec<TrustedPhoneRecord>, TrustedPhoneStoreError> {
-        let text = match fs::read_to_string(&self.path) {
-            Ok(text) => text,
+        let metadata = match fs::metadata(&self.path) {
+            Ok(metadata) => metadata,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(err) => return Err(err.into()),
         };
+        if metadata.len() > MAX_STORE_FILE_LEN {
+            return Err(TrustedPhoneStoreError::StoreTooLarge {
+                length: metadata.len(),
+                max: MAX_STORE_FILE_LEN,
+            });
+        }
+        let text = fs::read_to_string(&self.path)?;
         let mut lines = text.lines();
         if lines.next() != Some(MAGIC) {
             return Err(TrustedPhoneStoreError::CorruptStore(

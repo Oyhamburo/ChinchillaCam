@@ -85,3 +85,27 @@ Correction scope in a separate local commit, without amending prior T13c commits
 - Correction diff before commit: independently verified 56 insertions / 7 deletions = 63 changed lines.
 - Independent verification: `gentle-ai-verify` PASS; confirmed first trust initializes absent parents, parent is created before lock acquisition, lock/write errors still fail closed, stale-revocation coverage remains, and no expanded claims.
 - Commit local: this commit, `fix(desktop): initialize trust store directory before locking`.
+
+
+## T13c file-size-cap hardening scope
+
+Follow-up before any actual desktop trust use: bound the persistent store file size before reading/parsing so a corrupt or attacker-controlled file cannot force unbounded memory allocation.
+
+Scope for this separate local commit:
+
+- Add RED test for an oversized persistent trust-store file returning a typed size-cap error before parsing.
+- Add a whole-file byte cap checked from metadata before `read_to_string`.
+- Preserve existing trust, revoke, fresh-install parent creation, and stale-revocation race behavior.
+- Keep deferred gates separate: corrupt parse error granularity, lock-path aliasing, deterministic race scheduling, stale-lock recovery, symlink/path ownership, owner-only permissions, and fsync.
+- No secure-pairing, QR, LAN/network, USB transport, TLS, OS keychain, decoder, virtual-camera, or hardware claim.
+
+## T13c file-size-cap evidence
+
+- RED: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml trusted_phone_store_rejects_oversized` failed on missing `TrustedPhoneStoreError::StoreTooLarge` variant.
+- GREEN focused: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml trusted_phone` passed with 7 trusted-phone tests.
+- GREEN full crate: `PATH=$HOME/.cargo/bin:$PATH cargo test --manifest-path desktop/usb-probe/Cargo.toml` passed with 44 AOA + 6 encoded video sink + 12 session frame + 7 trusted-phone tests + doctests.
+- Format: `PATH=$HOME/.cargo/bin:$PATH cargo fmt --manifest-path desktop/usb-probe/Cargo.toml -- --check` passed.
+- `git diff --check`: passed with no output.
+- Diff before commit: independently verified 54 insertions / 2 deletions = 56 changed lines.
+- Independent verification: `gentle-ai-verify` PASS; confirmed metadata size cap rejects oversized stores before `read_to_string`/parse, existing trust/revoke/fresh-install/race coverage remains, and no expanded claims.
+- Commit local: pending.
