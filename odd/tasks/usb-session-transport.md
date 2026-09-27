@@ -107,3 +107,10 @@ Alcance propuesto:
 - Tests RED/GREEN esperados: cola llena rechaza/es backpressure sin perder orden; read timeout sin bytes no consume; timeout/truncation después de header o payload parcial cierra; después de close no se aceptan writes; frame válido conserva orden FIFO.
 
 Gate antes de review nativa: reportar `READY T15c` al coordinador con worktree, rango `base..HEAD` y líneas diff, y esperar `GRANT T15c` explícito.
+
+### Revisión nativa RDD T11d
+
+- Candidato: `419e344` contra base `0918821` en worktree temporal detached `/Users/jele/Desktop/codes/ChinchillaCam-t11d-preflight-review`.
+- Lineage: `review-5c4e24217e0e993a`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Sin hallazgos advisory reportados para este candidato.
