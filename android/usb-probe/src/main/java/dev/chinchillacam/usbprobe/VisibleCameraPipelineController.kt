@@ -151,16 +151,16 @@ class VisibleCameraPipelineController(
         metrics.reset()
         val closeError = closeActiveSink()
         if (stoppedHandle == null) {
-            state = if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("egreso fake close failed: $closeError"))
+            state = if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("falló el cierre del egreso simulado: $closeError"))
             return state
         }
         state = when (val stopped = stoppedHandle.stop()) {
             CameraEncoderPipelineStopResult.Stopped,
             CameraEncoderPipelineStopResult.AlreadyStopped -> {
-                if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("egreso fake close failed: $closeError"))
+                if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("falló el cierre del egreso simulado: $closeError"))
             }
             is CameraEncoderPipelineStopResult.Failed -> {
-                val reasons = stopped.reasons + listOfNotNull(closeError?.let { "egreso fake close failed: $it" })
+                val reasons = stopped.reasons + listOfNotNull(closeError?.let { "falló el cierre del egreso simulado: $it" })
                 stopErrorState(reasons)
             }
         }

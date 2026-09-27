@@ -266,7 +266,7 @@ class VisibleCameraPipelineControllerTest {
         controller.start(sampleSnapshot(), "camera-1", true)
         val restarted = controller.drainOnce(maxOutputs = 4)
 
-        assertEquals("La cámara se detuvo con errores: egreso fake close failed: close boom", stopped.detail)
+        assertEquals("La cámara se detuvo con errores: falló el cierre del egreso simulado: close boom", stopped.detail)
         assertEquals(1, secondTransport.payloads.size)
         assertEquals(VisibleCameraPipelineStatus.Running, restarted.status)
     }
