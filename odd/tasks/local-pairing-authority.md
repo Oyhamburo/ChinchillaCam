@@ -142,3 +142,10 @@ Alcance T11:
 - Lineage: `review-676a75b529ab8cab`.
 - Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
 - Hallazgo advisory no bloqueante: `R3-supplementary-unicode` en `PairingQrPayload.kt:251`. No abrió corrección para T12b.
+
+### Revisión nativa RDD T14
+
+- Candidato: `f860ba4` contra base `afc14dc`.
+- Lineage: `review-32d058495f927285`.
+- Resultado: aprobado y reconocido mediante `acknowledge-approved`; la autoridad quedó consumida.
+- Hallazgos advisory no bloqueantes: `R3-001` en `ActiveDesktopAuthority.kt:196-198` y `R3-002` en `ActiveDesktopAuthority.kt:179`. No abrieron corrección para T14.
