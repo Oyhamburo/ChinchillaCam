@@ -17,6 +17,8 @@ pub enum PairingQrIssuerError {
     WrongDesktopId,
     ExpiredNonce,
     ClockRollback,
+    DuplicateNonce,
+    ExpiryOverflow,
 }
 
 pub trait PairingQrNonceGenerator {
@@ -55,7 +57,7 @@ struct OutstandingNonce {
     expires_at: u64,
 }
 
-#[derive(Clone)]
+/// Mutable in-memory issuer state is intentionally not Clone; cloning would duplicate live nonces.
 pub struct PairingQrIssuer<R = OsPairingQrNonceGenerator> {
     desktop_id: String,
     desktop_name: String,
@@ -113,7 +115,13 @@ impl<R: PairingQrNonceGenerator> PairingQrIssuer<R> {
         }
         let mut nonce = [0u8; QR_NONCE_BYTES];
         self.rng.fill_nonce(&mut nonce)?;
-        let expires_at = now_epoch_seconds.saturating_add(self.ttl_seconds);
+        if self.outstanding.iter().any(|issued| issued.nonce == nonce) {
+            return Err(PairingQrIssuerError::DuplicateNonce);
+        }
+        let expires_at = now_epoch_seconds
+            .checked_add(self.ttl_seconds)
+            .filter(|expires_at| *expires_at <= i64::MAX as u64)
+            .ok_or(PairingQrIssuerError::ExpiryOverflow)?;
         let payload = PairingQrPayload::new(
             self.desktop_id.clone(),
             self.desktop_name.clone(),

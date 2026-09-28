@@ -62,6 +62,38 @@ fn consumes_issued_nonce_once_and_rejects_stale_or_wrong_binding() {
 }
 
 #[test]
+fn rejects_duplicate_nonce_and_expiry_overflow() {
+    let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
+    let mut issuer = PairingQrIssuer::with_test_rng(
+        "desktop-01",
+        "Studio Desktop",
+        identity.clone(),
+        60,
+        ConstantRng,
+    )
+    .unwrap();
+
+    issuer.issue_at(100).unwrap();
+    assert_eq!(
+        issuer.issue_at(101),
+        Err(PairingQrIssuerError::DuplicateNonce)
+    );
+
+    let mut issuer = PairingQrIssuer::with_test_rng(
+        "desktop-01",
+        "Studio Desktop",
+        identity,
+        60,
+        TestRng::new(1),
+    )
+    .unwrap();
+    assert_eq!(
+        issuer.issue_at(i64::MAX as u64 - 30),
+        Err(PairingQrIssuerError::ExpiryOverflow)
+    );
+}
+
+#[test]
 fn rejects_invalid_configuration_and_caps_outstanding_nonces() {
     let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
     assert!(PairingQrIssuer::with_test_rng(
@@ -98,6 +130,15 @@ fn rejects_invalid_configuration_and_caps_outstanding_nonces() {
     );
 }
 
+struct ConstantRng;
+
+impl usb_probe::PairingQrNonceGenerator for ConstantRng {
+    fn fill_nonce(&mut self, nonce: &mut [u8; 32]) -> Result<(), PairingQrIssuerError> {
+        nonce.fill(7);
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct TestRng {
     next: u8,
@@ -111,10 +152,8 @@ impl TestRng {
 
 impl usb_probe::PairingQrNonceGenerator for TestRng {
     fn fill_nonce(&mut self, nonce: &mut [u8; 32]) -> Result<(), PairingQrIssuerError> {
-        for byte in nonce.iter_mut() {
-            *byte = self.next;
-            self.next = self.next.wrapping_add(1);
-        }
+        nonce.fill(self.next);
+        self.next = self.next.wrapping_add(1);
         Ok(())
     }
 }
