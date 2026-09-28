@@ -49,7 +49,26 @@ Decisión del usuario del 2026-09-28 (opción 1): mTLS con clave del teléfono e
 
 Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test` (focused: `cargo test --test <name>`). Revisión nativa por commit con base = commit padre: la deuda previa sin revisión (`92b04c0..ec22232` y T13c `93ab9d0`, `a9771c5`, `ba32d62`, `989a200`) queda fuera de este feature y requiere decisión aparte.
 
-1. [ ] m1 — Verificador de certificado de cliente. `rustls-webpki = "0.103"` explícito en `Cargo.toml` (hoy transitivo, `Cargo.lock` 0.103.15) para extraer el SPKI con `EndEntityCert::try_from(&cert)` + `subject_public_key_info()` (rustls-webpki `src/cert.rs:234`); validación de SPKI P-256 canónico; `phone_id`; `PhoneClientCertVerifier` (trait `rustls::server::danger::ClientCertVerifier`, client auth obligatorio) con política `Pairing` y `TrustedOnly` sobre un trait de lookup (`Trusted(spki)` / `Revoked` / `Unknown`) implementado por `FileTrustedPhoneStore` y por un fake. RED: `pairing_policy_accepts_canonical_p256_client_spki`, `rejects_non_p256_client_certificate` (cert P-384 de rcgen), `trusted_only_rejects_unknown_phone`, `trusted_only_rejects_revoked_phone`, `trusted_only_accepts_trusted_phone`. Estimado ~350 líneas.
+1. [x] m1 — Verificador de certificado de cliente. `rustls-webpki = "0.103"` explícito en `Cargo.toml` (hoy transitivo, `Cargo.lock` 0.103.15) para extraer el SPKI con `EndEntityCert::try_from(&cert)` + `subject_public_key_info()` (rustls-webpki `src/cert.rs:234`); validación de SPKI P-256 canónico; `phone_id`; `PhoneClientCertVerifier` (trait `rustls::server::danger::ClientCertVerifier`, client auth obligatorio) con política `Pairing` y `TrustedOnly` sobre un trait de lookup (`Trusted(spki)` / `Revoked` / `Unknown`) implementado por `FileTrustedPhoneStore` y por un fake. RED: `pairing_policy_accepts_canonical_p256_client_spki`, `rejects_non_p256_client_certificate` (cert P-384 de rcgen), `trusted_only_rejects_unknown_phone`, `trusted_only_rejects_revoked_phone`, `trusted_only_accepts_trusted_phone`. Estimado ~350 líneas.
+
+   ### Evidencia m1
+
+   - **RED observado** (import sin resolver; el archivo de test ya existía, el módulo aún no estaba declarado en `lib.rs`):
+
+     ```
+     error[E0432]: unresolved imports `usb_probe::phone_id_for_spki`, `usb_probe::PhoneClientCertVerifier`, `usb_probe::TrustedPhoneLookup`, `usb_probe::TrustedPhoneLookupError`, `usb_probe::TrustedPhoneStatus`
+       --> tests/phone_client_cert_verifier_test.rs:14:5
+        |
+     14 |     phone_id_for_spki, DesktopTlsIdentity, FileTrustedPhoneStore, PhoneClientCertVerifier,
+        |     ^^^^^^^^^^^^^^^^^ no `phone_id_for_spki` in the root          ^^^^^^^^^^^^^^^^^^^^^^^ no `PhoneClientCertVerifier` in the root
+     ```
+
+   - **GREEN focused**: `cargo test --test phone_client_cert_verifier_test` → `test result: ok. 7 passed; 0 failed` (las 5 pruebas pedidas del contrato compartido + `phone_id_is_lowercase_sha256_hex_of_spki` + `trusted_only_rejects_when_lookup_fails`, esta última agregada para cubrir "error de lookup falla cerrado" del punto 5 del contrato, no exigida por nombre pero sí por comportamiento).
+   - `cargo fmt -- --check`: sin diffs (tras aplicar `cargo fmt` una vez sobre los dos archivos nuevos).
+   - **Full**: `cargo test` → 181 tests en total (unit + los 21 binarios de integración de la crate), 0 fallos.
+   - **Líneas cambiadas** (sin `Cargo.lock`): 455 — Cargo.toml +1, `lib.rs` +5, `trusted_phone_store.rs` +31, `phone_client_cert_verifier.rs` +240 (nuevo), `phone_client_cert_verifier_test.rs` +178 (nuevo). Supera la estimación (~350) y la heurística de ~400: el trait `ClientCertVerifier` de rustls exige 7 métodos más un trait de lookup propio (con su tipo de error y dos implementaciones: `FileTrustedPhoneStore` real y fakes de test), y la matriz RED pedida cubre ambas políticas y el puente con el store en disco. No se recortaron pruebas, comentarios ni el doc de "por qué se ignoran intermediates/fechas/emisor" para entrar en la heurística.
+   - **Cambio adicional no listado explícitamente pero necesario**: se agregó `FileTrustedPhoneStore::phone_trust_snapshot` (una sola lectura bajo un único `load_records()`) porque combinar `trusted_identity` + `is_revoked` en dos llamadas separadas corre una carrera revoke-vs-lectura entre un `trust`/`revoke` concurrente y las dos lecturas independientes.
+   - Commit: `feat(desktop): verify phone TLS client certificates`.
 2. [ ] m2 — Client auth obligatorio en `usb_tls_pairing_proof`: `with_client_cert_verifier` con política `Pairing` en lugar de `.with_no_client_auth()`; `complete_handshake_and_pairing_proof` devuelve el stream vivo y el candidato `{phone_id, spki}` leído con `peer_certificates()`; el helper stdio se adapta al nuevo tipo de retorno y, al terminar, reporta `phone_id=<hex>` por stderr. RED: `pairing_proof_returns_client_spki_with_live_stream`, `pairing_handshake_rejects_client_without_certificate`. Estimado ~300 líneas.
 3. [ ] m3 — Handshake de reconexión confiable sin QR: API nueva que acepta sólo teléfonos confiables. RED: `trusted_handshake_accepts_trusted_phone_without_qr`, `trusted_handshake_rejects_unknown_phone`, `trusted_handshake_rejects_revoked_phone`. Estimado ~250 líneas.
 4. [ ] m4 — Confirmación explícita: el candidato de pairing no se persiste solo; `confirm(label, store)` persiste `TrustedPhoneIdentity`. RED: `pairing_candidate_is_not_persisted_without_confirmation`, `confirm_persists_trusted_phone_identity`. Estimado ~150 líneas.
@@ -58,4 +77,4 @@ Criterios: ningún camino USB real acepta clientes sin certificado; pairing liga
 
 ## Progreso
 
-Plan creado el 2026-09-28; ninguna tarea iniciada.
+Plan creado el 2026-09-28; m1 completada el 2026-09-28 (ver Evidencia m1); m2-m4 sin iniciar.

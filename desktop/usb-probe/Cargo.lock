@@ -335,6 +335,7 @@ dependencies = [
  "rcgen",
  "rusb",
  "rustls",
+ "rustls-webpki",
  "sha2",
 ]
 

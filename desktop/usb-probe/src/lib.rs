@@ -8,6 +8,7 @@ mod pairing_proof_endpoint;
 mod pairing_proof_protocol;
 mod pairing_qr;
 mod pairing_qr_issuer;
+mod phone_client_cert_verifier;
 mod session_frame;
 mod trusted_phone_store;
 mod usb_tls_ciphertext_stream;
@@ -45,6 +46,10 @@ pub use pairing_qr::{PairingQrError, PairingQrPayload, PairingQrProducer};
 pub use pairing_qr_issuer::{
     IssuedPairingQr, OsPairingQrNonceGenerator, PairingQrIssuer, PairingQrIssuerError,
     PairingQrNonceGenerator,
+};
+pub use phone_client_cert_verifier::{
+    is_canonical_p256_spki, phone_id_for_spki, PhoneClientCertVerifier, TrustedPhoneLookup,
+    TrustedPhoneLookupError, TrustedPhoneStatus,
 };
 pub use session_frame::{
     SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,

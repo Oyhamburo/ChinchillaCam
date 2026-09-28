@@ -13,4 +13,5 @@ getrandom = "0.2"
 rcgen = { version = "0.12", features = ["pem"] }
 rusb = "0.9"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-webpki = { version = "0.103", default-features = false, features = ["alloc"] }
 sha2 = "0.10"

@@ -67,6 +67,16 @@ impl From<io::Error> for TrustedPhoneStoreError {
     }
 }
 
+/// A single point-in-time read of one phone's trust state, computed from one loaded
+/// snapshot of the store so a concurrent `trust`/`revoke` cannot be combined into an
+/// inconsistent answer by two separate reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PhoneTrustSnapshot {
+    Trusted(Vec<u8>),
+    Revoked,
+    Unknown,
+}
+
 pub trait TrustedPhoneStoreWriteCoordinator: Send + Sync {
     fn after_records_loaded(&self, path: &Path) -> Result<(), TrustedPhoneStoreError>;
 }
@@ -150,6 +160,27 @@ impl FileTrustedPhoneStore {
             .load_records()?
             .into_iter()
             .any(|record| record.identity.phone_id == phone_id && record.revoked))
+    }
+
+    /// Reads trust and revocation state for `phone_id` from a single loaded snapshot.
+    /// Callers that need both "is it trusted" and "is it revoked" must use this instead
+    /// of calling `trusted_identity` and `is_revoked` separately: two independent reads
+    /// can straddle a concurrent `trust`/`revoke` and combine into an answer that never
+    /// existed at any single instant.
+    pub fn phone_trust_snapshot(
+        &self,
+        phone_id: &str,
+    ) -> Result<PhoneTrustSnapshot, TrustedPhoneStoreError> {
+        validate_lookup_id(phone_id)?;
+        let record = self
+            .load_records()?
+            .into_iter()
+            .find(|record| record.identity.phone_id == phone_id);
+        Ok(match record {
+            None => PhoneTrustSnapshot::Unknown,
+            Some(record) if record.revoked => PhoneTrustSnapshot::Revoked,
+            Some(record) => PhoneTrustSnapshot::Trusted(record.identity.public_key),
+        })
     }
 
     fn load_records(&self) -> Result<Vec<TrustedPhoneRecord>, TrustedPhoneStoreError> {
