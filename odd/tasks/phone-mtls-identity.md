@@ -71,6 +71,32 @@ Nuevo seam `PhoneTlsIdentity` (`fun keyManagers(): Array<KeyManager>`, `val subj
 - **Líneas cambiadas**: 163 (additions+deletions) — `PhoneTlsIdentity.kt` nuevo (16), `SslEngineUsbTlsChannel.kt` (+2/-1), `SslEngineUsbTlsChannelTest.kt` (+140/-4).
 - **Commit**: `feat(android): present phone TLS client certificate`.
 
+#### Revisión nativa m1
+
+- Lineage `review-37abf23d14631701`, 4 lentes (R1 riesgo, R2 legibilidad, R3 confiabilidad, R4 resiliencia). Resultado: **aprobada sin corrección**; acknowledgement con autoridad `burned`.
+- Hallazgos no bloqueantes y el commit que los resuelve:
+  - WARNING `R3-tls13-no-identity-unproved` (el caso sin identidad sólo está probado con TLS 1.2) — resuelto en **m1b**.
+  - SUGGESTION `R4-001` (bajo TLS 1.3 por defecto el cliente retorna `Authenticated` aunque el servidor exija client auth; el rechazo debe surgir fail-closed en la primera lectura — no probado) — resuelto en **m1b**, mismo test que el anterior.
+  - WARNING `R2-server-error-optional-assertion` (`serverError.get()?.let { ... }` pasa si `serverError` es null, es decir cuando el servidor NO rechazó) — resuelto en **m1b**.
+  - SUGGESTION `R2-throwing-identity-desktop-spki` (`ThrowingPhoneTlsIdentity` reutilizaba el SPKI del desktop como SPKI del teléfono) — resuelto en **m1b**.
+  - SUGGESTION `R3-test-session-cleanup` (los dos tests nuevos con hilo servidor no cerraban `pair` en `finally`) — resuelto en **m1b**.
+
+#### Evidencia m1b
+
+- **Caracterización con investigación** (`tls13ServerRequiringClientAuthRejectsMissingPhoneIdentityOnFirstRead`): no pasó a la primera. La hipótesis inicial —calcada del texto de m1 ("el SSLEngine sigue adelante sin nunca invocar el trust manager" bajo TLS 1.3)— resultó **falsa** para este JDK. Primera corrida:
+  ```
+  javax.net.ssl.SSLHandshakeException: Empty client certificate chain
+      at sun.security.ssl.CertificateMessage$T13CertificateConsumer.onConsumeCertificate(...)
+      ...
+      at SslEngineUsbTlsChannelTest.serverHandshake(...)
+  ```
+  La excepción no salió del chequeo especulativo `engine.session.peerCertificates` (nunca se alcanzó); salió directo de `serverHandshake(...)`. Esto confirma dos cosas: (1) el cliente sí termina `Authenticated` (la asimetría de m1 es real, la aserción sobre el resultado del handshake pasó antes de que la excepción llegara al hilo principal); (2) el lado servidor no "sigue en silencio" — lanza el mismo `SSLHandshakeException: Empty client certificate chain` que TLS 1.2, sólo que TLS 1.3 lo hace vía `T13CertificateConsumer`/delegated task, demasiado tarde para que el cliente lo vea dentro de su propio `handshake()`. Se reescribió el test para afirmar exactamente eso (se descartó el chequeo especulativo de `peerCertificates`) y se dejó constancia en comentarios. Segunda corrida: `BUILD SUCCESSFUL`.
+- **`readApplicationData` reporta con excepciones, no con un resultado tipado**: a diferencia de `handshake()` (que retorna el sealed `SslEngineUsbTlsHandshakeResult`), el canal establecido señala fallas lanzando (`IllegalStateException`, p. ej. `"USB TLS ciphertext read failed: EofEmpty"` o `"TLS engine closed during application read"`); nunca retorna bytes de aplicación en el camino de falla. El test nuevo cierra el lado servidor de la sesión cruda en su `finally` (no hay alerta TLS explícita: la excepción del servidor aborta su propio loop de handshake antes de poder volver a hacer `wrap()`), lo que hace que la primera lectura del cliente observe fin de stream y lance.
+- **Focused** (`--tests dev.chinchillacam.usbprobe.SslEngineUsbTlsChannelTest --rerun-tasks`), 3 corridas consecutivas tras la corrección: `BUILD SUCCESSFUL`, 15 tests, 0 fallas cada vez (14 preexistentes + 1 nuevo).
+- **Full**: `testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` → `BUILD SUCCESSFUL`. Total del módulo (agregando todos los XML de `testDebugUnitTest`): 365 tests, 2 skipped (interop opt-in), 0 failures, 0 errors (baseline m1: 364/2/0).
+- **Líneas cambiadas**: 143 (113 adiciones + 30 eliminaciones), un solo archivo — `SslEngineUsbTlsChannelTest.kt`: imports (+2), dos tests existentes envueltos en `try/finally` con `pair.close()` + aserción de error del servidor reforzada (no vacuously-true), un test nuevo, `ThrowingPhoneTlsIdentity` con SPKI propio (fixture `phone-key-manager-failure` separada de la del desktop), `serverHandshake` ahora retorna el `SSLEngine` (sin cambio de comportamiento para los 4 call sites existentes, que ya ignoraban el valor de retorno).
+- **Commit**: `test(android): prove phone client auth rejection fails closed`.
+
 ### [ ] m2 — Adaptador delgado `AndroidKeyStorePhoneTlsIdentity`
 
 Genera o carga el alias, spec del contrato §4.1, `KeyManagerFactory.init(AndroidKeyStore, null)`. No es testeable en JVM: desvío TDD declarado; validación en dispositivo pendiente (M9); sin wiring de Activity. Estimado ~100 líneas.
@@ -83,4 +109,4 @@ Criterios: el canal presenta el certificado sólo si recibe identidad; sin ident
 
 ## Progreso
 
-Plan creado el 2026-09-28. m1 completada el 2026-09-28 (ver Evidencia m1); m2 y m3 pendientes.
+Plan creado el 2026-09-28. m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada (lineage `review-37abf23d14631701`). m1b (endurecimiento post-revisión) completada el 2026-09-28 (ver Evidencia m1b). m2 y m3 pendientes.

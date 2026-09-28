@@ -21,6 +21,7 @@ import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLEngineResult
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
+import javax.net.ssl.SSLHandshakeException
 import javax.net.ssl.SSLSession
 import javax.net.ssl.X509TrustManager
 import java.util.concurrent.ExecutorService
@@ -250,24 +251,28 @@ class SslEngineUsbTlsChannelTest {
             }
         }
 
-        val result = SslEngineUsbTlsChannel(phoneTlsIdentity = phoneIdentity)
-            .handshake(pair.client, desktopFixture.certificate.publicKey.encoded)
+        try {
+            val result = SslEngineUsbTlsChannel(phoneTlsIdentity = phoneIdentity)
+                .handshake(pair.client, desktopFixture.certificate.publicKey.encoded)
 
-        assertTrue(result is SslEngineUsbTlsHandshakeResult.Authenticated)
-        result as SslEngineUsbTlsHandshakeResult.Authenticated
-        // Join before closing: TLS 1.3 clients finish as soon as they send their own Finished
-        // message, without waiting on the server. The server still has to unwrap that Finished
-        // and often makes one more opportunistic wrap to send a post-handshake NewSessionTicket;
-        // closing the client side first can race that trailing write against a closed pipe.
-        server.join(2000)
-        serverError.get()?.let { throw it }
-        assertTrue(serverCompleted.get())
-        result.close()
+            assertTrue(result is SslEngineUsbTlsHandshakeResult.Authenticated)
+            result as SslEngineUsbTlsHandshakeResult.Authenticated
+            // Join before closing: TLS 1.3 clients finish as soon as they send their own Finished
+            // message, without waiting on the server. The server still has to unwrap that Finished
+            // and often makes one more opportunistic wrap to send a post-handshake NewSessionTicket;
+            // closing the client side first can race that trailing write against a closed pipe.
+            server.join(2000)
+            serverError.get()?.let { throw it }
+            assertTrue(serverCompleted.get())
+            result.close()
 
-        val capturedChain = trustManager.capturedClientChain
-        assertTrue(capturedChain != null && capturedChain.isNotEmpty())
-        val phoneLeafSubjectPublicKeyInfo = capturedChain!![0].publicKey.encoded
-        assertTrue(phoneLeafSubjectPublicKeyInfo.contentEquals(phoneIdentity.subjectPublicKeyInfoDer))
+            val capturedChain = trustManager.capturedClientChain
+            assertTrue(capturedChain != null && capturedChain.isNotEmpty())
+            val phoneLeafSubjectPublicKeyInfo = capturedChain!![0].publicKey.encoded
+            assertTrue(phoneLeafSubjectPublicKeyInfo.contentEquals(phoneIdentity.subjectPublicKeyInfoDer))
+        } finally {
+            pair.close()
+        }
     }
 
     @Test
@@ -295,25 +300,102 @@ class SslEngineUsbTlsChannelTest {
             }
         }
 
-        val result = SslEngineUsbTlsChannel().handshake(pair.client, desktopFixture.certificate.publicKey.encoded)
+        try {
+            val result = SslEngineUsbTlsChannel().handshake(pair.client, desktopFixture.certificate.publicKey.encoded)
 
-        assertTrue(result is SslEngineUsbTlsHandshakeResult.Rejected)
-        assertEquals(true, pair.clientCloseable.closed)
-        server.join(2000)
-        assertTrue(serverReachedTerminalState.get())
-        // JSSE itself aborts the TLS 1.2 handshake with SSLHandshakeException("Empty client
-        // certificate chain") as soon as needClientAuth=true and no certificate is presented,
-        // before ever consulting the trust manager above. That is a TLS-layer failure, not a bug
-        // in this test's harness; anything else must still reach the JUnit thread.
-        serverError.get()?.let { error ->
-            assertTrue("expected an SSLException on the server, got $error", error is SSLException)
+            assertTrue(result is SslEngineUsbTlsHandshakeResult.Rejected)
+            assertEquals(true, pair.clientCloseable.closed)
+            server.join(2000)
+            assertTrue(serverReachedTerminalState.get())
+            // JSSE itself aborts the TLS 1.2 handshake with SSLHandshakeException("Empty client
+            // certificate chain") as soon as needClientAuth=true and no certificate is presented,
+            // before ever consulting the trust manager above. The server must actually reject:
+            // this used to be a conditional assertion that passed vacuously if the server ever
+            // completed without rejecting (see R2-server-error-optional-assertion).
+            val observedServerError = serverError.get()
+            assertTrue("expected the server to reject the handshake, but it completed without error", observedServerError != null)
+            assertTrue(
+                "expected an SSLHandshakeException on the server, got $observedServerError",
+                observedServerError is SSLHandshakeException,
+            )
+        } finally {
+            pair.close()
+        }
+    }
+
+    @Test
+    fun tls13ServerRequiringClientAuthRejectsMissingPhoneIdentityOnFirstRead() {
+        val desktopFixture = TlsFixture.create("desktop-tls13-requires-auth")
+        val trustManager = CapturingClientTrustManager()
+        val serverContext = SSLContext.getInstance("TLS").apply {
+            init(desktopFixture.keyManagers, arrayOf(trustManager), null)
+        }
+        val pair = sessionPair()
+        val serverError = AtomicReference<Throwable?>(null)
+        val server = thread {
+            try {
+                // No forced protocol: both peers negotiate their default, highest mutually
+                // supported version. Empirically (see below), this JDK's SSLEngine rejects an
+                // empty client certificate chain the same way under TLS 1.3 as under TLS 1.2
+                // above: sun.security.ssl.CertificateMessage$T13CertificateConsumer throws
+                // SSLHandshakeException("Empty client certificate chain") from a delegated task,
+                // confirming the negotiated protocol is TLS 1.3 and that the trust manager above
+                // is never consulted (the engine itself aborts first). This contradicts an
+                // earlier, non-committed exploration recorded in m1's evidence, which assumed
+                // JSSE would let TLS 1.3 continue per RFC 8446 §4.4.2.4's discretion clause; this
+                // committed test replaces that assumption with what this JDK actually does.
+                serverHandshake(serverContext, pair.server, needClientAuth = true)
+            } catch (error: Throwable) {
+                serverError.set(error)
+            } finally {
+                // Close the USB session from the server side: the exception above unwinds this
+                // test's own handshake loop without ever wrapping and sending a TLS alert, so this
+                // raw close is what makes the client's first application-data read observe
+                // end-of-stream instead of blocking forever.
+                runCatching { pair.server.close() }
+            }
+        }
+
+        try {
+            val result = SslEngineUsbTlsChannel().handshake(pair.client, desktopFixture.certificate.publicKey.encoded)
+
+            // Empirically observed: the TLS 1.3 client finishes its own handshake state (it has
+            // already sent its Finished message) without waiting for the server, so it reaches
+            // Authenticated here even though the server is about to reject the connection for
+            // missing client auth (see the server thread body above). This is the asymmetry left
+            // unproved after m1 (WARNING R3-tls13-no-identity-unproved): a client without a phone
+            // identity is not actually granted access, but the proof that it fails closed lives at
+            // the first application read below, not at the handshake result.
+            assertTrue(result is SslEngineUsbTlsHandshakeResult.Authenticated)
+            result as SslEngineUsbTlsHandshakeResult.Authenticated
+
+            server.join(2000)
+            val observedServerError = serverError.get()
+            assertTrue("expected the server to reject the handshake, but it completed without error", observedServerError != null)
+            assertTrue(
+                "expected an SSLHandshakeException on the server, got $observedServerError",
+                observedServerError is SSLHandshakeException,
+            )
+
+            // SslEngineUsbTlsEstablishedChannel reports failure through exceptions, not a typed
+            // result the way handshake() does: the first application read must throw and must
+            // never hand back application bytes.
+            try {
+                val bytes = result.channel.readApplicationData(16, System.nanoTime() + TimeUnit.SECONDS.toNanos(2))
+                fail("expected the first application read to fail closed, but got ${bytes.size} application bytes")
+            } catch (error: Exception) {
+                assertEquals(true, pair.clientCloseable.closed)
+            }
+        } finally {
+            pair.close()
         }
     }
 
     @Test
     fun keyManagersFailureRejectsHandshakeFailClosed() {
         val desktopFixture = TlsFixture.create("desktop-key-manager-failure")
-        val throwingIdentity = ThrowingPhoneTlsIdentity(desktopFixture.certificate.publicKey.encoded)
+        val phoneFixture = TlsFixture.create("phone-key-manager-failure")
+        val throwingIdentity = ThrowingPhoneTlsIdentity(phoneFixture.certificate.publicKey.encoded)
         val pair = sessionPair()
 
         try {
@@ -327,7 +409,7 @@ class SslEngineUsbTlsChannelTest {
         }
     }
 
-    private fun serverHandshake(context: SSLContext, session: AccessoryIoSession, needClientAuth: Boolean = false, forceProtocol: String? = null) {
+    private fun serverHandshake(context: SSLContext, session: AccessoryIoSession, needClientAuth: Boolean = false, forceProtocol: String? = null): SSLEngine {
         val engine = context.createSSLEngine().apply {
             useClientMode = false
             this.needClientAuth = needClientAuth
@@ -365,6 +447,7 @@ class SslEngineUsbTlsChannelTest {
                 else -> Unit
             }
         }
+        return engine
     }
 
     private fun sessionPair(): SessionPair {
