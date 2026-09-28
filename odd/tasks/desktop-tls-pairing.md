@@ -57,6 +57,10 @@ El wire CCPB/CCP1 queda congelado con Android antes de implementar TLS: este cor
 
 Este corte emite QR de emparejamiento con nonce de 32 bytes desde CSPRNG del sistema, expiración acotada 60–120s, `trustMaterial` igual a la SPKI DER persistida del escritorio y control de nonces pendientes en memoria. No persiste nonces, no abre listener, no usa rustls todavía y no valida tráfico de red.
 
+## Estado M3d5a — endpoint CCPB
+
+Este corte agrega solo la dependencia `rustls` prevista y el codec CCPB para anunciar un endpoint loopback futuro. CCPB no abre sockets ni declara éxito criptográfico: host fijo `127.0.0.1`, puerto `1..65535`, timeout `250..5000ms`, TLVs ascendentes y tamaño total `<=256`.
+
 ## Evidencia esperada
 
 - `cargo fmt --check`
