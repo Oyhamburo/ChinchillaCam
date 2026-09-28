@@ -41,6 +41,8 @@ class TlsPairingProofVerifierTest {
         val verifier = TlsPairingProofVerifier(clock)
 
         assertRejected("invalid proof endpoint") { verifier.verify(challenge(fixture.certificate), byteArrayOf(0x00)) }
+        assertRejected("qr expired") { verifier.verify(challenge(fixture.certificate, qrExpiresAt = 1000), endpointBytes(1)) }
+        assertRejected("challenge expired") { verifier.verify(challenge(fixture.certificate, challengeExpiresAt = 1000), endpointBytes(1)) }
         assertRejected("qr nonce too short") { verifier.verify(challenge(fixture.certificate, qrNonce = ByteArray(15) { 1 }), endpointBytes(1)) }
         assertRejected("challenge nonce too short") { verifier.verify(challenge(fixture.certificate, challengeNonce = ByteArray(31) { 2 }), endpointBytes(1)) }
 
@@ -65,6 +67,8 @@ class TlsPairingProofVerifierTest {
         certificate: X509Certificate,
         qrNonce: ByteArray = QR_NONCE,
         challengeNonce: ByteArray = CHALLENGE_NONCE,
+        qrExpiresAt: Long = 1100,
+        challengeExpiresAt: Long = 1100,
     ): PairingProofChallenge {
         val spki = certificate.publicKey.encoded
         return PairingProofChallenge(
@@ -74,8 +78,8 @@ class TlsPairingProofVerifierTest {
             qrNonce = qrNonce,
             challengeNonce = challengeNonce,
             sessionId = "session-1",
-            qrExpiresAtEpochSeconds = 1100,
-            challengeExpiresAtEpochSeconds = 1100,
+            qrExpiresAtEpochSeconds = qrExpiresAt,
+            challengeExpiresAtEpochSeconds = challengeExpiresAt,
         )
     }
 
