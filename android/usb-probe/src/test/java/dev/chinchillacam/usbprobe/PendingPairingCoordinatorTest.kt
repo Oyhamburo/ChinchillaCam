@@ -321,6 +321,28 @@ class PendingPairingCoordinatorTest {
     }
 
     @Test
+    fun persistentConfirmSurvivesReloadWithoutActivatingOnSaveFailureOrRevokedRecord() {
+        val storage = MutableSerializedTrustedDesktopStorage()
+        val store = LocalPersistentTrustedDesktopStore(storage)
+        val authority = ActiveDesktopAuthority()
+        val first = coordinator()
+        val firstPending = first.start(qr(), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+
+        assertEquals(PendingPairingConfirmResult.Activated("pc-1"), first.confirm(firstPending.summary.pendingId, store, authority))
+        assertEquals(TrustedDesktopAuthResult.Trusted, LocalPersistentTrustedDesktopStore(storage).evaluate("pc-1", PairingTrustFingerprint.fromTrustMaterial(P256_SPKI).bytes, nowEpochSeconds = 100))
+
+        val failingStorage = FailingSerializedTrustedDesktopStorage()
+        val failing = coordinator()
+        val failingPending = failing.start(qr(nonce = byteArrayOf(0x41)), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+        assertTrue(failing.confirm(failingPending.summary.pendingId, LocalPersistentTrustedDesktopStore(failingStorage), ActiveDesktopAuthority()) is PendingPairingConfirmResult.Rejected.SaveFailed)
+
+        LocalPersistentTrustedDesktopStore(storage).revoke("pc-1", revokedAtEpochSeconds = 110)
+        val revoked = coordinator()
+        val revokedPending = revoked.start(qr(nonce = byteArrayOf(0x42)), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
+        assertEquals(PendingPairingConfirmResult.Rejected.ExistingTrustRejected(TrustedDesktopAuthResult.Revoked), revoked.confirm(revokedPending.summary.pendingId, LocalPersistentTrustedDesktopStore(storage), ActiveDesktopAuthority()))
+    }
+
+    @Test
     fun validConfirmSavesThenActivatesOrReturnsTrustedButInactiveForSecondDesktop() {
         val store = RecordingTrustedDesktopStore()
         val authority = ActiveDesktopAuthority()
@@ -373,6 +395,19 @@ class PendingPairingCoordinatorTest {
         lastSeenAtEpochSeconds = 90,
         revokedAtEpochSeconds = revokedAt,
     )
+
+    private class MutableSerializedTrustedDesktopStorage(initialValue: String? = null) : SerializedTrustedDesktopStorage {
+        private var value = initialValue
+        override fun read(): String? = value
+        override fun write(serialized: String) { value = serialized }
+        override fun clear() { value = null }
+    }
+
+    private class FailingSerializedTrustedDesktopStorage : SerializedTrustedDesktopStorage {
+        override fun read(): String? = null
+        override fun write(serialized: String) { throw Exception("disk full") }
+        override fun clear() { throw Exception("disk full") }
+    }
 
     private class RecordingTrustedDesktopStore(
         private val existing: TrustedDesktopRecord? = null,
