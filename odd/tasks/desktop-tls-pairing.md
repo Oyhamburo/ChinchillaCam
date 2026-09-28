@@ -69,6 +69,10 @@ Este corte agrega solo un servidor rustls de una conexión en `127.0.0.1:0` que 
 
 El servidor local lee una solicitud CCP1 acotada sobre rustls, consume exactamente una vez el nonce emitido tras validar la solicitud, y responde status0 con eco exacto. Las rutas inválidas no escriben OK ni conceden confianza persistente.
 
+## Estado M3d6 — helper de interoperabilidad
+
+El helper `pairing_proof_interop_helper` emite tres líneas ASCII congeladas para Android (`CHINCHILLACAM-INTEROP:v1`, `qr=...`, `proof=...`), vacía stdout antes de aceptar una única prueba CCP1 válida por rustls en `127.0.0.1`, y no imprime claves privadas.
+
 ## Evidencia esperada
 
 - `cargo fmt --check`
