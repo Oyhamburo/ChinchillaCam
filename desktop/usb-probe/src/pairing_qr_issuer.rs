@@ -140,6 +140,10 @@ impl<R: PairingQrNonceGenerator> PairingQrIssuer<R> {
         Ok(IssuedPairingQr { payload, qr_wire })
     }
 
+    pub fn trust_material(&self) -> &[u8] {
+        self.identity.qr_trust_material()
+    }
+
     pub fn consume_issued_nonce(
         &mut self,
         desktop_id: &str,

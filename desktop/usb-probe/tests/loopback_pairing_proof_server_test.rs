@@ -52,7 +52,7 @@ fn proof_reader_accepts_valid_request_without_ok_response() {
 
 #[test]
 fn proof_responder_returns_exact_ok_after_valid_request() {
-    let (server, cert, request) = proof_responder(now_seconds(), "desktop-01", vec![7; 32]);
+    let (server, cert, request, _) = proof_responder(now_seconds(), "desktop-01", vec![7; 32]);
     let expected = PairingProofFrame::response(PairingProofResponse::ok(request.clone()))
         .encode()
         .unwrap();
@@ -66,9 +66,8 @@ fn proof_responder_returns_exact_ok_after_valid_request() {
 #[test]
 fn proof_responder_rejects_replay_expired_wrong_desktop_and_nonce_mismatch() {
     let now = now_seconds();
-    let (server, cert, request) = proof_responder(now, "desktop-01", vec![7; 32]);
+    let (server, cert, request, replay_identity) = proof_responder(now, "desktop-01", vec![7; 32]);
     let issuer = exchange_return_issuer(server, &cert, request_frame(&request)).unwrap();
-    let replay_identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
     let replay_cert = replay_identity.certificate_der().to_vec();
     let replay_server = LoopbackPairingProofServer::bind_pairing_proof(
         replay_identity,
@@ -78,13 +77,36 @@ fn proof_responder_rejects_replay_expired_wrong_desktop_and_nonce_mismatch() {
     .unwrap();
     assert!(exchange(replay_server, &replay_cert, request_frame(&request)).is_err());
 
-    for (server, cert, request) in [
+    for (server, cert, request, _) in [
         proof_responder(now, "desktop-01", vec![9; 32]),
         proof_responder(now - 61, "desktop-01", vec![7; 32]),
         proof_responder(now, "wrong", vec![7; 32]),
     ] {
         assert!(exchange(server, &cert, request_frame(&request)).is_err());
     }
+}
+
+#[test]
+fn proof_responder_rejects_identity_mismatch_before_listening() {
+    let server_identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
+    let issuer_identity = DesktopTlsIdentity::generate_ephemeral("Other Desktop").unwrap();
+    let issuer = PairingQrIssuer::with_test_rng(
+        "desktop-01",
+        "Studio Desktop",
+        issuer_identity,
+        60,
+        TestRng(7),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        LoopbackPairingProofServer::bind_pairing_proof(
+            server_identity,
+            Duration::from_millis(350),
+            issuer,
+        ),
+        Err(LoopbackPairingProofServerError::IdentityMismatch)
+    ));
 }
 
 #[test]
@@ -114,6 +136,9 @@ fn proof_reader_rejects_malformed_type_challenge_session_oversize_and_timeout() 
 
     let (server, cert) = proof_reader();
     assert!(connect_without_proof(server, &cert).is_err());
+
+    let (server, cert) = proof_reader();
+    assert!(slow_trickle_header(server, &cert).is_err());
 }
 
 #[test]
@@ -150,6 +175,7 @@ fn proof_responder(
     LoopbackPairingProofServer<TestRng>,
     Vec<u8>,
     PairingProofRequest,
+    DesktopTlsIdentity,
 ) {
     let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
     let cert = identity.certificate_der().to_vec();
@@ -165,12 +191,12 @@ fn proof_responder(
     let request =
         PairingProofRequest::new(desktop_id, request_nonce, vec![3; 32], "session-01").unwrap();
     let server = LoopbackPairingProofServer::bind_pairing_proof(
-        identity,
+        identity.clone(),
         Duration::from_millis(350),
         issuer,
     )
     .unwrap();
-    (server, cert, request)
+    (server, cert, request, identity)
 }
 
 fn proof_reader() -> (LoopbackPairingProofServer, Vec<u8>) {
@@ -225,6 +251,19 @@ fn exchange<R: usb_probe::PairingQrNonceGenerator + Send + 'static>(
     } else {
         Err(())
     }
+}
+
+fn slow_trickle_header(
+    server: LoopbackPairingProofServer,
+    cert: &[u8],
+) -> Result<(), LoopbackPairingProofServerError> {
+    let addr = server.local_addr();
+    let handle = thread::spawn(move || server.accept_one());
+    let mut tls = tls_stream(addr, cert);
+    tls.write_all(b"C").unwrap();
+    tls.flush().unwrap();
+    thread::sleep(Duration::from_millis(400));
+    handle.join().unwrap()
 }
 
 fn connect_without_proof(

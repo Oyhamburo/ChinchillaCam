@@ -27,6 +27,7 @@ pub enum LoopbackPairingProofServerError {
     Timeout,
     InvalidProof,
     Issuer(PairingQrIssuerError),
+    IdentityMismatch,
 }
 
 pub struct LoopbackPairingProofServer<R = OsPairingQrNonceGenerator> {
@@ -60,6 +61,9 @@ impl<R: PairingQrNonceGenerator> LoopbackPairingProofServer<R> {
         timeout: Duration,
         issuer: PairingQrIssuer<R>,
     ) -> Result<Self, LoopbackPairingProofServerError> {
+        if issuer.trust_material() != identity.qr_trust_material() {
+            return Err(LoopbackPairingProofServerError::IdentityMismatch);
+        }
         bind_with_mode(identity, timeout, true, Some(issuer))
     }
 
@@ -101,7 +105,8 @@ impl<R: PairingQrNonceGenerator> LoopbackPairingProofServer<R> {
         }
         if self.read_proof {
             let mut stream = StreamOwned::new(connection, tcp);
-            let request = read_ccp1_request(&mut stream)?;
+            let proof_deadline = Instant::now() + self.timeout;
+            let request = read_ccp1_request(&mut stream, proof_deadline)?;
             validate_request(&request)?;
             if let Some(issuer) = &mut self.issuer {
                 consume_and_respond(&mut stream, issuer, request)?;
@@ -161,13 +166,12 @@ fn consume_and_respond<S: Read + Write, R: PairingQrNonceGenerator>(
     Ok(())
 }
 
-fn read_ccp1_request<S: Read>(
-    stream: &mut S,
+fn read_ccp1_request(
+    stream: &mut StreamOwned<ServerConnection, TcpStream>,
+    deadline: Instant,
 ) -> Result<PairingProofRequest, LoopbackPairingProofServerError> {
     let mut header = [0; CCP1_HEADER_BYTES];
-    stream
-        .read_exact(&mut header)
-        .map_err(|error| map_read_error(error))?;
+    read_exact_before(stream, &mut header, deadline)?;
     let payload_len = u32::from_be_bytes(header[6..10].try_into().unwrap()) as usize;
     if payload_len > CCP1_MAX_PAYLOAD_BYTES {
         return Err(LoopbackPairingProofServerError::InvalidProof);
@@ -175,13 +179,38 @@ fn read_ccp1_request<S: Read>(
     let mut frame = Vec::with_capacity(CCP1_HEADER_BYTES + payload_len);
     frame.extend_from_slice(&header);
     frame.resize(CCP1_HEADER_BYTES + payload_len, 0);
-    stream
-        .read_exact(&mut frame[CCP1_HEADER_BYTES..])
-        .map_err(|error| map_read_error(error))?;
+    read_exact_before(stream, &mut frame[CCP1_HEADER_BYTES..], deadline)?;
     match PairingProofFrame::decode(&frame) {
         Ok(PairingProofFrame::Request(request)) => Ok(request),
         _ => Err(LoopbackPairingProofServerError::InvalidProof),
     }
+}
+
+fn read_exact_before(
+    stream: &mut StreamOwned<ServerConnection, TcpStream>,
+    mut buf: &mut [u8],
+    deadline: Instant,
+) -> Result<(), LoopbackPairingProofServerError> {
+    while !buf.is_empty() {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(LoopbackPairingProofServerError::Timeout);
+        }
+        stream
+            .sock
+            .set_read_timeout(Some(deadline - now))
+            .map_err(|error| LoopbackPairingProofServerError::Io(error.to_string()))?;
+        match stream.read(buf) {
+            Ok(0) => {
+                return Err(LoopbackPairingProofServerError::Io(
+                    "truncated proof".into(),
+                ))
+            }
+            Ok(read) => buf = &mut buf[read..],
+            Err(error) => return Err(map_read_error(error)),
+        }
+    }
+    Ok(())
 }
 
 fn validate_request(request: &PairingProofRequest) -> Result<(), LoopbackPairingProofServerError> {
