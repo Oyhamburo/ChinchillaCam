@@ -3,7 +3,7 @@ use std::{
     net::TcpStream,
     sync::Arc,
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use rustls::{
@@ -12,7 +12,8 @@ use rustls::{
 };
 use usb_probe::{
     DesktopTlsIdentity, LoopbackPairingProofServer, LoopbackPairingProofServerError,
-    PairingProofFrame, PairingProofRequest, PairingProofResponse,
+    PairingProofFrame, PairingProofRequest, PairingProofResponse, PairingQrIssuer,
+    PairingQrIssuerError,
 };
 
 #[test]
@@ -47,6 +48,43 @@ fn proof_reader_accepts_valid_request_without_ok_response() {
 
     let response = exchange(server, &cert, request_frame(&request));
     assert!(response.unwrap().is_empty());
+}
+
+#[test]
+fn proof_responder_returns_exact_ok_after_valid_request() {
+    let (server, cert, request) = proof_responder(now_seconds(), "desktop-01", vec![7; 32]);
+    let expected = PairingProofFrame::response(PairingProofResponse::ok(request.clone()))
+        .encode()
+        .unwrap();
+
+    assert_eq!(
+        exchange(server, &cert, request_frame(&request)).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn proof_responder_rejects_replay_expired_wrong_desktop_and_nonce_mismatch() {
+    let now = now_seconds();
+    let (server, cert, request) = proof_responder(now, "desktop-01", vec![7; 32]);
+    let issuer = exchange_return_issuer(server, &cert, request_frame(&request)).unwrap();
+    let replay_identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
+    let replay_cert = replay_identity.certificate_der().to_vec();
+    let replay_server = LoopbackPairingProofServer::bind_pairing_proof(
+        replay_identity,
+        Duration::from_millis(350),
+        issuer,
+    )
+    .unwrap();
+    assert!(exchange(replay_server, &replay_cert, request_frame(&request)).is_err());
+
+    for (server, cert, request) in [
+        proof_responder(now, "desktop-01", vec![9; 32]),
+        proof_responder(now - 61, "desktop-01", vec![7; 32]),
+        proof_responder(now, "wrong", vec![7; 32]),
+    ] {
+        assert!(exchange(server, &cert, request_frame(&request)).is_err());
+    }
 }
 
 #[test]
@@ -104,6 +142,37 @@ fn accept_one_times_out_without_client() {
     ));
 }
 
+fn proof_responder(
+    issued_at: u64,
+    desktop_id: &str,
+    request_nonce: Vec<u8>,
+) -> (
+    LoopbackPairingProofServer<TestRng>,
+    Vec<u8>,
+    PairingProofRequest,
+) {
+    let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
+    let cert = identity.certificate_der().to_vec();
+    let mut issuer = PairingQrIssuer::with_test_rng(
+        "desktop-01",
+        "Studio Desktop",
+        identity.clone(),
+        60,
+        TestRng(7),
+    )
+    .unwrap();
+    issuer.issue_at(issued_at).unwrap();
+    let request =
+        PairingProofRequest::new(desktop_id, request_nonce, vec![3; 32], "session-01").unwrap();
+    let server = LoopbackPairingProofServer::bind_pairing_proof(
+        identity,
+        Duration::from_millis(350),
+        issuer,
+    )
+    .unwrap();
+    (server, cert, request)
+}
+
 fn proof_reader() -> (LoopbackPairingProofServer, Vec<u8>) {
     let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
     let cert = identity.certificate_der().to_vec();
@@ -123,8 +192,24 @@ fn request_frame(request: &PairingProofRequest) -> Vec<u8> {
         .unwrap()
 }
 
-fn exchange(
-    server: LoopbackPairingProofServer,
+fn exchange_return_issuer(
+    server: LoopbackPairingProofServer<TestRng>,
+    cert: &[u8],
+    request: Vec<u8>,
+) -> Result<PairingQrIssuer<TestRng>, ()> {
+    let addr = server.local_addr();
+    let handle = thread::spawn(move || server.accept_one_returning_issuer());
+    let mut tls = tls_stream(addr, cert);
+    tls.write_all(&request)
+        .and_then(|_| tls.flush())
+        .map_err(|_| ())?;
+    let mut response = Vec::new();
+    let _ = tls.read_to_end(&mut response);
+    handle.join().unwrap().map_err(|_| ())?.ok_or(())
+}
+
+fn exchange<R: usb_probe::PairingQrNonceGenerator + Send + 'static>(
+    server: LoopbackPairingProofServer<R>,
     cert: &[u8],
     request: Vec<u8>,
 ) -> Result<Vec<u8>, ()> {
@@ -174,4 +259,21 @@ fn client_config(root_cert: &[u8]) -> ClientConfig {
     ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth()
+}
+
+fn now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+struct TestRng(u8);
+
+impl usb_probe::PairingQrNonceGenerator for TestRng {
+    fn fill_nonce(&mut self, nonce: &mut [u8; 32]) -> Result<(), PairingQrIssuerError> {
+        nonce.fill(self.0);
+        self.0 = self.0.wrapping_add(1);
+        Ok(())
+    }
 }

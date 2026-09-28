@@ -1,8 +1,8 @@
 use std::{
-    io::Read,
+    io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use rustls::{
@@ -10,7 +10,11 @@ use rustls::{
     ServerConfig, ServerConnection, StreamOwned,
 };
 
-use crate::{DesktopTlsIdentity, PairingProofEndpoint, PairingProofFrame, PairingProofRequest};
+use crate::{
+    DesktopTlsIdentity, OsPairingQrNonceGenerator, PairingProofEndpoint, PairingProofFrame,
+    PairingProofRequest, PairingProofResponse, PairingQrIssuer, PairingQrIssuerError,
+    PairingQrNonceGenerator,
+};
 
 const CCP1_HEADER_BYTES: usize = 10;
 const CCP1_MAX_PAYLOAD_BYTES: usize = 1024;
@@ -22,29 +26,41 @@ pub enum LoopbackPairingProofServerError {
     Io(String),
     Timeout,
     InvalidProof,
+    Issuer(PairingQrIssuerError),
 }
 
-pub struct LoopbackPairingProofServer {
+pub struct LoopbackPairingProofServer<R = OsPairingQrNonceGenerator> {
     listener: TcpListener,
     config: Arc<ServerConfig>,
     endpoint: PairingProofEndpoint,
     timeout: Duration,
     read_proof: bool,
+    issuer: Option<PairingQrIssuer<R>>,
 }
 
-impl LoopbackPairingProofServer {
+impl LoopbackPairingProofServer<OsPairingQrNonceGenerator> {
     pub fn bind(
         identity: DesktopTlsIdentity,
         timeout: Duration,
     ) -> Result<Self, LoopbackPairingProofServerError> {
-        bind_with_mode(identity, timeout, false)
+        bind_with_mode(identity, timeout, false, None)
     }
 
     pub fn bind_pairing_proof_reader(
         identity: DesktopTlsIdentity,
         timeout: Duration,
     ) -> Result<Self, LoopbackPairingProofServerError> {
-        bind_with_mode(identity, timeout, true)
+        bind_with_mode(identity, timeout, true, None)
+    }
+}
+
+impl<R: PairingQrNonceGenerator> LoopbackPairingProofServer<R> {
+    pub fn bind_pairing_proof(
+        identity: DesktopTlsIdentity,
+        timeout: Duration,
+        issuer: PairingQrIssuer<R>,
+    ) -> Result<Self, LoopbackPairingProofServerError> {
+        bind_with_mode(identity, timeout, true, Some(issuer))
     }
 
     pub fn endpoint(&self) -> &PairingProofEndpoint {
@@ -58,6 +74,12 @@ impl LoopbackPairingProofServer {
     }
 
     pub fn accept_one(self) -> Result<(), LoopbackPairingProofServerError> {
+        self.accept_one_returning_issuer().map(|_| ())
+    }
+
+    pub fn accept_one_returning_issuer(
+        mut self,
+    ) -> Result<Option<PairingQrIssuer<R>>, LoopbackPairingProofServerError> {
         let tcp = accept_with_deadline(&self.listener, self.timeout)?;
         tcp.set_nonblocking(false)
             .map_err(|error| LoopbackPairingProofServerError::Io(error.to_string()))?;
@@ -81,16 +103,20 @@ impl LoopbackPairingProofServer {
             let mut stream = StreamOwned::new(connection, tcp);
             let request = read_ccp1_request(&mut stream)?;
             validate_request(&request)?;
+            if let Some(issuer) = &mut self.issuer {
+                consume_and_respond(&mut stream, issuer, request)?;
+            }
         }
-        Ok(())
+        Ok(self.issuer)
     }
 }
 
-fn bind_with_mode(
+fn bind_with_mode<R: PairingQrNonceGenerator>(
     identity: DesktopTlsIdentity,
     timeout: Duration,
     read_proof: bool,
-) -> Result<LoopbackPairingProofServer, LoopbackPairingProofServerError> {
+    issuer: Option<PairingQrIssuer<R>>,
+) -> Result<LoopbackPairingProofServer<R>, LoopbackPairingProofServerError> {
     let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| LoopbackPairingProofServerError::Bind(error.to_string()))?;
@@ -107,7 +133,32 @@ fn bind_with_mode(
         endpoint,
         timeout,
         read_proof,
+        issuer,
     })
+}
+
+fn consume_and_respond<S: Read + Write, R: PairingQrNonceGenerator>(
+    stream: &mut S,
+    issuer: &mut PairingQrIssuer<R>,
+    request: PairingProofRequest,
+) -> Result<(), LoopbackPairingProofServerError> {
+    issuer
+        .consume_issued_nonce(
+            request.desktop_id(),
+            request.qr_nonce(),
+            current_epoch_seconds()?,
+        )
+        .map_err(LoopbackPairingProofServerError::Issuer)?;
+    let response = PairingProofFrame::response(PairingProofResponse::ok(request))
+        .encode()
+        .map_err(|_| LoopbackPairingProofServerError::InvalidProof)?;
+    stream
+        .write_all(&response)
+        .map_err(|error| LoopbackPairingProofServerError::Io(error.to_string()))?;
+    stream
+        .flush()
+        .map_err(|error| LoopbackPairingProofServerError::Io(error.to_string()))?;
+    Ok(())
 }
 
 fn read_ccp1_request<S: Read>(
@@ -159,6 +210,13 @@ fn map_read_error(error: std::io::Error) -> LoopbackPairingProofServerError {
     } else {
         LoopbackPairingProofServerError::Io(error.to_string())
     }
+}
+
+fn current_epoch_seconds() -> Result<u64, LoopbackPairingProofServerError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| LoopbackPairingProofServerError::InvalidProof)
 }
 
 fn accept_with_deadline(
