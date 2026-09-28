@@ -45,7 +45,9 @@ Evidencia e2b1: diff candidate 396 líneas por numstat y commit 393 inserciones/
 
 Nota de disciplina e2b1: decisión de usuario `accept_one_e2b1_tdd_exception`. No hubo RED histórico válido para el primer bloque de e2b1; el primer fallo enfocado fue de setup de prueba (pipe no conectado). No se reclama TDD estricto para ese bloque. Incidente de aislamiento: antes de la instrucción exacta `.kt.pending`, los borradores e2b2 se movieron inicialmente a `.tmp-e2b-quarantine/...`; luego se movieron a los nombres same-path `.kt.pending` autorizados, con SHA-256 preservado.
 
-Estado e2b2: en fase TEST-ONLY fresca con TDD estricto restaurado. Antes de tocar tests se verificaron los borradores restaurados: source `4cc08c5330d0179b60c417aab1e41ddb8462fdcbd0d573d90b4321724a2c34eb` y test `50d57bcc2bd4461642db9951ff4410171d83f6493901a417de5734cb8770422d`. Objetivo test-first: `CCP1` sobre el mismo canal TLS vivo, con rechazos fail-closed para estados/eco/challenge inválidos sin afirmar autenticación del teléfono.
+Estado e2b2: completado en `3433ac7 feat(android): verify USB TLS pairing proof`. Verifica `CCP1` dentro del mismo canal TLS vivo y devuelve `Verified(proof, channel)` sin cerrar el canal; cubre app-data post-prueba sobre la misma conexión. Rechaza fail-closed challenge inválido con close best-effort, status CCP1 nonzero y eco status0 incorrecto, sin afirmar autenticación del teléfono.
+
+Evidencia e2b2: RED test-only fresco con source SHA `4cc08c5330d0179b60c417aab1e41ddb8462fdcbd0d573d90b4321724a2c34eb`: `rejectsExpiredChallengeWhenUsbCloseThrowsIOException` falló porque IOException en close enmascaraba `Rejected`; status nonzero ya pasaba. GREEN enfocado `UsbTlsPairingProofVerifierTest` pasó, luego full `testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` pasó local e independiente. Verificador independiente confirmó 391 líneas <=400, live-channel status0, close best-effort, status nonzero, wrong echo y ausencia de UI/LAN/hardware/native ACK.
 
 ### [ ] e3 — Interoperabilidad socketless Rust ↔ JVM
 
