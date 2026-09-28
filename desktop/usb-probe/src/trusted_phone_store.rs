@@ -167,20 +167,40 @@ impl FileTrustedPhoneStore {
     /// of calling `trusted_identity` and `is_revoked` separately: two independent reads
     /// can straddle a concurrent `trust`/`revoke` and combine into an answer that never
     /// existed at any single instant.
+    ///
+    /// Considers ALL records matching `phone_id`, not just the first one: `trust`/`revoke`
+    /// never produce more than one record per phone_id, but a hand-edited or externally
+    /// written file could. If any matching record is revoked, the phone is `Revoked`
+    /// regardless of ordering -- a later revocation must never lose to an earlier
+    /// duplicate (native review finding R3-snapshot-first-match). Otherwise, if the
+    /// remaining (non-revoked) records disagree on the public key, the file is
+    /// inconsistent and this fails closed with an error rather than picking one arbitrarily.
     pub fn phone_trust_snapshot(
         &self,
         phone_id: &str,
     ) -> Result<PhoneTrustSnapshot, TrustedPhoneStoreError> {
         validate_lookup_id(phone_id)?;
-        let record = self
+        let matching: Vec<TrustedPhoneRecord> = self
             .load_records()?
             .into_iter()
-            .find(|record| record.identity.phone_id == phone_id);
-        Ok(match record {
-            None => PhoneTrustSnapshot::Unknown,
-            Some(record) if record.revoked => PhoneTrustSnapshot::Revoked,
-            Some(record) => PhoneTrustSnapshot::Trusted(record.identity.public_key),
-        })
+            .filter(|record| record.identity.phone_id == phone_id)
+            .collect();
+        let Some(first) = matching.first() else {
+            return Ok(PhoneTrustSnapshot::Unknown);
+        };
+        if matching.iter().any(|record| record.revoked) {
+            return Ok(PhoneTrustSnapshot::Revoked);
+        }
+        let first_key = &first.identity.public_key;
+        if matching
+            .iter()
+            .any(|record| &record.identity.public_key != first_key)
+        {
+            return Err(TrustedPhoneStoreError::CorruptStore(format!(
+                "trusted-phone store has multiple distinct public keys for phone_id {phone_id}"
+            )));
+        }
+        Ok(PhoneTrustSnapshot::Trusted(first_key.clone()))
     }
 
     fn load_records(&self) -> Result<Vec<TrustedPhoneRecord>, TrustedPhoneStoreError> {
@@ -214,8 +234,10 @@ impl FileTrustedPhoneStore {
             text.push('\n');
         }
         let tmp_path = self.unique_temp_path();
+        let tmp_guard = TempFileGuard::new(tmp_path.clone());
         fs::write(&tmp_path, text)?;
-        fs::rename(tmp_path, &self.path)?;
+        fs::rename(&tmp_path, &self.path)?;
+        tmp_guard.disarm();
         Ok(())
     }
 
@@ -278,6 +300,35 @@ struct StorePathLock {
 impl Drop for StorePathLock {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Removes its temp file on drop unless `disarm`ed, so a failed or interrupted
+/// `save_records` (a partial write, or an error before the final rename) does not leave
+/// a stray `.tmp` file behind (native review suggestion R3-temp-file-leak-on-panic).
+struct TempFileGuard {
+    path: PathBuf,
+    disarmed: bool,
+}
+
+impl TempFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            disarmed: false,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if !self.disarmed {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 

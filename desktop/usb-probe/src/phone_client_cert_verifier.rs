@@ -200,7 +200,7 @@ impl ClientCertVerifier for PhoneClientCertVerifier {
                 let phone_id = phone_id_for_spki(&spki);
                 let status = lookup
                     .phone_status(&phone_id)
-                    .map_err(|_| RustlsError::General("trusted phone lookup failed".to_string()))?;
+                    .map_err(|error| RustlsError::General(error.to_string()))?;
                 match status {
                     TrustedPhoneStatus::Trusted { public_key } if public_key == spki => {
                         Ok(ClientCertVerified::assertion())

@@ -69,6 +69,42 @@ Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --chec
    - **Líneas cambiadas** (sin `Cargo.lock`): 455 — Cargo.toml +1, `lib.rs` +5, `trusted_phone_store.rs` +31, `phone_client_cert_verifier.rs` +240 (nuevo), `phone_client_cert_verifier_test.rs` +178 (nuevo). Supera la estimación (~350) y la heurística de ~400: el trait `ClientCertVerifier` de rustls exige 7 métodos más un trait de lookup propio (con su tipo de error y dos implementaciones: `FileTrustedPhoneStore` real y fakes de test), y la matriz RED pedida cubre ambas políticas y el puente con el store en disco. No se recortaron pruebas, comentarios ni el doc de "por qué se ignoran intermediates/fechas/emisor" para entrar en la heurística.
    - **Cambio adicional no listado explícitamente pero necesario**: se agregó `FileTrustedPhoneStore::phone_trust_snapshot` (una sola lectura bajo un único `load_records()`) porque combinar `trusted_identity` + `is_revoked` en dos llamadas separadas corre una carrera revoke-vs-lectura entre un `trust`/`revoke` concurrente y las dos lecturas independientes.
    - Commit: `feat(desktop): verify phone TLS client certificates`.
+
+   ### Revisión nativa m1
+
+   Lineage `review-162caf1bf8856ada`, 1 lente (reliability). Resultado: **aprobada**, sin corrección, acknowledgement con autoridad `burned`. Hallazgos no bloqueantes y su disposición:
+
+   - WARNING `R3-untested-key-mismatch` — el guard `TrustedOnly` de igualdad exacta `public_key == SPKI` no tenía test directo. Atendido en m1b (`trusted_only_rejects_trusted_phone_with_different_public_key`, characterization).
+   - WARNING `R3-snapshot-first-match` — `load_records` no rechaza registros duplicados con el mismo `phone_id`, y `phone_trust_snapshot` usaba `find()` (primer match), por lo que un duplicado no revocado anterior podía ganarle a uno revocado posterior (fail open ante un archivo inconsistente). Atendido en m1b (fix + RED/GREEN).
+   - SUGGESTION `R3-weak-error-assertions` — los tests de rechazo no-P256 y de fallo de lookup sólo afirmaban `is_err()`. Atendido en m1b (assertions fortalecidas a `BadEncoding` y `General(_)`).
+   - SUGGESTION `R3-lookup-error-discarded` — el mensaje `General` del error de lookup descartaba el texto del error subyacente. Atendido en m1b (`error.to_string()`).
+   - SUGGESTION `R3-temp-file-leak-on-panic` — `save_records` podía dejar un `.tmp` huérfano si fallaba entre el `write` y el `rename`. Atendido en m1b (`TempFileGuard`, drop guard).
+
+   Las 5 advertencias quedan resueltas por el commit m1b (ninguna requirió cambios fuera de su alcance).
+
+   ### Evidencia m1b
+
+   - **RED observado** (`trusted_only_rejects_revoked_phone_despite_earlier_duplicate_trusted_record`; store con dos registros para el mismo `phone_id` -- primero `trusted` con la SPKI real, segundo `revoked` con otra clave -- escrito directamente en el formato real en disco, sin pasar por `trust`/`revoke`):
+
+     ```
+     thread 'trusted_only_rejects_revoked_phone_despite_earlier_duplicate_trusted_record' panicked at tests/phone_client_cert_verifier_test.rs:144:5:
+     expected Err(InvalidCertificate(Revoked)), got Ok(ClientCertVerified(()))
+     ```
+
+     En el mismo run, RED observado también en `trusted_only_rejects_when_lookup_fails` tras fortalecer su assertion (el mensaje `General` no incluía el texto del error de lookup):
+
+     ```
+     thread 'trusted_only_rejects_when_lookup_fails' panicked at tests/phone_client_cert_verifier_test.rs:115:13:
+     expected the lookup error's Display text in the General message, got "trusted phone lookup failed"
+     ```
+
+   - **GREEN**: `phone_trust_snapshot` ahora considera TODOS los registros que matchean `phone_id` (antes sólo el primero vía `find()`): si alguno está revocado devuelve `Revoked` sin importar el orden; si ninguno está revocado pero difieren en `public_key`, devuelve `TrustedPhoneStoreError::CorruptStore` (fail closed, no elige uno arbitrariamente); si no, `Trusted`/`Unknown` como antes -- `trust`/`revoke`/`is_revoked`/`trusted_identity` no cambiaron. El error de lookup en `PhoneClientCertVerifier::verify_client_cert` ahora usa `error.to_string()` (el `Display` de `TrustedPhoneLookupError` ya antepone "trusted phone lookup failed: ", sin duplicarlo). `save_records` usa un `TempFileGuard` (drop guard) que borra el `.tmp` si falla entre el `write` y el `rename`.
+   - Test agregado `trusted_only_rejects_trusted_phone_with_different_public_key`: characterization, pasó sin necesitar el fix (el guard de igualdad de clave ya existía desde m1); documentado así en el propio test en vez de inventar un RED que no existe.
+   - **GREEN focused**: `cargo test --test phone_client_cert_verifier_test` → `test result: ok. 9 passed; 0 failed` (7 previas + 2 nuevas). `cargo test --test trusted_phone_store_test` → `test result: ok. 7 passed; 0 failed` (sin cambios; confirma que el drop guard no rompe el camino feliz de `save_records`).
+   - `cargo fmt -- --check`: sin diffs (tras `cargo fmt` sobre `tests/phone_client_cert_verifier_test.rs`).
+   - **Full**: `cargo test` → 183 tests en total (181 + 2 nuevos), 0 fallos.
+   - **Líneas cambiadas**: 174 -- `trusted_phone_store.rs` +59/-8, `phone_client_cert_verifier.rs` +1/-1, `phone_client_cert_verifier_test.rs` +98/-7. Dentro de la heurística de ~400.
+   - Commit: `fix(desktop): fail closed on duplicate phone trust records`.
 2. [ ] m2 — Client auth obligatorio en `usb_tls_pairing_proof`: `with_client_cert_verifier` con política `Pairing` en lugar de `.with_no_client_auth()`; `complete_handshake_and_pairing_proof` devuelve el stream vivo y el candidato `{phone_id, spki}` leído con `peer_certificates()`; el helper stdio se adapta al nuevo tipo de retorno y, al terminar, reporta `phone_id=<hex>` por stderr. RED: `pairing_proof_returns_client_spki_with_live_stream`, `pairing_handshake_rejects_client_without_certificate`. Estimado ~300 líneas.
 3. [ ] m3 — Handshake de reconexión confiable sin QR: API nueva que acepta sólo teléfonos confiables. RED: `trusted_handshake_accepts_trusted_phone_without_qr`, `trusted_handshake_rejects_unknown_phone`, `trusted_handshake_rejects_revoked_phone`. Estimado ~250 líneas.
 4. [ ] m4 — Confirmación explícita: el candidato de pairing no se persiste solo; `confirm(label, store)` persiste `TrustedPhoneIdentity`. RED: `pairing_candidate_is_not_persisted_without_confirmation`, `confirm_persists_trusted_phone_identity`. Estimado ~150 líneas.

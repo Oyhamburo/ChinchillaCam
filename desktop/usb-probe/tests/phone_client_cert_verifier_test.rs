@@ -32,12 +32,18 @@ fn rejects_non_p256_client_certificate() {
     let pairing = PhoneClientCertVerifier::pairing();
     let trusted_only = PhoneClientCertVerifier::trusted_only(Arc::new(EmptyTrustedPhoneLookup));
 
-    assert!(pairing
-        .verify_client_cert(&cert_der, &[], UnixTime::now())
-        .is_err());
-    assert!(trusted_only
-        .verify_client_cert(&cert_der, &[], UnixTime::now())
-        .is_err());
+    assert!(matches!(
+        pairing.verify_client_cert(&cert_der, &[], UnixTime::now()),
+        Err(RustlsError::InvalidCertificate(
+            CertificateError::BadEncoding
+        ))
+    ));
+    assert!(matches!(
+        trusted_only.verify_client_cert(&cert_der, &[], UnixTime::now()),
+        Err(RustlsError::InvalidCertificate(
+            CertificateError::BadEncoding
+        ))
+    ));
 }
 
 #[test]
@@ -108,7 +114,69 @@ fn trusted_only_rejects_when_lookup_fails() {
 
     let result = verifier.verify_client_cert(&cert_der, &[], UnixTime::now());
 
-    assert!(result.is_err());
+    match result {
+        Err(RustlsError::General(message)) => {
+            assert!(
+                message.contains("simulated lookup failure"),
+                "expected the lookup error's Display text in the General message, got {message:?}"
+            );
+        }
+        other => panic!("expected Err(General(_)) with the lookup error text, got {other:?}"),
+    }
+}
+
+#[test]
+fn trusted_only_rejects_revoked_phone_despite_earlier_duplicate_trusted_record() {
+    // Native review finding R3-snapshot-first-match: `load_records` does not reject
+    // duplicate phone_id records, and `phone_trust_snapshot` used to pick the FIRST
+    // matching record via `find()`. A store file with two records sharing the same
+    // phone_id -- inconsistent state the store's own `trust`/`revoke` API can never
+    // produce, but a hand-edited or externally written file could -- let an earlier
+    // non-revoked duplicate win over a later revocation, fail-opening a revoked phone.
+    let identity = DesktopTlsIdentity::generate_ephemeral("Duplicate Record Phone").unwrap();
+    let cert_der = CertificateDer::from(identity.certificate_der().to_vec());
+    let spki = identity.spki_der_p256().to_vec();
+    let phone_id = phone_id_for_spki(&spki);
+
+    let path = unique_store_path("duplicate-revoked");
+    write_duplicate_phone_id_store(&path, &phone_id, &hex_lower(&spki));
+
+    let store = FileTrustedPhoneStore::new(&path);
+    let verifier = PhoneClientCertVerifier::trusted_only(Arc::new(store));
+    let result = verifier.verify_client_cert(&cert_der, &[], UnixTime::now());
+
+    assert!(
+        matches!(
+            result,
+            Err(RustlsError::InvalidCertificate(CertificateError::Revoked))
+        ),
+        "expected Err(InvalidCertificate(Revoked)), got {result:?}"
+    );
+    cleanup(path);
+}
+
+#[test]
+fn trusted_only_rejects_trusted_phone_with_different_public_key() {
+    // Characterization test: `verify_client_cert` already rejects a `Trusted` status whose
+    // stored public key does not match the presented certificate's SPKI (the `if public_key
+    // == spki` guard). This passed before this commit with no direct test covering it
+    // (native review finding R3-untested-key-mismatch); added here to lock in the behavior.
+    let identity = DesktopTlsIdentity::generate_ephemeral("Mismatched Key Phone").unwrap();
+    let other_identity = DesktopTlsIdentity::generate_ephemeral("Other Phone").unwrap();
+    let cert_der = CertificateDer::from(identity.certificate_der().to_vec());
+    let other_spki = other_identity.spki_der_p256().to_vec();
+    let verifier = PhoneClientCertVerifier::trusted_only(Arc::new(
+        MismatchedKeyTrustedPhoneLookup(other_spki),
+    ));
+
+    let result = verifier.verify_client_cert(&cert_der, &[], UnixTime::now());
+
+    assert!(matches!(
+        result,
+        Err(RustlsError::InvalidCertificate(
+            CertificateError::UnknownIssuer
+        ))
+    ));
 }
 
 #[test]
@@ -141,6 +209,29 @@ impl TrustedPhoneLookup for FailingTrustedPhoneLookup {
     fn phone_status(&self, _phone_id: &str) -> Result<TrustedPhoneStatus, TrustedPhoneLookupError> {
         Err(TrustedPhoneLookupError::new("simulated lookup failure"))
     }
+}
+
+#[derive(Debug)]
+struct MismatchedKeyTrustedPhoneLookup(Vec<u8>);
+
+impl TrustedPhoneLookup for MismatchedKeyTrustedPhoneLookup {
+    fn phone_status(&self, _phone_id: &str) -> Result<TrustedPhoneStatus, TrustedPhoneLookupError> {
+        Ok(TrustedPhoneStatus::Trusted {
+            public_key: self.0.clone(),
+        })
+    }
+}
+
+/// Writes a trusted-phone store file directly in its real on-disk format (see
+/// `trusted_phone_store.rs`: a `CHINCHILLACAM_TRUSTED_PHONES_V1` header line followed by
+/// tab-separated `state\tphone_id\tlabel\thex(public_key)` records), bypassing the store's
+/// own `trust`/`revoke` API so two records can share the same `phone_id` -- state that API
+/// can never produce, used here to exercise the store's handling of an inconsistent file.
+fn write_duplicate_phone_id_store(path: &std::path::Path, phone_id: &str, trusted_hex_key: &str) {
+    let contents = format!(
+        "CHINCHILLACAM_TRUSTED_PHONES_V1\ntrusted\t{phone_id}\tOriginal\t{trusted_hex_key}\nrevoked\t{phone_id}\tRotated\tdeadbeef\n"
+    );
+    std::fs::write(path, contents).unwrap();
 }
 
 fn generate_p384_certificate_der() -> Vec<u8> {
