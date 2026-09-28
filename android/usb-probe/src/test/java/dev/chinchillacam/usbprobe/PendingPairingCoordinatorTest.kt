@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Base64
 
 class PendingPairingCoordinatorTest {
     @Test
@@ -124,6 +125,30 @@ class PendingPairingCoordinatorTest {
         assertEquals(PendingPairingStartResult.Rejected.InvalidQr("trustMaterial"), coordinator().start(qr().copy(trustMaterial = byteArrayOf()), byteArrayOf(1)))
     }
 
+    @Test
+    fun invalidTrustMaterialIsRejectedBeforeChallengeProofOrPersistenceAndDoesNotConsumeNonce() {
+        val challenges = RecordingChallengeSource(PairingChallengeMaterial(byteArrayOf(0x10), "session-1", expiresAtEpochSeconds = 200))
+        val verifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge) }
+        val coordinator = PendingPairingCoordinator(
+            epochSecondsSource = EpochSecondsSource { 100 },
+            challengeNonceSource = challenges,
+            proofVerifier = verifier,
+        )
+        val invalidQr = qr(nonce = byteArrayOf(0x41)).copy(trustMaterial = byteArrayOf(0x01, 0x02, 0x03))
+        val store = RecordingTrustedDesktopStore()
+
+        assertEquals(PendingPairingStartResult.Rejected.InvalidQr("trustMaterial"), coordinator.start(invalidQr, byteArrayOf(1)))
+        assertEquals(0, challenges.requests)
+        assertEquals(emptyList<ByteArray>(), verifier.proofs)
+        assertEquals(PendingPairingState.Idle, coordinator.state())
+        assertEquals(PendingPairingConfirmResult.Rejected.NoPendingPairing, coordinator.confirm("invalid", store, ActiveDesktopAuthority()))
+        assertEquals(emptyList<TrustedDesktopRecord>(), store.saved)
+
+        assertTrue(coordinator.start(qr(nonce = byteArrayOf(0x41)), byteArrayOf(1)) is PendingPairingStartResult.PendingConfirmation)
+        assertEquals(1, challenges.requests)
+        assertEquals(1, verifier.proofs.size)
+    }
+
 
     @Test
     fun snapshotsMutableQrBytesBeforeVerifierCallback() {
@@ -139,7 +164,7 @@ class PendingPairingCoordinatorTest {
         val result = coordinator.start(qr, byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
 
         assertArrayEquals(byteArrayOf(0x21), result.summary.qrNonce)
-        assertEquals(PairingTrustFingerprint.fromTrustMaterial(byteArrayOf(0x05, 0x06)), result.summary.trustMaterialFingerprint)
+        assertEquals(PairingTrustFingerprint.fromTrustMaterial(P256_SPKI), result.summary.trustMaterialFingerprint)
         coordinator.cancel()
         assertEquals(PendingPairingStartResult.Rejected.NonceReplay, coordinator.start(qr(nonce = byteArrayOf(0x21), expiresAt = 200), byteArrayOf(1)))
     }
@@ -180,7 +205,7 @@ class PendingPairingCoordinatorTest {
         assertEquals(PendingPairingConfirmResult.Activated("pc-1"), coordinator.confirm(pending.summary.pendingId, store, authority))
         clock.now = 200
 
-        assertEquals(TrustedDesktopAuthResult.Trusted, store.evaluate("pc-1", PairingTrustFingerprint.fromTrustMaterial(byteArrayOf(0x05, 0x06)).bytes, nowEpochSeconds = 200))
+        assertEquals(TrustedDesktopAuthResult.Trusted, store.evaluate("pc-1", PairingTrustFingerprint.fromTrustMaterial(P256_SPKI).bytes, nowEpochSeconds = 200))
         assertEquals(null, store.lookup("pc-1")?.expiresAtEpochSeconds)
     }
 
@@ -308,7 +333,7 @@ class PendingPairingCoordinatorTest {
     ) = PairingQrPayload(
         desktopId = "pc-1",
         desktopName = "Studio",
-        trustMaterial = byteArrayOf(0x05, 0x06),
+        trustMaterial = P256_SPKI.copyOf(),
         expiresAtEpochSeconds = expiresAt,
         nonce = nonce,
     )
@@ -316,7 +341,7 @@ class PendingPairingCoordinatorTest {
 
     private fun trustedRecord(
         desktopId: String = "pc-1",
-        fingerprint: ByteArray = PairingTrustFingerprint.fromTrustMaterial(byteArrayOf(0x05, 0x06)).bytes,
+        fingerprint: ByteArray = PairingTrustFingerprint.fromTrustMaterial(P256_SPKI).bytes,
         revokedAt: Long? = null,
     ) = TrustedDesktopRecord(
         desktopId = desktopId,
@@ -378,12 +403,24 @@ class PendingPairingCoordinatorTest {
         override fun nextChallenge(): PairingChallengeMaterial = challenge
     }
 
+    private class RecordingChallengeSource(
+        private val challenge: PairingChallengeMaterial,
+    ) : ChallengeNonceSource {
+        var requests = 0
+        override fun nextChallenge(): PairingChallengeMaterial {
+            requests += 1
+            return challenge
+        }
+    }
+
     private class CountingChallengeSource : ChallengeNonceSource {
         private var next = 0
         override fun nextChallenge(): PairingChallengeMaterial = PairingChallengeMaterial(byteArrayOf((next++).toByte()), "session-$next", 200)
     }
 
     private companion object {
+        val P256_SPKI: ByteArray = Base64.getDecoder().decode("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXZIEL3sbIUaOZyNTWLYtwIWBMp4UFPNgWrsZ/B+zNnzGOg4MgU1DNcrJLKyExFcEw9epY26aNitmckuetSi1BQ==")
+
         fun verifiedFrom(challenge: PairingProofChallenge) = PairingProofVerificationResult.Verified(
             desktopId = challenge.desktopId,
             trustMaterialFingerprint = challenge.trustMaterialFingerprint,

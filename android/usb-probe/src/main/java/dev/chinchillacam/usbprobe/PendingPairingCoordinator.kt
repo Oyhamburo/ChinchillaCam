@@ -127,9 +127,12 @@ class PendingPairingCoordinator(
         pruneExpiredNonces(now)
         if (pending != null) return PendingPairingStartResult.Rejected.AlreadyPending
         validateQrPayload(qrPayload)?.let { return it }
+        val trustMaterial = DesktopTlsIdentityMaterial.validate(qrPayload.trustMaterial.copyOf()).getOrElse {
+            return PendingPairingStartResult.Rejected.InvalidQr("trustMaterial")
+        }
         if (qrPayload.expiresAtEpochSeconds <= now) return PendingPairingStartResult.Rejected.Expired("qr")
         val qrNonce = qrPayload.nonce.copyOf()
-        val fingerprint = PairingTrustFingerprint.fromTrustMaterial(qrPayload.trustMaterial.copyOf())
+        val fingerprint = trustMaterial.fingerprint
         val nonceKey = nonceKey(qrNonce)
         if (liveNonceExpiries.containsKey(nonceKey)) return PendingPairingStartResult.Rejected.NonceReplay
         if (liveNonceExpiries.size >= maxLiveNonces) return PendingPairingStartResult.Rejected.NonceCacheFull
