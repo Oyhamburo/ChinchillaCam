@@ -47,6 +47,22 @@ impl PairingProofRequest {
         Ok(request)
     }
 
+    pub fn desktop_id(&self) -> &str {
+        &self.desktop_id
+    }
+
+    pub fn qr_nonce(&self) -> &[u8] {
+        &self.qr_nonce
+    }
+
+    pub fn challenge_nonce(&self) -> &[u8] {
+        &self.challenge_nonce
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     fn validate(&self) -> Result<(), PairingProofProtocolError> {
         if self.desktop_id.is_empty()
             || self.session_id.is_empty()

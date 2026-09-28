@@ -1,4 +1,5 @@
 use std::{
+    io::Read,
     net::{SocketAddr, TcpListener, TcpStream},
     sync::Arc,
     time::{Duration, Instant},
@@ -6,10 +7,13 @@ use std::{
 
 use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-    ServerConfig, ServerConnection,
+    ServerConfig, ServerConnection, StreamOwned,
 };
 
-use crate::{DesktopTlsIdentity, PairingProofEndpoint};
+use crate::{DesktopTlsIdentity, PairingProofEndpoint, PairingProofFrame, PairingProofRequest};
+
+const CCP1_HEADER_BYTES: usize = 10;
+const CCP1_MAX_PAYLOAD_BYTES: usize = 1024;
 
 #[derive(Debug)]
 pub enum LoopbackPairingProofServerError {
@@ -17,6 +21,7 @@ pub enum LoopbackPairingProofServerError {
     Tls(String),
     Io(String),
     Timeout,
+    InvalidProof,
 }
 
 pub struct LoopbackPairingProofServer {
@@ -24,6 +29,7 @@ pub struct LoopbackPairingProofServer {
     config: Arc<ServerConfig>,
     endpoint: PairingProofEndpoint,
     timeout: Duration,
+    read_proof: bool,
 }
 
 impl LoopbackPairingProofServer {
@@ -31,22 +37,14 @@ impl LoopbackPairingProofServer {
         identity: DesktopTlsIdentity,
         timeout: Duration,
     ) -> Result<Self, LoopbackPairingProofServerError> {
-        let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
-        let listener = TcpListener::bind(("127.0.0.1", 0))
-            .map_err(|error| LoopbackPairingProofServerError::Bind(error.to_string()))?;
-        let port = listener
-            .local_addr()
-            .map_err(|error| LoopbackPairingProofServerError::Io(error.to_string()))?
-            .port();
-        let endpoint = PairingProofEndpoint::loopback(port, timeout_ms)
-            .map_err(|error| LoopbackPairingProofServerError::Bind(format!("{error:?}")))?;
-        let config = server_config(&identity)?;
-        Ok(Self {
-            listener,
-            config,
-            endpoint,
-            timeout,
-        })
+        bind_with_mode(identity, timeout, false)
+    }
+
+    pub fn bind_pairing_proof_reader(
+        identity: DesktopTlsIdentity,
+        timeout: Duration,
+    ) -> Result<Self, LoopbackPairingProofServerError> {
+        bind_with_mode(identity, timeout, true)
     }
 
     pub fn endpoint(&self) -> &PairingProofEndpoint {
@@ -79,7 +77,87 @@ impl LoopbackPairingProofServer {
                 .complete_io(&mut tcp)
                 .map_err(|error| LoopbackPairingProofServerError::Io(error.to_string()))?;
         }
+        if self.read_proof {
+            let mut stream = StreamOwned::new(connection, tcp);
+            let request = read_ccp1_request(&mut stream)?;
+            validate_request(&request)?;
+        }
         Ok(())
+    }
+}
+
+fn bind_with_mode(
+    identity: DesktopTlsIdentity,
+    timeout: Duration,
+    read_proof: bool,
+) -> Result<LoopbackPairingProofServer, LoopbackPairingProofServerError> {
+    let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| LoopbackPairingProofServerError::Bind(error.to_string()))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| LoopbackPairingProofServerError::Io(error.to_string()))?
+        .port();
+    let endpoint = PairingProofEndpoint::loopback(port, timeout_ms)
+        .map_err(|error| LoopbackPairingProofServerError::Bind(format!("{error:?}")))?;
+    let config = server_config(&identity)?;
+    Ok(LoopbackPairingProofServer {
+        listener,
+        config,
+        endpoint,
+        timeout,
+        read_proof,
+    })
+}
+
+fn read_ccp1_request<S: Read>(
+    stream: &mut S,
+) -> Result<PairingProofRequest, LoopbackPairingProofServerError> {
+    let mut header = [0; CCP1_HEADER_BYTES];
+    stream
+        .read_exact(&mut header)
+        .map_err(|error| map_read_error(error))?;
+    let payload_len = u32::from_be_bytes(header[6..10].try_into().unwrap()) as usize;
+    if payload_len > CCP1_MAX_PAYLOAD_BYTES {
+        return Err(LoopbackPairingProofServerError::InvalidProof);
+    }
+    let mut frame = Vec::with_capacity(CCP1_HEADER_BYTES + payload_len);
+    frame.extend_from_slice(&header);
+    frame.resize(CCP1_HEADER_BYTES + payload_len, 0);
+    stream
+        .read_exact(&mut frame[CCP1_HEADER_BYTES..])
+        .map_err(|error| map_read_error(error))?;
+    match PairingProofFrame::decode(&frame) {
+        Ok(PairingProofFrame::Request(request)) => Ok(request),
+        _ => Err(LoopbackPairingProofServerError::InvalidProof),
+    }
+}
+
+fn validate_request(request: &PairingProofRequest) -> Result<(), LoopbackPairingProofServerError> {
+    if !(32..=64).contains(&request.challenge_nonce().len())
+        || !valid_token(request.session_id())
+        || !valid_token(request.desktop_id())
+    {
+        return Err(LoopbackPairingProofServerError::InvalidProof);
+    }
+    Ok(())
+}
+
+fn valid_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn map_read_error(error: std::io::Error) -> LoopbackPairingProofServerError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ) {
+        LoopbackPairingProofServerError::Timeout
+    } else {
+        LoopbackPairingProofServerError::Io(error.to_string())
     }
 }
 
