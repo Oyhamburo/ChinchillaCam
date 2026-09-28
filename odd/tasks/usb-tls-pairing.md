@@ -39,6 +39,10 @@ Estado e2a2: en progreso para pruebas fail-closed de deadline absoluto, read/wri
 
 Evidencia e2a2 (2026-09-28): se agregaron pruebas fail-closed para deadline de lectura bloqueada, error de escritura USB y límite de pasos. Desviación TDD: el RED no se capturó por separado antes de los cambios; no se reclama TDD estricto para e2a2. GREEN enfocado y full `testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` pasaron. El cambio no modifica producción porque los tests pasaron sobre `fb4ada9`; se evitó editar source sin necesidad.
 
+Estado e2b1: en progreso para hardening del API app-data del canal TLS vivo. Los borradores e2b2 quedan renombrados temporalmente como `.kt.pending` con SHA-256 preservado para aislar el candidato exacto e2b1; no deben editarse. e2b1 debe cubrir deadline absoluto, `NEED_WRAP`, límite `maxBytes <= 64KiB` y cierre fail-closed, sin `CCP1`, pairing confirmation, UI, LAN ni hardware.
+
+Nota de disciplina e2b1: decisión de usuario `accept_one_e2b1_tdd_exception`. No hubo RED válido de comportamiento; el primer fallo enfocado fue de setup de prueba (pipe no conectado). No se reclama TDD estricto para e2b1. Incidente de aislamiento: antes de la instrucción exacta `.kt.pending`, los borradores e2b2 se movieron inicialmente a `.tmp-e2b-quarantine/...`; luego se movieron a los nombres same-path `.kt.pending` autorizados, con SHA-256 preservado. `.tmp-e2b-quarantine` debe permanecer vacío y sin limpieza no autorizada.
+
 ### [ ] e3 — Interoperabilidad socketless Rust ↔ JVM
 
 Con autorización fresca cross-worktree, probar rustls `ServerConnection` y JSSE `SSLEngine` sobre el envelope USB acotado, sin TCP, LAN, ADB ni dispositivo físico.
