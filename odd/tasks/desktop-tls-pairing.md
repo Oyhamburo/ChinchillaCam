@@ -38,6 +38,12 @@ Implementar el camino real de escritorio para emparejamiento local sin abrir un 
 - Validar que la SPKI del certificado coincide con la SPKI del QR.
 - Intercambiar challenge/response para demostrar posesión.
 
+## Estado M3d1 — identidad efímera
+
+Este corte solo genera una identidad TLS efímera con clave P-256 usando CSPRNG del sistema vía `rcgen`/`ring`, certificado self-signed DER y SPKI DER exacta para `trustMaterial` del QR. No persiste claves todavía y no declara readiness de emparejamiento persistente.
+
+La persistencia segura queda para M3d2: directorio/archivo restrictivos en macOS/Unix, rechazo de symlink/corrupción/estado parcial y gate explícito de Windows sin claim de soporte.
+
 ## Evidencia esperada
 
 - `cargo fmt --check`

@@ -1,4 +1,5 @@
 mod desktop_receiver;
+mod desktop_tls_identity;
 mod encoded_video_sink;
 mod h264_access_unit;
 mod h264_config;
@@ -12,6 +13,7 @@ pub use desktop_receiver::{
     receive_desktop_video_frame, DesktopReceiverError, DesktopVideoSessionReceiver,
     StaticFrameKindClassifier, VideoFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
 };
+pub use desktop_tls_identity::{DesktopTlsIdentity, DesktopTlsIdentityError};
 pub use encoded_video_sink::{
     BoundedEncodedVideoQueue, EncodedVideoChunk, EncodedVideoChunkLimits, EncodedVideoFrameKind,
     EncodedVideoSink, EncodedVideoSinkError, PresentationTimestamp,
