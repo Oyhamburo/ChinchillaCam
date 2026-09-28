@@ -44,6 +44,15 @@ Este corte solo genera una identidad TLS efímera con clave P-256 usando CSPRNG 
 
 La persistencia segura queda para M3d2: directorio/archivo restrictivos en macOS/Unix, rechazo de symlink/corrupción/estado parcial y gate explícito de Windows sin claim de soporte.
 
+## Estado M3d3 — protocolo CCP1
+
+El wire CCPB/CCP1 queda congelado con Android antes de implementar TLS: este corte solo agrega codec binario CCP1 para request/response de prueba de posesión. No abre listener, no usa rustls todavía y no inventa otro protocolo.
+
+- Frame: magic `CCP1` (`43435031`), versión `1`, tipo request `1` o response `2`, `payloadLen` u32 BE `<=1024`.
+- TLVs canónicos ascendentes. Request: `0x01 desktopId`, `0x02 qrNonce`, `0x03 challengeNonce`, `0x04 sessionId`.
+- Response: `0x00 status` de un byte primero, luego eco exacto `0x01..0x04`.
+- Goldens acordados: request `4343503101010000001f01000470632d3102000201020300041011121304000973657373696f6e2d31`; response `434350310102000000230000010001000470632d3102000201020300041011121304000973657373696f6e2d31`.
+
 ## Evidencia esperada
 
 - `cargo fmt --check`
