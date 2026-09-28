@@ -8,7 +8,7 @@ Llevar los bytes TLS de rustls sobre el transporte USB AOA existente sin abrir L
 
 1. [x] M3e1: implementar un adaptador `Read`/`Write` acotado para ciphertext TLS sobre `FramedUsbStream`, usando `stream_id` `0x01020305`, chunks no vacíos de hasta 32768 bytes y buffer pendiente máximo de 65536 bytes.
 2. [x] M3e2: ejecutar CCP1 proof dentro de rustls sobre el stream USB en memoria, sin listener TCP ni fake proof-of-possession. M3e2c devuelve el stream TLS vivo después de status0 y refuerza deadline absoluto post-read/post-write.
-3. [ ] M3e3: preparar prueba cross-language in-memory con Android, pendiente de autoridad fresca del usuario.
+3. [~] M3e3: preparar prueba cross-language in-memory con Android. Slice desktop helper stdio agregado para exponer QR y luego transportar TLS-over-AOA por stdin/stdout sin TCP/LAN/hardware; falta integración Android cross-language.
 
 ## Restricciones
 
@@ -24,6 +24,13 @@ Llevar los bytes TLS de rustls sobre el transporte USB AOA existente sin abrir L
 - Formato y suite completa: `cargo fmt -- --check && cargo test` PASS.
 - Verificación independiente: PASS; confirmó stream id `0x01020305`, chunks no vacíos `<=32768`, pending read `<=65536`, lectura corta sin bloqueo, poison fail-closed para read/write/flush, sin `Clone`, sin API de extracción, sin TCP/LAN/hardware.
 - Tamaño: 351 inserciones, dentro del límite de 400 líneas cambiadas.
+
+## Evidencia M3e3
+
+- RED: `cd desktop/usb-probe && ~/.cargo/bin/cargo test --test usb_pairing_proof_stdio_helper_test` falló con `CARGO_BIN_EXE_usb_pairing_proof_stdio_helper` no definido porque el binario aún no existía, exit code 101.
+- GREEN: `cd desktop/usb-probe && ~/.cargo/bin/cargo test --test usb_pairing_proof_stdio_helper_test` PASS, 1 test.
+- Alcance: helper stdio emite `CHINCHILLACAM-USB-INTEROP:v1`, `qr=CHINCHILLACAM-PAIR:v1:...`, flush antes de modo binario, y conecta `UsbTlsPairingProofServer::complete_handshake_and_pairing_proof` sobre `UsbTlsCiphertextStream<StdioUsbBulkIo>`/`FramedUsbStream` sin TCP/LAN/hardware ni persistencia de confianza.
+- Commit: pendiente.
 
 ## Evidencia M3e2
 
