@@ -13,7 +13,9 @@ pub use desktop_receiver::{
     receive_desktop_video_frame, DesktopReceiverError, DesktopVideoSessionReceiver,
     StaticFrameKindClassifier, VideoFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
 };
-pub use desktop_tls_identity::{DesktopTlsIdentity, DesktopTlsIdentityError};
+pub use desktop_tls_identity::{
+    DesktopTlsIdentity, DesktopTlsIdentityError, DesktopTlsIdentityStore,
+};
 pub use encoded_video_sink::{
     BoundedEncodedVideoQueue, EncodedVideoChunk, EncodedVideoChunkLimits, EncodedVideoFrameKind,
     EncodedVideoSink, EncodedVideoSinkError, PresentationTimestamp,
