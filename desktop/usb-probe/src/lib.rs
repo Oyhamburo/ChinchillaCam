@@ -11,6 +11,7 @@ mod pairing_qr_issuer;
 mod session_frame;
 mod trusted_phone_store;
 mod usb_tls_ciphertext_stream;
+mod usb_tls_pairing_proof;
 mod video_decoder;
 mod video_fragment_reassembler;
 
@@ -57,6 +58,7 @@ pub use usb_tls_ciphertext_stream::{
     UsbTlsCiphertextStream, USB_TLS_CIPHERTEXT_MAX_CHUNK_BYTES,
     USB_TLS_CIPHERTEXT_MAX_PENDING_READ_BYTES, USB_TLS_CIPHERTEXT_STREAM_ID,
 };
+pub use usb_tls_pairing_proof::{UsbTlsPairingProofError, UsbTlsPairingProofServer};
 pub use video_decoder::{DecodingEncodedVideoSink, VideoDecoder, VideoDecoderError};
 pub use video_fragment_reassembler::{
     ReassembledVideoChunk, VideoFragmentReassembler, VideoFragmentReassemblerError,
