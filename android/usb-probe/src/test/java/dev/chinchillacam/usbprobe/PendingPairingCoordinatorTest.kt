@@ -333,13 +333,18 @@ class PendingPairingCoordinatorTest {
 
         val failingStorage = FailingSerializedTrustedDesktopStorage()
         val failing = coordinator()
+        val failingAuthority = ActiveDesktopAuthority()
         val failingPending = failing.start(qr(nonce = byteArrayOf(0x41)), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
-        assertTrue(failing.confirm(failingPending.summary.pendingId, LocalPersistentTrustedDesktopStore(failingStorage), ActiveDesktopAuthority()) is PendingPairingConfirmResult.Rejected.SaveFailed)
+        assertTrue(failing.confirm(failingPending.summary.pendingId, LocalPersistentTrustedDesktopStore(failingStorage), failingAuthority) is PendingPairingConfirmResult.Rejected.SaveFailed)
+        assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, failingAuthority.state)
+        assertEquals(TrustedDesktopAuthResult.Unknown, LocalPersistentTrustedDesktopStore(failingStorage).evaluate("pc-1", PairingTrustFingerprint.fromTrustMaterial(P256_SPKI).bytes, nowEpochSeconds = 100))
 
         LocalPersistentTrustedDesktopStore(storage).revoke("pc-1", revokedAtEpochSeconds = 110)
         val revoked = coordinator()
+        val revokedAuthority = ActiveDesktopAuthority()
         val revokedPending = revoked.start(qr(nonce = byteArrayOf(0x42)), byteArrayOf(1)) as PendingPairingStartResult.PendingConfirmation
-        assertEquals(PendingPairingConfirmResult.Rejected.ExistingTrustRejected(TrustedDesktopAuthResult.Revoked), revoked.confirm(revokedPending.summary.pendingId, LocalPersistentTrustedDesktopStore(storage), ActiveDesktopAuthority()))
+        assertEquals(PendingPairingConfirmResult.Rejected.ExistingTrustRejected(TrustedDesktopAuthResult.Revoked), revoked.confirm(revokedPending.summary.pendingId, LocalPersistentTrustedDesktopStore(storage), revokedAuthority))
+        assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, revokedAuthority.state)
     }
 
     @Test
