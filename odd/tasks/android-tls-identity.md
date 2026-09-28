@@ -21,8 +21,15 @@
 - Keep this slice limited to TLS identity pinning; TLS sockets, pairing proof channel binding, decoder paths, USB fake transport, LAN transport, and hardware remain out of scope.
 - Use real local X.509 fixtures generated outside production code; do not depend on `sun.security` internals.
 
+## M3c4a1 — códec de endpoint `CCPB`
+
+- Congelar y probar el descriptor binario `proofBytes` antes de abrir sockets reales.
+- Codificar y parsear `CCPB` con límite de 256 bytes: host literal solo `127.0.0.1` o `::1`, puerto `1..65535` y timeout `250..5000` ms.
+- Rechazar fail-closed TLVs desconocidos, duplicados, faltantes, fuera de orden, bytes extra, UTF-8 inválido y largos inválidos.
+- No abrir sockets, no LAN real y no inventar otro protocolo en este slice.
+
 ## Next TLS verifier slice
 
-- Introduce a real `PairingProofVerifier` backed by JSSE TLS sockets.
-- Pin the desktop SPKI during handshake with `PinnedDesktopTlsTrustManager` and bind the pairing challenge over the TLS channel.
+- Introduce a real `PairingProofVerifier` backed by JSSE TLS sockets over local loopback tests.
+- Pin the desktop SPKI during handshake with `PinnedDesktopTlsTrustManager` and bind the pairing challenge over the frozen `CCPB`/`CCP1` protocol.
 - Do not accept forged `Verified` results as a production verifier and do not enable LAN transport in this slice.
