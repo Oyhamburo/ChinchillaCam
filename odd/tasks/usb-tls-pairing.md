@@ -33,6 +33,8 @@ Evidencia:
 
 Estado: en progreso para e2a. Con autorización fresca, montar `SSLEngine` cliente sobre el adaptador e1, pinear el SPKI del QR con `PinnedDesktopTlsTrustManager`, completar handshake TLS 1.2+ sin socket/localhost y rechazar peers no esperados. e2a no confirma pairing ni envía `CCP1`; e2b requerirá autorización fresca para llevar `CCP1` dentro del canal TLS establecido. Esta tarea no debe usar `localhost` como ruta productiva en teléfono.
 
+Evidencia e2a1 (2026-09-28): `fb4ada9 feat(android): open pinned USB TLS channel` abre un canal TLS autenticado por SPKI y conserva el `SSLEngine`/sesión vivos para e2b. RED enfocado: referencias no resueltas antes de crear el canal. GREEN enfocado y full `testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` pasaron; revisión independiente exacta PASS con 370 líneas cambiadas y sin `CCP1`, pairing confirmation, sockets, LAN ni hardware.
+
 ### [ ] e3 — Interoperabilidad socketless Rust ↔ JVM
 
 Con autorización fresca cross-worktree, probar rustls `ServerConnection` y JSSE `SSLEngine` sobre el envelope USB acotado, sin TCP, LAN, ADB ni dispositivo físico.
