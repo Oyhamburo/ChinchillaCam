@@ -25,6 +25,7 @@ Construir el contrato local de sesión entre Android y desktop antes de transpor
 - [ ] T13: persistencia de confianza local en Android y desktop con revocación. No está completo.
   - [x] T13a: seam Android-only/in-memory con revocación fake; implementado en `TrustedDesktopStore.kt` con tests en `TrustedDesktopStoreTest.kt`.
   - [ ] T13b: persistencia Android segura/local para confianza y revocación.
+    - C6 autorizado: port manual acotado desde worktree T13b solo para store persistente y tests; sin merge/cherry-pick, sin UI, sin wiring productivo amplio y sin tocar el worktree fuente.
   - [ ] T13c: persistencia desktop de confianza/revocación en worktree desktop separado.
   - Gate: T17 LAN autenticado sigue bloqueado hasta T13b+T13c y prueba de posesión/confirmación explícita.
 - [x] T14: una computadora activa. Rechazar segunda sesión activa con mensaje español; handoff explícito como acción separada.

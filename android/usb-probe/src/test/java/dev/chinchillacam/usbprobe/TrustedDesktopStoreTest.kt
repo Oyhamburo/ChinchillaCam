@@ -138,7 +138,69 @@ class TrustedDesktopStoreTest {
         assertTrue(store.list().isNotEmpty())
     }
 
+    @Test
+    fun persistentStoreReloadsSavedRevokedForgottenAndMismatchedRecords() {
+        val storage = MutableSerializedTrustedDesktopStorage()
+        val store = LocalPersistentTrustedDesktopStore(storage)
+        store.save(baseRecord)
+
+        assertEquals(baseRecord, LocalPersistentTrustedDesktopStore(storage).lookup("desktop-01"))
+        assertEquals(true, LocalPersistentTrustedDesktopStore(storage).revoke("desktop-01", revokedAtEpochSeconds = 300L))
+        assertEquals(TrustedDesktopAuthResult.Revoked, LocalPersistentTrustedDesktopStore(storage).evaluate("desktop-01", baseRecord.trustMaterialFingerprint, nowEpochSeconds = 500L))
+        assertEquals(true, LocalPersistentTrustedDesktopStore(storage).forget("desktop-01"))
+        assertEquals(TrustedDesktopAuthResult.Unknown, LocalPersistentTrustedDesktopStore(storage).evaluate("desktop-01", baseRecord.trustMaterialFingerprint, nowEpochSeconds = 500L))
+
+        LocalPersistentTrustedDesktopStore(storage).save(baseRecord)
+        assertEquals(TrustedDesktopAuthResult.FingerprintMismatch, LocalPersistentTrustedDesktopStore(storage).evaluate("desktop-01", byteArrayOf(0x09), nowEpochSeconds = 500L))
+    }
+
+    @Test
+    fun persistentStoreFailsClosedForCorruptUnknownVersionAndWriteFailures() {
+        val corruptStore = LocalPersistentTrustedDesktopStore(MutableSerializedTrustedDesktopStorage("not trusted data"))
+        val unknownVersionStore = LocalPersistentTrustedDesktopStore(MutableSerializedTrustedDesktopStorage("trusted-desktops-v999\n"))
+        assertEquals(TrustedDesktopStorageStatus.Unavailable, corruptStore.storageStatus)
+        assertEquals(TrustedDesktopStorageStatus.Unavailable, unknownVersionStore.storageStatus)
+        assertEquals(TrustedDesktopAuthResult.Unknown, corruptStore.evaluate("desktop-01", baseRecord.trustMaterialFingerprint, nowEpochSeconds = 500L))
+        assertEquals(emptyList<TrustedDesktopRecord>(), unknownVersionStore.list())
+
+        val storage = FailingSerializedTrustedDesktopStorage()
+        val store = LocalPersistentTrustedDesktopStore(storage)
+        assertStorageFailure { store.save(baseRecord) }
+        assertEquals(TrustedDesktopStorageStatus.Unavailable, store.storageStatus)
+        assertEquals(null, store.lookup("desktop-01"))
+        assertEquals(TrustedDesktopAuthResult.Unknown, store.evaluate("desktop-01", baseRecord.trustMaterialFingerprint, nowEpochSeconds = 500L))
+    }
+
+    @Test
+    fun persistentStoreDoesNotUndoRevocationOnUpsert() {
+        val storage = MutableSerializedTrustedDesktopStorage()
+        val store = LocalPersistentTrustedDesktopStore(storage)
+        store.save(baseRecord)
+        store.revoke("desktop-01", revokedAtEpochSeconds = 300L)
+
+        LocalPersistentTrustedDesktopStore(storage).save(baseRecord.copy(lastSeenAtEpochSeconds = 400L))
+
+        assertEquals(TrustedDesktopAuthResult.Revoked, LocalPersistentTrustedDesktopStore(storage).evaluate("desktop-01", baseRecord.trustMaterialFingerprint, nowEpochSeconds = 500L))
+    }
+
     private fun assertIllegalArgument(block: () -> Unit) {
         assertTrue(runCatching(block).exceptionOrNull() is IllegalArgumentException)
+    }
+
+    private fun assertStorageFailure(block: () -> Unit) {
+        assertTrue(runCatching(block).exceptionOrNull() is TrustedDesktopStorageException)
+    }
+
+    private class MutableSerializedTrustedDesktopStorage(initialValue: String? = null) : SerializedTrustedDesktopStorage {
+        private var value = initialValue
+        override fun read(): String? = value
+        override fun write(serialized: String) { value = serialized }
+        override fun clear() { value = null }
+    }
+
+    private class FailingSerializedTrustedDesktopStorage : SerializedTrustedDesktopStorage {
+        override fun read(): String? = null
+        override fun write(serialized: String) { throw Exception("write failed") }
+        override fun clear() { throw Exception("clear failed") }
     }
 }
