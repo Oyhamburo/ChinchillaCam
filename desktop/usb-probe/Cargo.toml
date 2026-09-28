@@ -8,4 +8,6 @@ name = "usb_probe"
 path = "src/lib.rs"
 
 [dependencies]
+base64 = "0.22"
 rusb = "0.9"
+sha2 = "0.10"

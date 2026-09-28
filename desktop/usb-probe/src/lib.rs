@@ -2,6 +2,7 @@ mod desktop_receiver;
 mod encoded_video_sink;
 mod h264_access_unit;
 mod h264_config;
+mod pairing_qr;
 mod session_frame;
 mod trusted_phone_store;
 mod video_decoder;
@@ -23,6 +24,7 @@ pub use h264_config::{
     parse_h264_config, H264ConfigError, H264InputFraming, H264ParameterSets, MAX_H264_CONFIG_BYTES,
     MAX_H264_CONFIG_NAL_UNITS, MAX_H264_PARAMETER_SET_BYTES,
 };
+pub use pairing_qr::{PairingQrError, PairingQrPayload, PairingQrProducer};
 pub use session_frame::{
     SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,
     SessionFramePayload, VideoFrameKind,
