@@ -97,9 +97,17 @@ Nuevo seam `PhoneTlsIdentity` (`fun keyManagers(): Array<KeyManager>`, `val subj
 - **Líneas cambiadas**: 143 (113 adiciones + 30 eliminaciones), un solo archivo — `SslEngineUsbTlsChannelTest.kt`: imports (+2), dos tests existentes envueltos en `try/finally` con `pair.close()` + aserción de error del servidor reforzada (no vacuously-true), un test nuevo, `ThrowingPhoneTlsIdentity` con SPKI propio (fixture `phone-key-manager-failure` separada de la del desktop), `serverHandshake` ahora retorna el `SSLEngine` (sin cambio de comportamiento para los 4 call sites existentes, que ya ignoraban el valor de retorno).
 - **Commit**: `test(android): prove phone client auth rejection fails closed`.
 
-### [ ] m2 — Adaptador delgado `AndroidKeyStorePhoneTlsIdentity`
+### [x] m2 — Adaptador delgado `AndroidKeyStorePhoneTlsIdentity`
 
 Genera o carga el alias, spec del contrato §4.1, `KeyManagerFactory.init(AndroidKeyStore, null)`. No es testeable en JVM: desvío TDD declarado; validación en dispositivo pendiente (M9); sin wiring de Activity. Estimado ~100 líneas.
+
+#### Evidencia m2
+
+- **Desvío TDD declarado explícitamente** (no se inventa RED/GREEN): `AndroidKeyStorePhoneTlsIdentity` usa `KeyStore.getInstance("AndroidKeyStore")`, un provider de plataforma que no existe en una JVM de escritorio — no lo puede ejercitar `testDebugUnitTest`. La única prueba disponible en este entorno es que el módulo compile, empaquete y pase lint; el comportamiento real (generación de la clave, autenticación de cliente TLS con `DIGEST_NONE`, disponibilidad de TLS 1.3 sólo desde API 29+) queda **pendiente de validación física (M9)**.
+- **Implementación**: adaptador delgado que implementa `PhoneTlsIdentity`. Carga `KeyStore.getInstance("AndroidKeyStore").apply { load(null) }`; si el alias `chinchillacam-phone-tls-v1` no existe, lo genera con `KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")` + `KeyGenParameterSpec.Builder(alias, PURPOSE_SIGN).setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1")).setDigests(DIGEST_NONE, DIGEST_SHA256).setCertificateSubject(X500Principal("CN=ChinchillaCam Phone"))`. `keyManagers()` delega en `KeyManagerFactory.getInstance(getDefaultAlgorithm()).apply { init(keyStore, null) }.keyManagers`. `subjectPublicKeyInfoDer` toma `publicKey.encoded` del certificado del alias y lo valida como P-256 canónico con `DesktopTlsIdentityMaterial.validate(...)`, lanzando una excepción clara (fail closed) si no lo es. Sin exportar la clave privada, sin loguear material de clave, sin wiring de Activity, sin dependencias nuevas.
+- **Full**: `testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` → `BUILD SUCCESSFUL`. `compileDebugKotlin` compila el archivo nuevo contra los stubs del SDK de Android sin errores ni warnings propios; `lintDebug` no reporta ningún hallazgo sobre `AndroidKeyStorePhoneTlsIdentity.kt` (0 coincidencias en `lint-results-debug.xml`). Total de tests unitarios del módulo sin cambios respecto a m1b (365 tests, 2 skipped, 0 failures, 0 errors) porque ningún test de JVM ejercita este archivo.
+- **Líneas cambiadas**: 65 (archivo nuevo) — `AndroidKeyStorePhoneTlsIdentity.kt`.
+- **Commit**: `feat(android): add Android Keystore phone TLS identity`.
 
 ### [ ] m3 — Interoperabilidad JSSE ↔ rustls con client auth obligatorio
 
@@ -109,4 +117,4 @@ Criterios: el canal presenta el certificado sólo si recibe identidad; sin ident
 
 ## Progreso
 
-Plan creado el 2026-09-28. m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada (lineage `review-37abf23d14631701`). m1b (endurecimiento post-revisión) completada el 2026-09-28 (ver Evidencia m1b). m2 y m3 pendientes.
+Plan creado el 2026-09-28. m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada (lineage `review-37abf23d14631701`). m1b (endurecimiento post-revisión) completada el 2026-09-28 (ver Evidencia m1b). m2 completada el 2026-09-28 (ver Evidencia m2; desvío TDD declarado, validación física pendiente para M9). m3 pendiente (requiere autorización fresca del usuario para runtime entre worktrees).
