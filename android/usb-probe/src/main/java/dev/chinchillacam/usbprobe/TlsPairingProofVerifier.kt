@@ -5,11 +5,13 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
+import java.security.GeneralSecurityException
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 
 class TlsPairingProofVerifier(
     private val epochSecondsSource: EpochSecondsSource,
+    private val sslContextFactory: () -> SSLContext = { SSLContext.getInstance("TLS") },
 ) : PairingProofVerifier {
     override fun verify(challenge: PairingProofChallenge, proofBytes: ByteArray): PairingProofVerificationResult {
         val now = epochSecondsSource.nowEpochSeconds()
@@ -35,6 +37,8 @@ class TlsPairingProofVerifier(
             PairingProofVerificationResult.Rejected("tls proof timed out")
         } catch (_: IOException) {
             PairingProofVerificationResult.Rejected("tls proof failed")
+        } catch (_: GeneralSecurityException) {
+            PairingProofVerificationResult.Rejected("tls proof failed")
         } catch (_: PairingProofProtocol.ProtocolError) {
             PairingProofVerificationResult.Rejected("tls proof failed")
         }
@@ -45,12 +49,14 @@ class TlsPairingProofVerifier(
         identity: DesktopTlsIdentityMaterial,
         challenge: PairingProofChallenge,
     ): PairingProofVerificationResult {
-        val context = SSLContext.getInstance("TLS")
+        val context = sslContextFactory()
         context.init(null, arrayOf(PinnedDesktopTlsTrustManager(identity)), null)
         val socket = context.socketFactory.createSocket() as SSLSocket
         socket.use {
             it.soTimeout = endpoint.timeoutMillis
-            it.enabledProtocols = it.supportedProtocols.filter { protocol -> protocol == "TLSv1.2" || protocol == "TLSv1.3" }.toTypedArray()
+            val enabledTlsProtocols = it.supportedProtocols.filter { protocol -> protocol == "TLSv1.2" || protocol == "TLSv1.3" }.toTypedArray()
+            if (enabledTlsProtocols.isEmpty()) throw GeneralSecurityException("TLS 1.2+ unavailable")
+            it.enabledProtocols = enabledTlsProtocols
             it.connect(InetSocketAddress(endpoint.host, endpoint.port), endpoint.timeoutMillis)
             it.startHandshake()
             it.outputStream.write(PairingProofProtocol.encodeRequest(requestFrom(challenge)))

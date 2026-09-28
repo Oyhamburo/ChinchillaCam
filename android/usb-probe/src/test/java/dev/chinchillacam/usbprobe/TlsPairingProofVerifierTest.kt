@@ -8,6 +8,7 @@ import java.io.File
 import java.io.InputStream
 import java.net.InetAddress
 import java.security.KeyStore
+import java.security.NoSuchAlgorithmException
 import java.security.cert.X509Certificate
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
@@ -39,7 +40,9 @@ class TlsPairingProofVerifierTest {
         val mismatchFixture = TlsFixture.create("mismatch", expired = false)
         val expiredFixture = TlsFixture.create("expired", expired = true)
         val verifier = TlsPairingProofVerifier(clock)
+        val failingProviderVerifier = TlsPairingProofVerifier(clock) { throw NoSuchAlgorithmException("missing TLS") }
 
+        assertRejected("tls proof failed") { failingProviderVerifier.verify(challenge(fixture.certificate), endpointBytes(1)) }
         assertRejected("invalid proof endpoint") { verifier.verify(challenge(fixture.certificate), byteArrayOf(0x00)) }
         assertRejected("qr expired") { verifier.verify(challenge(fixture.certificate, qrExpiresAt = 1000), endpointBytes(1)) }
         assertRejected("challenge expired") { verifier.verify(challenge(fixture.certificate, challengeExpiresAt = 1000), endpointBytes(1)) }
