@@ -285,6 +285,7 @@ name = "usb-probe"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "getrandom",
  "rcgen",
  "rusb",
  "sha2",

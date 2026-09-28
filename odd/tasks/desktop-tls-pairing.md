@@ -53,6 +53,10 @@ El wire CCPB/CCP1 queda congelado con Android antes de implementar TLS: este cor
 - Response: `0x00 status` de un byte primero, luego eco exacto `0x01..0x04`.
 - Goldens acordados: request `4343503101010000001f01000470632d3102000201020300041011121304000973657373696f6e2d31`; response `434350310102000000230000010001000470632d3102000201020300041011121304000973657373696f6e2d31`.
 
+## Estado M3d4 — emisor QR local
+
+Este corte emite QR de emparejamiento con nonce de 32 bytes desde CSPRNG del sistema, expiración acotada 60–120s, `trustMaterial` igual a la SPKI DER persistida del escritorio y control de nonces pendientes en memoria. No persiste nonces, no abre listener, no usa rustls todavía y no valida tráfico de red.
+
 ## Evidencia esperada
 
 - `cargo fmt --check`

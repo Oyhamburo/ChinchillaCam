@@ -5,6 +5,7 @@ mod h264_access_unit;
 mod h264_config;
 mod pairing_proof_protocol;
 mod pairing_qr;
+mod pairing_qr_issuer;
 mod session_frame;
 mod trusted_phone_store;
 mod video_decoder;
@@ -33,6 +34,10 @@ pub use pairing_proof_protocol::{
     PairingProofFrame, PairingProofProtocolError, PairingProofRequest, PairingProofResponse,
 };
 pub use pairing_qr::{PairingQrError, PairingQrPayload, PairingQrProducer};
+pub use pairing_qr_issuer::{
+    IssuedPairingQr, OsPairingQrNonceGenerator, PairingQrIssuer, PairingQrIssuerError,
+    PairingQrNonceGenerator,
+};
 pub use session_frame::{
     SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,
     SessionFramePayload, VideoFrameKind,

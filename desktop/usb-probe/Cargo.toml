@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 base64 = "0.22"
+getrandom = "0.2"
 rcgen = { version = "0.12", features = ["pem"] }
 rusb = "0.9"
 sha2 = "0.10"
