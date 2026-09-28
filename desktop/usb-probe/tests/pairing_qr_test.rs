@@ -10,13 +10,13 @@ const FIXTURE_SPKI_DER_P256: &[u8] = &[
 ];
 
 #[test]
-fn qr_payload_v1_matches_android_canonical_wire() {
+fn qr_payload_v1_matches_android_full_golden_wire() {
     let payload = PairingQrPayload::new(
         "desktop-01",
-        "Chinchilla Desktop",
-        1_735_689_600,
-        [0x41; 16],
-        FIXTURE_SPKI_DER_P256.to_vec(),
+        "Studio Desktop",
+        1_700_000_600,
+        vec![0x10, 0x20, 0x30, 0x40],
+        vec![0x01, 0x23, 0x45, 0x67],
     )
     .expect("valid fixture payload");
 
@@ -24,19 +24,46 @@ fn qr_payload_v1_matches_android_canonical_wire() {
 
     assert_eq!(
         std::str::from_utf8(&wire).expect("qr wire is utf-8"),
-        "chinchillacam://pair?v=1&desktopId=desktop-01&name=Chinchilla%20Desktop&expiry=1735689600&nonce=QUFBQUFBQUFBQUFBQUFBQQ&spkiDerP256=MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEED_iEaeRRCqNjU4KRodlfw8bw52KepxyMxgxe_ZYzi1UHfFEXIEq0WGQZNjCM65IqjGJuRKZVsBdXbJ44XpCFw&checksum=dd401172f677a96d92ef4f76a44f3123"
+        "CHINCHILLACAM-PAIR:v1:desktopId=desktop-01&desktopName=Studio%20Desktop&expiresAt=1700000600&nonce=ECAwQA&trustMaterial=ASNFZw&checksum=05ba0a34a583a6cd156dfe2a675fa0c2"
     );
 }
 
 #[test]
-fn qr_payload_rejects_expired_or_empty_security_material() {
-    assert!(PairingQrPayload::new(
+fn qr_payload_uses_java_urlencoder_percent_encoding_parity() {
+    let payload = PairingQrPayload::new(
         "desktop-01",
-        "Desk",
-        0,
-        [0x41; 16],
-        FIXTURE_SPKI_DER_P256.to_vec()
+        "Studio*~Desktop",
+        1_700_000_600,
+        vec![0x10],
+        vec![0x01],
     )
-    .is_err());
-    assert!(PairingQrPayload::new("desktop-01", "Desk", 1, [0x41; 16], Vec::new()).is_err());
+    .expect("valid fixture payload");
+
+    let wire = String::from_utf8(PairingQrProducer::encode_v1(&payload).unwrap()).unwrap();
+
+    assert!(wire.contains("desktopName=Studio*%7EDesktop"));
+}
+
+#[test]
+fn qr_payload_accepts_future_spki_as_opaque_android_trust_material() {
+    let payload = PairingQrPayload::new(
+        "desktop-01",
+        "Studio Desktop",
+        1_700_000_600,
+        vec![0x10, 0x20, 0x30, 0x40],
+        FIXTURE_SPKI_DER_P256.to_vec(),
+    )
+    .expect("SPKI is opaque trust material for QR v1");
+
+    let wire = String::from_utf8(PairingQrProducer::encode_v1(&payload).unwrap()).unwrap();
+
+    assert!(wire.starts_with("CHINCHILLACAM-PAIR:v1:desktopId=desktop-01&desktopName=Studio%20Desktop&expiresAt=1700000600&nonce=ECAwQA&trustMaterial="));
+    assert!(wire.contains("&checksum="));
+}
+
+#[test]
+fn qr_payload_rejects_expired_or_empty_security_material() {
+    assert!(PairingQrPayload::new("desktop-01", "Desk", 0, vec![0x41], vec![0x01]).is_err());
+    assert!(PairingQrPayload::new("desktop-01", "Desk", 1, Vec::new(), vec![0x01]).is_err());
+    assert!(PairingQrPayload::new("desktop-01", "Desk", 1, vec![0x41], Vec::new()).is_err());
 }
