@@ -61,6 +61,10 @@ Este corte emite QR de emparejamiento con nonce de 32 bytes desde CSPRNG del sis
 
 Este corte agrega solo la dependencia `rustls` prevista y el codec CCPB para anunciar un endpoint loopback futuro. CCPB no abre sockets ni declara éxito criptográfico: host fijo `127.0.0.1`, puerto `1..65535`, timeout `250..5000ms`, TLVs ascendentes y tamaño total `<=256`.
 
+## Estado M3d5b — handshake TLS loopback
+
+Este corte agrega solo un servidor rustls de una conexión en `127.0.0.1:0` que expone el endpoint CCPB real y presenta el certificado persistido. La prueba verifica que el certificado TLS observado contiene la SPKI del QR. Todavía no hay frame OK, validación CCP1 ni concesión de confianza.
+
 ## Evidencia esperada
 
 - `cargo fmt --check`

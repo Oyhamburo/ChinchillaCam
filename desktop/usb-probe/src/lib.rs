@@ -3,6 +3,7 @@ mod desktop_tls_identity;
 mod encoded_video_sink;
 mod h264_access_unit;
 mod h264_config;
+mod loopback_pairing_proof_server;
 mod pairing_proof_endpoint;
 mod pairing_proof_protocol;
 mod pairing_qr;
@@ -30,6 +31,9 @@ pub use h264_access_unit::{
 pub use h264_config::{
     parse_h264_config, H264ConfigError, H264InputFraming, H264ParameterSets, MAX_H264_CONFIG_BYTES,
     MAX_H264_CONFIG_NAL_UNITS, MAX_H264_PARAMETER_SET_BYTES,
+};
+pub use loopback_pairing_proof_server::{
+    LoopbackPairingProofServer, LoopbackPairingProofServerError,
 };
 pub use pairing_proof_endpoint::{PairingProofEndpoint, PairingProofEndpointError};
 pub use pairing_proof_protocol::{
