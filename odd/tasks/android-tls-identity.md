@@ -37,8 +37,9 @@
 - Mantener los goldens de nonce corto solo como fixture de códec; el verificador real posterior exigirá QR nonce >=16 bytes y challenge nonce >=32 bytes CSPRNG.
 - No abrir sockets, no LAN real y no inventar otro protocolo en este slice.
 
-## Next TLS verifier slice
+## M3c4b — cliente real de prueba TLS en loopback
 
-- Introduce a real `PairingProofVerifier` backed by JSSE TLS sockets over local loopback tests.
-- Pin the desktop SPKI during handshake with `PinnedDesktopTlsTrustManager` and bind the pairing challenge over the frozen `CCPB`/`CCP1` protocol.
-- Do not accept forged `Verified` results as a production verifier and do not enable LAN transport in this slice.
+- Enlazar en `PairingProofChallenge` el SPKI DER canónico validado desde el QR; el verificador no debe reconstruir identidad desde el fingerprint.
+- Abrir un cliente `SSLSocket` solo contra endpoints `CCPB` de loopback y exigir TLS 1.2+ con `PinnedDesktopTlsTrustManager`.
+- Enviar/recibir frames `CCP1` acotados, cerrar recursos y rechazar timeouts, IO/TLS, status distinto de cero, ecos que no coinciden, QR/challenge expirados y nonces bajo mínimos del verificador (QR >=16 bytes, challenge >=32 bytes).
+- Usar tests JVM con servidor TLS local real y certificado P-256 de fixture; no conectar LAN externa, USB, decoder ni wiring de producción en este slice.

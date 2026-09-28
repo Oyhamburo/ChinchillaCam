@@ -21,14 +21,17 @@ interface PairingProofVerifier {
 class PairingProofChallenge(
     val desktopId: String,
     val trustMaterialFingerprint: PairingTrustFingerprint,
+    desktopSubjectPublicKeyInfoDer: ByteArray,
     qrNonce: ByteArray,
     challengeNonce: ByteArray,
     val sessionId: String,
     val qrExpiresAtEpochSeconds: Long,
     val challengeExpiresAtEpochSeconds: Long,
 ) {
+    private val desktopSubjectPublicKeyInfoDerBytes = desktopSubjectPublicKeyInfoDer.copyOf()
     private val qrNonceBytes = qrNonce.copyOf()
     private val challengeNonceBytes = challengeNonce.copyOf()
+    val desktopSubjectPublicKeyInfoDer: ByteArray get() = desktopSubjectPublicKeyInfoDerBytes.copyOf()
     val qrNonce: ByteArray get() = qrNonceBytes.copyOf()
     val challengeNonce: ByteArray get() = challengeNonceBytes.copyOf()
 }
@@ -145,6 +148,7 @@ class PendingPairingCoordinator(
         val challenge = PairingProofChallenge(
             desktopId = qrPayload.desktopId,
             trustMaterialFingerprint = fingerprint,
+            desktopSubjectPublicKeyInfoDer = trustMaterial.subjectPublicKeyInfoDer,
             qrNonce = qrNonce,
             challengeNonce = challengeMaterial.challengeNonce,
             sessionId = challengeMaterial.sessionId,

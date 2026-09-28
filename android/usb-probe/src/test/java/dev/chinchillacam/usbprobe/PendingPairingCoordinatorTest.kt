@@ -25,6 +25,11 @@ class PendingPairingCoordinatorTest {
         assertArrayEquals(byteArrayOf(0x10), pending.summary.challengeNonce)
         proof[0] = 0x66
         assertArrayEquals(byteArrayOf(0x55), verifier.proofs.single())
+        assertArrayEquals(P256_SPKI, verifier.challenges.single().desktopSubjectPublicKeyInfoDer)
+        assertEquals(PairingTrustFingerprint.fromTrustMaterial(verifier.challenges.single().desktopSubjectPublicKeyInfoDer), verifier.challenges.single().trustMaterialFingerprint)
+        val firstSpkiRead = verifier.challenges.single().desktopSubjectPublicKeyInfoDer
+        firstSpkiRead[0] = 0x00
+        assertArrayEquals(P256_SPKI, verifier.challenges.single().desktopSubjectPublicKeyInfoDer)
         val firstNonceRead = pending.summary.qrNonce
         firstNonceRead[0] = 0x7f
         assertArrayEquals(byteArrayOf(0x01, 0x02), pending.summary.qrNonce)
@@ -387,8 +392,10 @@ class PendingPairingCoordinatorTest {
         private val response: (PairingProofChallenge, ByteArray) -> PairingProofVerificationResult,
     ) : PairingProofVerifier {
         val proofs = mutableListOf<ByteArray>()
+        val challenges = mutableListOf<PairingProofChallenge>()
         override fun verify(challenge: PairingProofChallenge, proofBytes: ByteArray): PairingProofVerificationResult {
             proofs += proofBytes.copyOf()
+            challenges += challenge
             return response(challenge, proofBytes)
         }
     }
