@@ -50,3 +50,10 @@
 - Generar `challengeNonce` de 32 bytes con `SecureRandom` respaldado por el sistema operativo y `sessionId` independiente de 16 bytes codificado base64url ASCII sin padding.
 - Acotar TTL a 30..120 segundos y rechazar fail-closed relojes inválidos u overflow de expiración.
 - Mantener seams de RNG solo para tests y comprobar que valores repetidos difieren.
+
+## M3c7 — interoperabilidad automatizada Android JVM ↔ Rust rustls
+
+- Agregar un test JVM Android gated por `CHINCHILLA_PAIRING_PROOF_HELPER`; sin la variable debe quedar skipped en suites normales.
+- Consumir solo el contrato stdout congelado del helper Rust: línea de versión, `qr=<wire UTF8>` y `proof=<hex CCPB>` antes de aceptar una conexión TLS.
+- Ejecutar flujo real local: decodificar QR, validar SPKI, generar challenge con `SecureRandomChallengeNonceSource`, conectar con `TlsPairingProofVerifier` y obtener `PendingConfirmation` por status 0 con eco exacto.
+- Mantener loopback-only, timeouts acotados, kill del proceso helper, sin logs de claves privadas, sin UI, sin LAN externo y sin wiring productivo.
