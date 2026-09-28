@@ -45,6 +45,8 @@ Evidencia e2b1: diff candidate 396 líneas por numstat y commit 393 inserciones/
 
 Nota de disciplina e2b1: decisión de usuario `accept_one_e2b1_tdd_exception`. No hubo RED histórico válido para el primer bloque de e2b1; el primer fallo enfocado fue de setup de prueba (pipe no conectado). No se reclama TDD estricto para ese bloque. Incidente de aislamiento: antes de la instrucción exacta `.kt.pending`, los borradores e2b2 se movieron inicialmente a `.tmp-e2b-quarantine/...`; luego se movieron a los nombres same-path `.kt.pending` autorizados, con SHA-256 preservado.
 
+Estado e2b2: en fase TEST-ONLY fresca con TDD estricto restaurado. Antes de tocar tests se verificaron los borradores restaurados: source `4cc08c5330d0179b60c417aab1e41ddb8462fdcbd0d573d90b4321724a2c34eb` y test `50d57bcc2bd4461642db9951ff4410171d83f6493901a417de5734cb8770422d`. Objetivo test-first: `CCP1` sobre el mismo canal TLS vivo, con rechazos fail-closed para estados/eco/challenge inválidos sin afirmar autenticación del teléfono.
+
 ### [ ] e3 — Interoperabilidad socketless Rust ↔ JVM
 
 Con autorización fresca cross-worktree, probar rustls `ServerConnection` y JSSE `SSLEngine` sobre el envelope USB acotado, sin TCP, LAN, ADB ni dispositivo físico.
