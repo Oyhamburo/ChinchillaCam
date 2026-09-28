@@ -5,6 +5,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class TrustedDesktopStoreTest {
     private val baseRecord = TrustedDesktopRecord(
@@ -172,6 +174,33 @@ class TrustedDesktopStoreTest {
     }
 
     @Test
+    fun persistentStoreSerializesConcurrentSaveAndRevokeWithoutResurrectingTrust() {
+        val storage = BlockingSerializedTrustedDesktopStorage()
+        val store = LocalPersistentTrustedDesktopStore(storage)
+        store.save(baseRecord)
+        storage.blockUnrevokedReplacement = true
+
+        val staleSave = Thread {
+            store.save(baseRecord.copy(lastSeenAtEpochSeconds = 400L))
+        }
+        staleSave.start()
+        assertTrue(storage.replacementWriteStarted.await(1, TimeUnit.SECONDS))
+        val revokeResult = arrayOfNulls<Boolean>(1)
+        val revoke = Thread {
+            revokeResult[0] = store.revoke("desktop-01", revokedAtEpochSeconds = 300L)
+        }
+        revoke.start()
+
+        storage.releaseReplacementWrite.countDown()
+        staleSave.join(1_000)
+        revoke.join(1_000)
+
+        assertEquals(true, revokeResult[0])
+        assertEquals(TrustedDesktopAuthResult.Revoked, store.evaluate("desktop-01", baseRecord.trustMaterialFingerprint, nowEpochSeconds = 500L))
+        assertEquals(TrustedDesktopAuthResult.Revoked, LocalPersistentTrustedDesktopStore(storage).evaluate("desktop-01", baseRecord.trustMaterialFingerprint, nowEpochSeconds = 500L))
+    }
+
+    @Test
     fun persistentStoreDoesNotUndoRevocationOnUpsert() {
         val storage = MutableSerializedTrustedDesktopStorage()
         val store = LocalPersistentTrustedDesktopStore(storage)
@@ -202,5 +231,26 @@ class TrustedDesktopStoreTest {
         override fun read(): String? = null
         override fun write(serialized: String) { throw Exception("write failed") }
         override fun clear() { throw Exception("clear failed") }
+    }
+
+    private class BlockingSerializedTrustedDesktopStorage : SerializedTrustedDesktopStorage {
+        @Volatile var blockUnrevokedReplacement = false
+        val replacementWriteStarted = CountDownLatch(1)
+        val releaseReplacementWrite = CountDownLatch(1)
+        @Volatile private var value: String? = null
+
+        override fun read(): String? = value
+
+        override fun write(serialized: String) {
+            if (blockUnrevokedReplacement && serialized.contains("\t400\t") && serialized.endsWith("\n")) {
+                replacementWriteStarted.countDown()
+                assertTrue(releaseReplacementWrite.await(1, TimeUnit.SECONDS))
+            }
+            value = serialized
+        }
+
+        override fun clear() {
+            value = null
+        }
     }
 }

@@ -107,6 +107,7 @@ class LocalPersistentTrustedDesktopStore(
     private val storage: SerializedTrustedDesktopStorage,
 ) : TrustedDesktopStore {
     private val recordsByDesktopId: LinkedHashMap<String, TrustedDesktopRecord>
+    @get:Synchronized
     var storageStatus: TrustedDesktopStorageStatus = TrustedDesktopStorageStatus.Available
         private set
 
@@ -123,6 +124,7 @@ class LocalPersistentTrustedDesktopStore(
         }
     }
 
+    @Synchronized
     override fun save(record: TrustedDesktopRecord) {
         ensureAvailableForMutation()
         val candidate = linkedMapCopyOf(recordsByDesktopId)
@@ -131,18 +133,21 @@ class LocalPersistentTrustedDesktopStore(
         publish(candidate)
     }
 
+    @Synchronized
     override fun lookup(desktopId: String): TrustedDesktopRecord? {
         validateDesktopId(desktopId)
         if (storageStatus == TrustedDesktopStorageStatus.Unavailable) return null
         return lookupTrustedDesktopRecord(recordsByDesktopId, desktopId)
     }
 
+    @Synchronized
     override fun list(): List<TrustedDesktopRecord> = if (storageStatus == TrustedDesktopStorageStatus.Unavailable) {
         emptyList()
     } else {
         listTrustedDesktopRecords(recordsByDesktopId)
     }
 
+    @Synchronized
     override fun revoke(desktopId: String, revokedAtEpochSeconds: Long): Boolean {
         ensureAvailableForMutation()
         val candidate = linkedMapCopyOf(recordsByDesktopId)
@@ -154,6 +159,7 @@ class LocalPersistentTrustedDesktopStore(
         return changed
     }
 
+    @Synchronized
     override fun forget(desktopId: String): Boolean {
         ensureAvailableForMutation()
         validateDesktopId(desktopId)
@@ -166,6 +172,7 @@ class LocalPersistentTrustedDesktopStore(
         return changed
     }
 
+    @Synchronized
     override fun evaluate(
         desktopId: String,
         presentedTrustMaterialFingerprint: ByteArray,
