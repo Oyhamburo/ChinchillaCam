@@ -1,5 +1,8 @@
 package dev.chinchillacam.usbprobe
 
+import android.content.Context
+import android.content.SharedPreferences
+
 private const val TRUSTED_DESKTOP_STORAGE_VERSION = "trusted-desktops-v1"
 private val TRUSTED_DESKTOP_ID_PATTERN = Regex("[A-Za-z0-9._-]+")
 
@@ -102,6 +105,62 @@ interface SerializedTrustedDesktopStorage {
     fun write(serialized: String)
     fun clear()
 }
+
+class SharedPreferencesTrustedDesktopStorage(
+    private val sharedPreferences: SharedPreferences,
+    private val key: String = TRUSTED_DESKTOPS_SHARED_PREFERENCES_KEY,
+) : SerializedTrustedDesktopStorage {
+    override fun read(): String? = sharedPreferences.getString(key, null)
+
+    override fun write(serialized: String) {
+        val committed = sharedPreferences.edit().putString(key, serialized).commit()
+        if (!committed) {
+            sharedPreferences.edit().remove(key).commit()
+            throw TrustedDesktopStorageException("Trusted desktop storage commit failed")
+        }
+    }
+
+    override fun clear() {
+        if (!sharedPreferences.edit().remove(key).commit()) {
+            throw TrustedDesktopStorageException("Trusted desktop storage clear failed")
+        }
+    }
+}
+
+class SingletonTrustedDesktopStoreProvider(
+    private val storageFactory: () -> SerializedTrustedDesktopStorage,
+) {
+    @Volatile private var store: TrustedDesktopStore? = null
+
+    fun get(): TrustedDesktopStore {
+        val existing = store
+        if (existing != null) return existing
+        return synchronized(this) {
+            store ?: LocalPersistentTrustedDesktopStore(storageFactory()).also { store = it }
+        }
+    }
+}
+
+object AndroidTrustedDesktopStores {
+    @Volatile private var provider: SingletonTrustedDesktopStoreProvider? = null
+
+    fun trustedDesktopStore(context: Context): TrustedDesktopStore {
+        val appContext = context.applicationContext ?: context
+        val existing = provider
+        if (existing != null) return existing.get()
+        return synchronized(this) {
+            val current = provider ?: SingletonTrustedDesktopStoreProvider {
+                SharedPreferencesTrustedDesktopStorage(
+                    appContext.getSharedPreferences(TRUSTED_DESKTOPS_SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE),
+                )
+            }.also { provider = it }
+            current.get()
+        }
+    }
+}
+
+private const val TRUSTED_DESKTOPS_SHARED_PREFERENCES_NAME = "trusted_desktops"
+private const val TRUSTED_DESKTOPS_SHARED_PREFERENCES_KEY = "records"
 
 class LocalPersistentTrustedDesktopStore(
     private val storage: SerializedTrustedDesktopStorage,

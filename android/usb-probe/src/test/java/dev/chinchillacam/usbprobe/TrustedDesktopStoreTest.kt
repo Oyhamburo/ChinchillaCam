@@ -1,5 +1,6 @@
 package dev.chinchillacam.usbprobe
 
+import android.content.SharedPreferences
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
@@ -212,6 +213,37 @@ class TrustedDesktopStoreTest {
         assertEquals(TrustedDesktopAuthResult.Revoked, LocalPersistentTrustedDesktopStore(storage).evaluate("desktop-01", baseRecord.trustMaterialFingerprint, nowEpochSeconds = 500L))
     }
 
+    @Test
+    fun sharedPreferencesStorageCommitsSynchronouslyAndCleansVisibleFailedWrites() {
+        val sharedPreferences = FakeSharedPreferences()
+        val storage = SharedPreferencesTrustedDesktopStorage(sharedPreferences)
+
+        storage.write("trusted-desktops-v1\n")
+        assertEquals("trusted-desktops-v1\n", storage.read())
+        storage.clear()
+        assertEquals(null, storage.read())
+
+        val failing = FakeSharedPreferences(commitSucceeds = false, exposeFailedStringWrite = true, cleanupCommitSucceeds = true)
+        assertStorageFailure { SharedPreferencesTrustedDesktopStorage(failing).write("trusted-desktops-v1\n") }
+        assertEquals(null, failing.getString("records", null))
+        assertStorageFailure { SharedPreferencesTrustedDesktopStorage(FakeSharedPreferences(commitSucceeds = false)).clear() }
+    }
+
+    @Test
+    fun singletonProviderReturnsOneStoreSoRevocationCannotBeOverwrittenBySecondReference() {
+        val storage = MutableSerializedTrustedDesktopStorage()
+        val provider = SingletonTrustedDesktopStoreProvider { storage }
+        val first = provider.get()
+        val second = provider.get()
+
+        first.save(baseRecord)
+        assertEquals(true, second.revoke("desktop-01", revokedAtEpochSeconds = 300L))
+        first.save(baseRecord.copy(lastSeenAtEpochSeconds = 400L))
+
+        assertEquals(TrustedDesktopAuthResult.Revoked, second.evaluate("desktop-01", baseRecord.trustMaterialFingerprint, nowEpochSeconds = 500L))
+        assertEquals(TrustedDesktopAuthResult.Revoked, LocalPersistentTrustedDesktopStore(storage).evaluate("desktop-01", baseRecord.trustMaterialFingerprint, nowEpochSeconds = 500L))
+    }
+
     private fun assertIllegalArgument(block: () -> Unit) {
         assertTrue(runCatching(block).exceptionOrNull() is IllegalArgumentException)
     }
@@ -251,6 +283,48 @@ class TrustedDesktopStoreTest {
 
         override fun clear() {
             value = null
+        }
+    }
+
+    private class FakeSharedPreferences(
+        private val commitSucceeds: Boolean = true,
+        private val exposeFailedStringWrite: Boolean = false,
+        private val cleanupCommitSucceeds: Boolean = commitSucceeds,
+    ) : SharedPreferences {
+        private val values = mutableMapOf<String, String>()
+        override fun getString(key: String, defValue: String?): String? = values[key] ?: defValue
+        override fun edit(): SharedPreferences.Editor = FakeEditor()
+        override fun contains(key: String): Boolean = values.containsKey(key)
+        override fun getAll(): MutableMap<String, *> = values.toMutableMap()
+        override fun getStringSet(key: String, defValues: MutableSet<String>?): MutableSet<String>? = defValues
+        override fun getInt(key: String, defValue: Int): Int = defValue
+        override fun getLong(key: String, defValue: Long): Long = defValue
+        override fun getFloat(key: String, defValue: Float): Float = defValue
+        override fun getBoolean(key: String, defValue: Boolean): Boolean = defValue
+        override fun registerOnSharedPreferenceChangeListener(listener: SharedPreferences.OnSharedPreferenceChangeListener?) = Unit
+        override fun unregisterOnSharedPreferenceChangeListener(listener: SharedPreferences.OnSharedPreferenceChangeListener?) = Unit
+
+        private inner class FakeEditor : SharedPreferences.Editor {
+            private val updates = mutableMapOf<String, String?>()
+            override fun putString(key: String, value: String?): SharedPreferences.Editor = apply { updates[key] = value }
+            override fun remove(key: String): SharedPreferences.Editor = apply { updates[key] = null }
+            override fun commit(): Boolean {
+                val onlyRemoves = updates.values.all { it == null }
+                if (!commitSucceeds && !(onlyRemoves && cleanupCommitSucceeds)) {
+                    if (exposeFailedStringWrite) updates.forEach { (key, value) -> if (value != null) values[key] = value }
+                    return false
+                }
+                updates.forEach { (key, value) -> if (value == null) values.remove(key) else values[key] = value }
+                updates.clear()
+                return true
+            }
+            override fun apply() { commit() }
+            override fun clear(): SharedPreferences.Editor = apply { values.keys.forEach { updates[it] = null } }
+            override fun putStringSet(key: String, values: MutableSet<String>?): SharedPreferences.Editor = this
+            override fun putInt(key: String, value: Int): SharedPreferences.Editor = this
+            override fun putLong(key: String, value: Long): SharedPreferences.Editor = this
+            override fun putFloat(key: String, value: Float): SharedPreferences.Editor = this
+            override fun putBoolean(key: String, value: Boolean): SharedPreferences.Editor = this
         }
     }
 }
