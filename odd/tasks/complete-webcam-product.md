@@ -104,10 +104,13 @@ Para cada unidad de trabajo:
 
 10. **T11 — Protocolo de sesión y framing de video.** Extender framing para handshake, stream metadata, video chunks, metrics y control messages.
 11. **T12 — QR pairing payload.** Diseñar payload local con claves/identificador de PC, expiración y tests; el checksum sin clave solo detecta corrupción accidental, no autentica.
-12. **T13 — Persistencia de confianza local.** Guardar confianza en Android y desktop; revocación local. Estado: T13a Android in-memory seam hecho; T13b Android persistente y T13c desktop persistente siguen pendientes.
+12. **T13 — Persistencia de confianza local.** Guardar confianza en Android y desktop; revocación local. Estado (2026-09-28): T13a Android in-memory seam hecho; T13b Android persistente hecho en esta rama como port manual C6 (`6ff5575`, `b5deec4`, `ab02bab`, `2c3ae01`, `75c1ec9`) desde `feat/t13b-android-persistent-trust`; T13c desktop persistente/revocación hecho como MVP en `feat/desktop-video-sink` (`93ab9d0`, `a9771c5`, `ba32d62`, `989a200`), con hardening diferido (symlink/ownership, permisos owner-only, fsync, aliasing y recuperación de lock). Ninguno de los dos tiene registro de revisión nativa.
 13. **T14 — One-active-computer enforcement.** Rechazar segunda sesión activa con mensaje claro; handoff explícito. Plan: autoridad local pura antes de transporte, sin fallback silencioso ni LAN.
+- **M3e — TLS sobre USB AOA para la prueba de posesión.** Hecho en ambos lados: Android `odd/tasks/usb-tls-pairing.md` (e1–e3) y desktop `odd/tasks/usb-tls-pairing.md` en `feat/desktop-video-sink` (M3e1–M3e3); interop JSSE↔rustls socketless probada en `4263e6d`. Sin wiring productivo: la prueba todavía no está compuesta con `PendingPairingCoordinator` ni con el store de teléfonos del desktop.
 
 Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN autenticado debe existir T13b Android persistente, T13c desktop persistente/revocación, prueba de posesión de la clave privada correspondiente al `trustMaterial` del QR, nonce de uso único con expiración, confirmación explícita de confianza y threat model/plan testeable con TLS estándar e identidad de par pinneada/esperada.
+
+Estado del gate (2026-09-28): T13b hecho; T13c hecho como MVP; prueba de posesión hecha (M3c por loopback y M3e por USB, ambas sólo en tests); nonce de uso único con expiración hecho; confirmación explícita hecha en la capa de dominio (`PendingPairingCoordinator.confirm`). Falta el threat model consolidado y, sobre todo, la identidad esperada del teléfono ante el desktop: hoy el teléfono pinnea al desktop, pero el desktop no autentica al teléfono (`TrustedPhoneIdentity` prevé una clave pública que nada produce todavía). Esto requiere una decisión de diseño de seguridad antes de componer el pairing de punta a punta y antes de T17/T19.
 
 ### M4 — Transportes autenticados y cambio de modo
 
@@ -152,7 +155,9 @@ Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN auten
 
 ## Próxima unidad autorizada
 
-La próxima unidad recomendada puede seguir siendo **M4/T15 — USB video transport sobre AOA bulk** porque no abre LAN ni depende de persistencia completa; M3 permanece parcial hasta T13b/T13c. Empezar con seams/fakes y frames de sesión anidados; sin prueba física todavía y sin reinterpretar endianess del `SessionFrame`.
+Actualización 2026-09-28: M4/T15 (transporte fake de `SessionFrame` sobre `0x01020304`) y M3e están hechos. La próxima unidad depende de una decisión humana de seguridad: cómo se autentica el teléfono ante el desktop (identidad de par esperada del gate M3). Con esa decisión, cerrar M3 componiendo de punta a punta QR → TLS USB pinneado → `CCP1` → confirmación → confianza persistente en ambos lados; después seguir con T16 (Wi‑Fi fake/loopback, sin listener). La migración de `SessionFrame` al canal TLS vivo forma parte de los transportes autenticados de M4.
+
+Texto anterior, conservado como historial: la próxima unidad recomendada podía seguir siendo **M4/T15 — USB video transport sobre AOA bulk** porque no abre LAN ni depende de persistencia completa; M3 permanecía parcial hasta T13b/T13c. Empezar con seams/fakes y frames de sesión anidados; sin prueba física todavía y sin reinterpretar endianess del `SessionFrame`.
 
 Antes de escribir source para T8b se debe:
 
