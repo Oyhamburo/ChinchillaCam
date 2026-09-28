@@ -28,6 +28,8 @@ fn request_and_response_match_frozen_ccp1_goldens() {
 fn rejects_malformed_headers_and_payload_sizes() {
     assert_eq!(PairingProofRequest::new(&"x".repeat(65), vec![1], vec![2], "session"), Err(PairingProofProtocolError::PayloadTooLarge));
     assert_eq!(PairingProofRequest::new("pc-1", vec![1; 65], vec![2], "session"), Err(PairingProofProtocolError::PayloadTooLarge));
+    assert_eq!(PairingProofRequest::new("pc 1", vec![1], vec![2], "session"), Err(PairingProofProtocolError::InvalidDesktopId));
+    assert_eq!(PairingProofRequest::new("pc-ñ", vec![1], vec![2], "session"), Err(PairingProofProtocolError::InvalidDesktopId));
     let request = from_hex(REQUEST);
     let mut bad_magic = request.clone();
     bad_magic[0] = 0;

@@ -19,6 +19,7 @@ pub enum PairingProofProtocolError {
     OutOfOrderTlv,
     MissingTlv,
     InvalidUtf8,
+    InvalidDesktopId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +61,13 @@ impl PairingProofRequest {
             || self.challenge_nonce.len() > MAX_NONCE_BYTES
         {
             return Err(PairingProofProtocolError::PayloadTooLarge);
+        }
+        if !self
+            .desktop_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err(PairingProofProtocolError::InvalidDesktopId);
         }
         Ok(())
     }
