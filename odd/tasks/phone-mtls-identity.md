@@ -105,7 +105,32 @@ Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --chec
    - **Full**: `cargo test` → 183 tests en total (181 + 2 nuevos), 0 fallos.
    - **Líneas cambiadas**: 174 -- `trusted_phone_store.rs` +59/-8, `phone_client_cert_verifier.rs` +1/-1, `phone_client_cert_verifier_test.rs` +98/-7. Dentro de la heurística de ~400.
    - Commit: `fix(desktop): fail closed on duplicate phone trust records`.
-2. [ ] m2 — Client auth obligatorio en `usb_tls_pairing_proof`: `with_client_cert_verifier` con política `Pairing` en lugar de `.with_no_client_auth()`; `complete_handshake_and_pairing_proof` devuelve el stream vivo y el candidato `{phone_id, spki}` leído con `peer_certificates()`; el helper stdio se adapta al nuevo tipo de retorno y, al terminar, reporta `phone_id=<hex>` por stderr. RED: `pairing_proof_returns_client_spki_with_live_stream`, `pairing_handshake_rejects_client_without_certificate`. Estimado ~300 líneas.
+2. [x] m2 — Client auth obligatorio en `usb_tls_pairing_proof`: `with_client_cert_verifier` con política `Pairing` en lugar de `.with_no_client_auth()`; `complete_handshake_and_pairing_proof` devuelve el stream vivo y el candidato `{phone_id, spki}` leído con `peer_certificates()`; el helper stdio se adapta al nuevo tipo de retorno y, al terminar, reporta `phone_id=<hex>` por stderr. RED: `pairing_proof_returns_client_spki_with_live_stream`, `pairing_handshake_without_client_certificate_does_not_consume_qr_nonce` (nombre final; el plan original decía `pairing_handshake_rejects_client_without_certificate`). Estimado ~300 líneas.
+
+   ### Evidencia m2
+
+   - **RED observado** (error de compilación: el test ya asume el nuevo tipo de retorno de `complete_handshake_and_pairing_proof`, que todavía era `StreamOwned<...>` directo):
+
+     ```
+     error[E0609]: no field `tls` on type `StreamOwned<rustls::ServerConnection, UsbTlsCiphertextStream<CrossedBulkIo>>`
+       --> tests/usb_tls_pairing_proof_test.rs:93:18
+        |
+     93 |                 .tls;
+        |                  ^^^ unknown field
+        |
+        = note: available fields are: `conn`, `sock`
+     ```
+
+     (4 errores E0609 en total: 2 por `.tls` y 2 por `.candidate`, uno de cada uno en `pairing_proof_returns_client_spki_with_live_stream` y en el test existente adaptado). Mismo patrón que el RED de m1 (error de compilación como evidencia válida, no un test que corre y falla en runtime).
+
+   - **GREEN**: `server_config` usa `.with_client_cert_verifier(PhoneClientCertVerifier::pairing())` en lugar de `.with_no_client_auth()`. `complete_handshake_and_pairing_proof` devuelve `CompletedPairingProof<I> { tls, candidate }` (struct nombrado, no tupla); `candidate: PairedPhoneCandidate { phone_id, spki }` se lee con `paired_phone_candidate(&connection)` desde la MISMA `ServerConnection` vía `peer_certificates()`, reutilizando `phone_client_cert_verifier::accepted_client_spki` (ahora `pub(crate)`) para la misma extracción/validación de SPKI canónico P-256 que ya usó el verifier durante el handshake; un certificado de par ausente falla cerrado (`UsbTlsPairingProofError::Tls`, nunca un candidato por defecto), antes de tocar `CCP1`. `lib.rs` reexporta `CompletedPairingProof` y `PairedPhoneCandidate`. El helper stdio (`usb_pairing_proof_stdio_helper.rs`) escribe `phone_id=<64 hex minúscula>` por stderr (con `flush`) después de un proof exitoso; stdout sigue siendo sólo el stream binario. Los tests existentes cuyo cliente usaba `with_no_client_auth()` ahora presentan un certificado de teléfono real vía el helper compartido `tls_client`/`client_config` (ahora piden un `&DesktopTlsIdentity`), sin tocar sus assertions originales; se agregó `tls_client_without_certificate` sólo para el nuevo test negativo. `loopback_pairing_proof_server.rs` no se tocó (sigue en `.with_no_client_auth()`, test/interop-only, según contrato).
+   - **GREEN focused**: `cargo test --offline --test usb_tls_pairing_proof_test` → `test result: ok. 8 passed; 0 failed` (6 previas adaptadas + 2 nuevas). `cargo test --offline --test phone_client_cert_verifier_test` → sigue en `9 passed; 0 failed` (sin regresión).
+   - `cargo fmt -- --check`: sin diffs (tras `cargo fmt` sobre `phone_client_cert_verifier.rs` y `usb_tls_pairing_proof_test.rs`).
+   - **Full**: `cargo test` → 185 tests en total (183 + 2 nuevos), 0 fallos. Incluye `usb_pairing_proof_stdio_helper_test` sin cambios (sigue verde: sólo cubre las líneas de prelude, no llega a completar un handshake).
+   - **Líneas cambiadas**: 208 -- `usb_tls_pairing_proof.rs` +45/-5, `usb_tls_pairing_proof_test.rs` +126/-11, `phone_client_cert_verifier.rs` +6/-2, `usb_pairing_proof_stdio_helper.rs` +8/-1, `lib.rs` +3/-1. Dentro de la heurística de ~400.
+   - **Tipo de retorno elegido**: struct nombrado `CompletedPairingProof<I: UsbBulkIo> { pub tls: StreamOwned<ServerConnection, UsbTlsCiphertextStream<I>>, pub candidate: PairedPhoneCandidate }`, con `PairedPhoneCandidate { pub phone_id: String, pub spki: Vec<u8> }` (`Debug, Clone, PartialEq, Eq`) -- struct en lugar de tupla, según lo pedido.
+   - **Interop Android pendiente**: el test de interop opcional de Android contra este helper (aún no existe en este repo -- no se encontró ninguna referencia a `usb_pairing_proof_stdio_helper` ni a `phone_id=` bajo `android/`) va a fallar contra el helper reconstruido hasta la tarea m3 de Android (necesita autorización nueva del usuario); no se tocó el worktree de Android.
+   - Commit: `feat(desktop): require phone client certificates for USB pairing`.
 3. [ ] m3 — Handshake de reconexión confiable sin QR: API nueva que acepta sólo teléfonos confiables. RED: `trusted_handshake_accepts_trusted_phone_without_qr`, `trusted_handshake_rejects_unknown_phone`, `trusted_handshake_rejects_revoked_phone`. Estimado ~250 líneas.
 4. [ ] m4 — Confirmación explícita: el candidato de pairing no se persiste solo; `confirm(label, store)` persiste `TrustedPhoneIdentity`. RED: `pairing_candidate_is_not_persisted_without_confirmation`, `confirm_persists_trusted_phone_identity`. Estimado ~150 líneas.
 
@@ -113,4 +138,4 @@ Criterios: ningún camino USB real acepta clientes sin certificado; pairing liga
 
 ## Progreso
 
-Plan creado el 2026-09-28; m1 completada el 2026-09-28 (ver Evidencia m1); m2-m4 sin iniciar.
+Plan creado el 2026-09-28; m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada y sus 5 hallazgos atendidos en m1b el 2026-09-28 (ver Revisión nativa m1 y Evidencia m1b); m2 completada el 2026-09-28 (ver Evidencia m2); m3-m4 sin iniciar.

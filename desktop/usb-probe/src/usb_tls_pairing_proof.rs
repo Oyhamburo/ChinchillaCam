@@ -11,8 +11,9 @@ use rustls::{
 };
 
 use crate::{
-    DesktopTlsIdentity, PairingProofFrame, PairingProofRequest, PairingProofResponse,
-    PairingQrIssuer, PairingQrIssuerError, PairingQrNonceGenerator, UsbBulkIo,
+    phone_client_cert_verifier::accepted_client_spki, phone_id_for_spki, DesktopTlsIdentity,
+    PairingProofFrame, PairingProofRequest, PairingProofResponse, PairingQrIssuer,
+    PairingQrIssuerError, PairingQrNonceGenerator, PhoneClientCertVerifier, UsbBulkIo,
     UsbTlsCiphertextStream,
 };
 
@@ -45,6 +46,24 @@ pub struct UsbTlsPairingProofServer {
     connection: ServerConnection,
 }
 
+/// The phone identity a pairing handshake's client certificate carried: its `phone_id` and
+/// the exact canonical P-256 SPKI DER bytes, read from the live `ServerConnection` via
+/// `peer_certificates()`. This is a candidate only -- the caller (task m4) must still gate
+/// persisting it as a `TrustedPhoneIdentity` on an explicit user confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairedPhoneCandidate {
+    pub phone_id: String,
+    pub spki: Vec<u8>,
+}
+
+/// The outcome of a completed pairing handshake and proof: the still-live TLS stream (so
+/// the caller can keep exchanging application data over the same session) and the phone
+/// candidate the same connection's peer certificate carried.
+pub struct CompletedPairingProof<I: UsbBulkIo> {
+    pub tls: StreamOwned<ServerConnection, UsbTlsCiphertextStream<I>>,
+    pub candidate: PairedPhoneCandidate,
+}
+
 impl UsbTlsPairingProofServer {
     pub fn new(identity: &DesktopTlsIdentity) -> Result<Self, UsbTlsPairingProofError> {
         Ok(Self {
@@ -73,7 +92,7 @@ impl UsbTlsPairingProofServer {
         stream: UsbTlsCiphertextStream<I>,
         issuer: &mut PairingQrIssuer<R>,
         timeout: Duration,
-    ) -> Result<StreamOwned<ServerConnection, UsbTlsCiphertextStream<I>>, UsbTlsPairingProofError>
+    ) -> Result<CompletedPairingProof<I>, UsbTlsPairingProofError>
     where
         I: UsbBulkIo,
         R: PairingQrNonceGenerator,
@@ -91,16 +110,37 @@ impl UsbTlsPairingProofServer {
             ensure_before_deadline(deadline)?;
         }
 
+        let candidate = paired_phone_candidate(&connection)?;
+
         let mut tls = StreamOwned::new(connection, stream);
         let request = read_ccp1_request(&mut tls, deadline)?;
         validate_request(&request)?;
         consume_and_respond(&mut tls, issuer, request, deadline)?;
-        Ok(tls)
+        Ok(CompletedPairingProof { tls, candidate })
     }
 
     pub fn connection(&self) -> &ServerConnection {
         &self.connection
     }
+}
+
+/// Reads the phone's client certificate off the just-completed handshake's own
+/// `ServerConnection` -- never a separately supplied certificate -- and derives its
+/// candidate identity. A missing peer certificate or one whose SPKI is not canonical P-256
+/// fails closed: this never returns a default or placeholder candidate.
+fn paired_phone_candidate(
+    connection: &ServerConnection,
+) -> Result<PairedPhoneCandidate, UsbTlsPairingProofError> {
+    let end_entity = connection
+        .peer_certificates()
+        .and_then(|certificates| certificates.first())
+        .ok_or_else(|| {
+            UsbTlsPairingProofError::Tls("phone presented no client certificate".to_string())
+        })?;
+    let spki = accepted_client_spki(end_entity)
+        .map_err(|error| UsbTlsPairingProofError::Tls(error.to_string()))?;
+    let phone_id = phone_id_for_spki(&spki);
+    Ok(PairedPhoneCandidate { phone_id, spki })
 }
 
 fn server_config(
@@ -114,7 +154,7 @@ fn server_config(
     let config = ServerConfig::builder_with_provider(provider.into())
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .map_err(|error| UsbTlsPairingProofError::Tls(error.to_string()))?
-        .with_no_client_auth()
+        .with_client_cert_verifier(PhoneClientCertVerifier::pairing())
         .with_single_cert(vec![cert], key)
         .map_err(|error| UsbTlsPairingProofError::Tls(error.to_string()))?;
     Ok(Arc::new(config))

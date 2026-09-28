@@ -55,9 +55,16 @@ fn run() -> Result<(), String> {
     let framed = FramedUsbStream::new(bulk_io, budget);
     let stream = UsbTlsCiphertextStream::new(framed);
     let server = UsbTlsPairingProofServer::new(&identity).map_err(debug_error)?;
-    let _live_tls_stream = server
+    let outcome = server
         .complete_handshake_and_pairing_proof(stream, &mut issuer, PROOF_TIMEOUT)
         .map_err(debug_error)?;
+    let _live_tls_stream = outcome.tls;
+
+    {
+        let mut stderr = io::stderr().lock();
+        writeln!(stderr, "phone_id={}", outcome.candidate.phone_id).map_err(io_error)?;
+        stderr.flush().map_err(io_error)?;
+    }
     Ok(())
 }
 

@@ -8,11 +8,11 @@ use std::{
 };
 
 use rustls::{
-    pki_types::{CertificateDer, ServerName},
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
     ClientConfig, ClientConnection, RootCertStore, StreamOwned,
 };
 use usb_probe::{
-    DesktopTlsIdentity, FrameTransferBudget, FramedUsbStream, PairingProofFrame,
+    phone_id_for_spki, DesktopTlsIdentity, FrameTransferBudget, FramedUsbStream, PairingProofFrame,
     PairingProofRequest, PairingProofResponse, PairingQrIssuer, PairingQrIssuerError,
     RecordingUsbBulkIo, UsbBulkIo, UsbProbeError, UsbTlsCiphertextStream, UsbTlsPairingProofError,
     UsbTlsPairingProofServer,
@@ -31,7 +31,8 @@ fn desktop_rustls_handshake_runs_over_crossed_usb_ciphertext_streams() {
         let mut server = UsbTlsPairingProofServer::new(&server_identity).unwrap();
         server.complete_handshake(&mut desktop_stream).unwrap();
     });
-    let mut client = tls_client(identity.certificate_der());
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Test Phone Client").unwrap();
+    let mut client = tls_client(identity.certificate_der(), &phone_identity);
     while client.is_handshaking() {
         client.complete_io(&mut phone_stream).unwrap();
     }
@@ -79,6 +80,7 @@ fn completed_pairing_proof_returns_live_tls_stream_for_same_connection_messages(
     let cert = identity.certificate_der().to_vec();
     let (desktop_io, phone_io) = crossed_bulk_pair();
 
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Test Phone Client").unwrap();
     thread::scope(|scope| {
         let server = scope.spawn(|| -> Result<(), UsbTlsPairingProofError> {
             let mut tls = UsbTlsPairingProofServer::new(&identity)
@@ -87,7 +89,8 @@ fn completed_pairing_proof_returns_live_tls_stream_for_same_connection_messages(
                     ciphertext_stream(desktop_io),
                     &mut issuer,
                     Duration::from_millis(1500),
-                )?;
+                )?
+                .tls;
             let mut message = [0; 11];
             tls.read_exact(&mut message)
                 .map_err(|error| UsbTlsPairingProofError::Io(error.to_string()))?;
@@ -97,7 +100,7 @@ fn completed_pairing_proof_returns_live_tls_stream_for_same_connection_messages(
                 .map_err(|error| UsbTlsPairingProofError::Io(error.to_string()))
         });
 
-        let mut tls = phone_tls_stream(phone_io, &cert);
+        let mut tls = phone_tls_stream(phone_io, &cert, &phone_identity);
         tls.write_all(&request_frame(&request)).unwrap();
         tls.flush().unwrap();
         let response = read_ccp1_frame(&mut tls).unwrap();
@@ -115,6 +118,97 @@ fn completed_pairing_proof_returns_live_tls_stream_for_same_connection_messages(
 
         server.join().unwrap().unwrap();
     });
+}
+
+#[test]
+fn pairing_proof_returns_client_spki_with_live_stream() {
+    let now = now_seconds();
+    let (identity, mut issuer, request) = proof_fixture(now, "desktop-01", vec![7; 32]);
+    let cert = identity.certificate_der().to_vec();
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Candidate Phone").unwrap();
+    let expected_spki = phone_identity.spki_der_p256().to_vec();
+    let expected_phone_id = phone_id_for_spki(&expected_spki);
+    let (desktop_io, phone_io) = crossed_bulk_pair();
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| -> Result<(), UsbTlsPairingProofError> {
+            let outcome = UsbTlsPairingProofServer::new(&identity)
+                .unwrap()
+                .complete_handshake_and_pairing_proof(
+                    ciphertext_stream(desktop_io),
+                    &mut issuer,
+                    Duration::from_millis(1500),
+                )?;
+            assert_eq!(outcome.candidate.spki, expected_spki);
+            assert_eq!(outcome.candidate.phone_id, expected_phone_id);
+
+            let mut tls = outcome.tls;
+            let mut message = [0; 11];
+            tls.read_exact(&mut message)
+                .map_err(|error| UsbTlsPairingProofError::Io(error.to_string()))?;
+            assert_eq!(&message, b"after-proof");
+            tls.write_all(b"server-ack")
+                .and_then(|_| tls.flush())
+                .map_err(|error| UsbTlsPairingProofError::Io(error.to_string()))
+        });
+
+        let mut tls = phone_tls_stream(phone_io, &cert, &phone_identity);
+        tls.write_all(&request_frame(&request)).unwrap();
+        tls.flush().unwrap();
+        let response = read_ccp1_frame(&mut tls).unwrap();
+        assert_eq!(
+            response,
+            PairingProofFrame::response(PairingProofResponse::ok(request))
+                .encode()
+                .unwrap()
+        );
+        tls.write_all(b"after-proof").unwrap();
+        tls.flush().unwrap();
+        let mut ack = [0; 10];
+        tls.read_exact(&mut ack).unwrap();
+        assert_eq!(&ack, b"server-ack");
+
+        server.join().unwrap().unwrap();
+    });
+}
+
+#[test]
+fn pairing_handshake_without_client_certificate_does_not_consume_qr_nonce() {
+    let now = now_seconds();
+    let (identity, mut issuer, request) = proof_fixture(now, "desktop-01", vec![7; 32]);
+    let cert = identity.certificate_der().to_vec();
+
+    let server_result = thread::scope(|scope| {
+        let (desktop_io, phone_io) = crossed_bulk_pair();
+        let server = scope.spawn(|| {
+            UsbTlsPairingProofServer::new(&identity)
+                .unwrap()
+                .complete_handshake_and_pairing_proof(
+                    ciphertext_stream(desktop_io),
+                    &mut issuer,
+                    Duration::from_millis(500),
+                )
+        });
+
+        let mut phone_stream = ciphertext_stream(phone_io);
+        let mut client = tls_client_without_certificate(&cert);
+        while client.is_handshaking() {
+            if client.complete_io(&mut phone_stream).is_err() {
+                break;
+            }
+        }
+
+        server.join().unwrap()
+    });
+
+    assert!(
+        server_result.is_err(),
+        "expected the handshake to fail without a phone client certificate, got Ok"
+    );
+
+    // The QR nonce must still be consumable afterwards by a proper client, proving the
+    // rejected handshake above never consumed it.
+    assert!(exchange_proof(identity, &mut issuer, request).is_ok());
 }
 
 #[test]
@@ -175,7 +269,8 @@ fn desktop_usb_tls_handshake_rejects_wrong_root() {
         let mut server = UsbTlsPairingProofServer::new(&identity).unwrap();
         server.complete_handshake(&mut desktop_stream)
     });
-    let mut client = tls_client(wrong_identity.certificate_der());
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Test Phone Client").unwrap();
+    let mut client = tls_client(wrong_identity.certificate_der(), &phone_identity);
 
     let error = client.complete_io(&mut phone_stream).unwrap_err();
     assert!(
@@ -188,9 +283,10 @@ fn desktop_usb_tls_handshake_rejects_wrong_root() {
 fn phone_tls_stream(
     phone_io: CrossedBulkIo,
     root_cert: &[u8],
+    phone_identity: &DesktopTlsIdentity,
 ) -> StreamOwned<ClientConnection, UsbTlsCiphertextStream<CrossedBulkIo>> {
     let mut phone_stream = ciphertext_stream(phone_io);
-    let mut client = tls_client(root_cert);
+    let mut client = tls_client(root_cert, phone_identity);
     while client.is_handshaking() {
         client.complete_io(&mut phone_stream).unwrap();
     }
@@ -240,6 +336,7 @@ where
     ) -> io::Result<()>,
 {
     let cert = identity.certificate_der().to_vec();
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Test Phone Client").unwrap();
     let (desktop_io, phone_io) = crossed_bulk_pair();
     let server = thread::scope(|scope| {
         let server = scope.spawn(|| {
@@ -251,7 +348,7 @@ where
                     server_timeout,
                 )
         });
-        let mut tls = phone_tls_stream(phone_io, &cert);
+        let mut tls = phone_tls_stream(phone_io, &cert, &phone_identity);
         let response = write_request(&mut tls, request_frame(&request))
             .and_then(|_| read_ccp1_frame(&mut tls));
         let server_tls = server.join().unwrap()?;
@@ -318,20 +415,38 @@ impl usb_probe::PairingQrNonceGenerator for TestRng {
     }
 }
 
-fn tls_client(root_cert: &[u8]) -> ClientConnection {
+/// Builds a phone-side TLS client that presents `phone_identity`'s certificate as its
+/// client credential -- the desktop server now requires phone client auth (task m2).
+fn tls_client(root_cert: &[u8], phone_identity: &DesktopTlsIdentity) -> ClientConnection {
     ClientConnection::new(
-        Arc::new(client_config(root_cert)),
+        Arc::new(client_config(root_cert, phone_identity)),
         ServerName::try_from("localhost").unwrap(),
     )
     .unwrap()
 }
 
-fn client_config(root_cert: &[u8]) -> ClientConfig {
+fn client_config(root_cert: &[u8], phone_identity: &DesktopTlsIdentity) -> ClientConfig {
     let mut roots = RootCertStore::empty();
     roots.add(CertificateDer::from(root_cert.to_vec())).unwrap();
+    let client_cert = CertificateDer::from(phone_identity.certificate_der().to_vec());
+    let client_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+        phone_identity.private_key_pkcs8_der().to_vec(),
+    ));
     ClientConfig::builder()
         .with_root_certificates(roots)
-        .with_no_client_auth()
+        .with_client_auth_cert(vec![client_cert], client_key)
+        .unwrap()
+}
+
+/// A phone-side TLS client presenting no client certificate at all, to exercise the
+/// desktop server's mandatory phone client auth rejecting it.
+fn tls_client_without_certificate(root_cert: &[u8]) -> ClientConnection {
+    let mut roots = RootCertStore::empty();
+    roots.add(CertificateDer::from(root_cert.to_vec())).unwrap();
+    let config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    ClientConnection::new(Arc::new(config), ServerName::try_from("localhost").unwrap()).unwrap()
 }
 
 fn ciphertext_stream<I: UsbBulkIo>(io: I) -> UsbTlsCiphertextStream<I> {

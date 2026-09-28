@@ -151,8 +151,12 @@ fn supported_signature_algorithms() -> WebPkiSupportedAlgorithms {
 }
 
 /// Parses `end_entity` and returns its SPKI DER bytes, rejecting anything that is not a
-/// canonical P-256 SubjectPublicKeyInfo.
-fn accepted_client_spki(end_entity: &CertificateDer<'_>) -> Result<Vec<u8>, RustlsError> {
+/// canonical P-256 SubjectPublicKeyInfo. `pub(crate)` so `usb_tls_pairing_proof` can reuse
+/// the exact same extraction/validation this verifier itself uses when reading the phone's
+/// certificate back off a completed handshake's `ServerConnection`.
+pub(crate) fn accepted_client_spki(
+    end_entity: &CertificateDer<'_>,
+) -> Result<Vec<u8>, RustlsError> {
     let parsed = webpki::EndEntityCert::try_from(end_entity)
         .map_err(|_| RustlsError::InvalidCertificate(CertificateError::BadEncoding))?;
     let spki = parsed.subject_public_key_info();
