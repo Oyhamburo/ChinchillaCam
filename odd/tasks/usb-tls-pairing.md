@@ -16,14 +16,23 @@ Construir el transporte mínimo para llevar TLS estándar sobre el canal USB Acc
 
 ## Tareas
 
-### e1 — Adaptador USB de ciphertext acotado
+### [x] e1 — Adaptador USB de ciphertext acotado
 
 Agregar un adaptador pequeño sobre `AccessoryIoSession`/`AccessoryFrameCodec` que lea y escriba chunks TLS opacos en el stream `0x01020305`, con límites estrictos, cierre fail-closed y tests JVM sin hardware.
 
-### e2 — TLS pinneado con `SSLEngine` y `CCP1`
+Estado (2026-09-28): implementado en `6a5349c feat(android): frame tls ciphertext over usb`.
+
+Evidencia:
+
+- RED: el test enfocado falló antes del adaptador por referencias no resueltas a `UsbTlsCiphertextIoAdapter`, resultados tipados y constantes TLS USB.
+- GREEN enfocado: `:android:usb-probe:testDebugUnitTest --tests dev.chinchillacam.usbprobe.UsbTlsCiphertextIoAdapterTest --rerun-tasks` pasó.
+- Full: `:android:usb-probe:testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` pasó.
+- Revisión independiente exacta: PASS sobre el candidato staged; verificó sólo los 3 archivos permitidos, 356 líneas, stream `0x01020305`, split outbound `<=32768`, total write `<=65536`, cierres fail-closed, sin `CCP1` raw ni wiring UI/LAN.
+
+### [ ] e2 — TLS pinneado con `SSLEngine` y `CCP1`
 
 Con autorización fresca, montar `SSLEngine` cliente sobre el adaptador e1, pinear el SPKI del QR con `PinnedDesktopTlsTrustManager`, enviar `CCP1` dentro de TLS y rechazar peers no esperados. Esta tarea no debe usar `localhost` como ruta productiva en teléfono.
 
-### e3 — Interoperabilidad socketless Rust ↔ JVM
+### [ ] e3 — Interoperabilidad socketless Rust ↔ JVM
 
 Con autorización fresca cross-worktree, probar rustls `ServerConnection` y JSSE `SSLEngine` sobre el envelope USB acotado, sin TCP, LAN, ADB ni dispositivo físico.
