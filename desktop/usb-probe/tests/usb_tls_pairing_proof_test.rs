@@ -73,6 +73,70 @@ fn desktop_usb_tls_pairing_proof_echoes_request_and_denies_replay_expired_wrong_
 }
 
 #[test]
+fn completed_pairing_proof_returns_live_tls_stream_for_same_connection_messages() {
+    let now = now_seconds();
+    let (identity, mut issuer, request) = proof_fixture(now, "desktop-01", vec![7; 32]);
+    let cert = identity.certificate_der().to_vec();
+    let (desktop_io, phone_io) = crossed_bulk_pair();
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| -> Result<(), UsbTlsPairingProofError> {
+            let mut tls = UsbTlsPairingProofServer::new(&identity)
+                .unwrap()
+                .complete_handshake_and_pairing_proof(
+                    ciphertext_stream(desktop_io),
+                    &mut issuer,
+                    Duration::from_millis(1500),
+                )?;
+            let mut message = [0; 11];
+            tls.read_exact(&mut message)
+                .map_err(|error| UsbTlsPairingProofError::Io(error.to_string()))?;
+            assert_eq!(&message, b"after-proof");
+            tls.write_all(b"server-ack")
+                .and_then(|_| tls.flush())
+                .map_err(|error| UsbTlsPairingProofError::Io(error.to_string()))
+        });
+
+        let mut tls = phone_tls_stream(phone_io, &cert);
+        tls.write_all(&request_frame(&request)).unwrap();
+        tls.flush().unwrap();
+        let response = read_ccp1_frame(&mut tls).unwrap();
+        assert_eq!(
+            response,
+            PairingProofFrame::response(PairingProofResponse::ok(request))
+                .encode()
+                .unwrap()
+        );
+        tls.write_all(b"after-proof").unwrap();
+        tls.flush().unwrap();
+        let mut ack = [0; 10];
+        tls.read_exact(&mut ack).unwrap();
+        assert_eq!(&ack, b"server-ack");
+
+        server.join().unwrap().unwrap();
+    });
+}
+
+#[test]
+fn delayed_final_pairing_proof_bytes_after_deadline_reject_without_consuming_nonce() {
+    let now = now_seconds();
+    let (identity, mut issuer, request) = proof_fixture(now, "desktop-01", vec![7; 32]);
+    let first_attempt = exchange_proof_with_split_final_bytes(
+        identity.clone(),
+        &mut issuer,
+        request.clone(),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    );
+
+    assert!(matches!(
+        first_attempt,
+        Err(UsbTlsPairingProofError::Timeout)
+    ));
+    assert!(exchange_proof(identity, &mut issuer, request).is_ok());
+}
+
+#[test]
 fn raw_ccp1_without_tls_is_denied_by_usb_pairing_proof_api() {
     let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
     let mut issuer = PairingQrIssuer::with_test_rng(
@@ -138,6 +202,43 @@ fn exchange_proof(
     issuer: &mut PairingQrIssuer<TestRng>,
     request: PairingProofRequest,
 ) -> Result<Vec<u8>, UsbTlsPairingProofError> {
+    exchange_proof_with_request_writer(
+        identity,
+        issuer,
+        request,
+        Duration::from_millis(1500),
+        |tls, frame| tls.write_all(&frame).and_then(|_| tls.flush()),
+    )
+}
+
+fn exchange_proof_with_split_final_bytes(
+    identity: DesktopTlsIdentity,
+    issuer: &mut PairingQrIssuer<TestRng>,
+    request: PairingProofRequest,
+    delay: Duration,
+    server_timeout: Duration,
+) -> Result<Vec<u8>, UsbTlsPairingProofError> {
+    exchange_proof_with_request_writer(identity, issuer, request, server_timeout, |tls, frame| {
+        let split = frame.len() - 1;
+        tls.write_all(&frame[..split]).and_then(|_| tls.flush())?;
+        thread::sleep(delay);
+        tls.write_all(&frame[split..]).and_then(|_| tls.flush())
+    })
+}
+
+fn exchange_proof_with_request_writer<F>(
+    identity: DesktopTlsIdentity,
+    issuer: &mut PairingQrIssuer<TestRng>,
+    request: PairingProofRequest,
+    server_timeout: Duration,
+    write_request: F,
+) -> Result<Vec<u8>, UsbTlsPairingProofError>
+where
+    F: FnOnce(
+        &mut StreamOwned<ClientConnection, UsbTlsCiphertextStream<CrossedBulkIo>>,
+        Vec<u8>,
+    ) -> io::Result<()>,
+{
     let cert = identity.certificate_der().to_vec();
     let (desktop_io, phone_io) = crossed_bulk_pair();
     let server = thread::scope(|scope| {
@@ -147,15 +248,14 @@ fn exchange_proof(
                 .complete_handshake_and_pairing_proof(
                     ciphertext_stream(desktop_io),
                     issuer,
-                    Duration::from_millis(1500),
+                    server_timeout,
                 )
         });
         let mut tls = phone_tls_stream(phone_io, &cert);
-        let response = tls
-            .write_all(&request_frame(&request))
-            .and_then(|_| tls.flush())
+        let response = write_request(&mut tls, request_frame(&request))
             .and_then(|_| read_ccp1_frame(&mut tls));
-        server.join().unwrap()?;
+        let server_tls = server.join().unwrap()?;
+        drop(server_tls);
         response.map_err(|error| UsbTlsPairingProofError::Io(error.to_string()))
     });
     server

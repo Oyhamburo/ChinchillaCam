@@ -73,7 +73,7 @@ impl UsbTlsPairingProofServer {
         stream: UsbTlsCiphertextStream<I>,
         issuer: &mut PairingQrIssuer<R>,
         timeout: Duration,
-    ) -> Result<(), UsbTlsPairingProofError>
+    ) -> Result<StreamOwned<ServerConnection, UsbTlsCiphertextStream<I>>, UsbTlsPairingProofError>
     where
         I: UsbBulkIo,
         R: PairingQrNonceGenerator,
@@ -84,18 +84,18 @@ impl UsbTlsPairingProofServer {
         let mut connection = self.connection;
         let mut stream = stream;
         while connection.is_handshaking() {
-            if Instant::now() >= deadline {
-                return Err(UsbTlsPairingProofError::Timeout);
-            }
+            ensure_before_deadline(deadline)?;
             connection
                 .complete_io(&mut stream)
                 .map_err(map_complete_io_error)?;
+            ensure_before_deadline(deadline)?;
         }
 
         let mut tls = StreamOwned::new(connection, stream);
         let request = read_ccp1_request(&mut tls, deadline)?;
         validate_request(&request)?;
-        consume_and_respond(&mut tls, issuer, request)
+        consume_and_respond(&mut tls, issuer, request, deadline)?;
+        Ok(tls)
     }
 
     pub fn connection(&self) -> &ServerConnection {
@@ -131,7 +131,9 @@ fn consume_and_respond<S: Read + Write, R: PairingQrNonceGenerator>(
     stream: &mut S,
     issuer: &mut PairingQrIssuer<R>,
     request: PairingProofRequest,
+    deadline: Instant,
 ) -> Result<(), UsbTlsPairingProofError> {
+    ensure_before_deadline(deadline)?;
     issuer
         .consume_issued_nonce(
             request.desktop_id(),
@@ -139,15 +141,18 @@ fn consume_and_respond<S: Read + Write, R: PairingQrNonceGenerator>(
             current_epoch_seconds()?,
         )
         .map_err(UsbTlsPairingProofError::Issuer)?;
+    ensure_before_deadline(deadline)?;
     let response = PairingProofFrame::response(PairingProofResponse::ok(request))
         .encode()
         .map_err(|_| UsbTlsPairingProofError::InvalidProof)?;
     stream
         .write_all(&response)
         .map_err(|error| UsbTlsPairingProofError::Io(error.to_string()))?;
+    ensure_before_deadline(deadline)?;
     stream
         .flush()
         .map_err(|error| UsbTlsPairingProofError::Io(error.to_string()))?;
+    ensure_before_deadline(deadline)?;
     Ok(())
 }
 
@@ -182,11 +187,14 @@ fn read_exact_before<S: Read>(
         }
         match stream.read(buf) {
             Ok(0) => return Err(UsbTlsPairingProofError::Io("truncated proof".into())),
-            Ok(read) => buf = &mut buf[read..],
+            Ok(read) => {
+                ensure_before_deadline(deadline)?;
+                buf = &mut buf[read..];
+            }
             Err(error) => return Err(map_read_error(error)),
         }
     }
-    Ok(())
+    ensure_before_deadline(deadline)
 }
 
 fn validate_request(request: &PairingProofRequest) -> Result<(), UsbTlsPairingProofError> {
@@ -197,6 +205,14 @@ fn validate_request(request: &PairingProofRequest) -> Result<(), UsbTlsPairingPr
         return Err(UsbTlsPairingProofError::InvalidProof);
     }
     Ok(())
+}
+
+fn ensure_before_deadline(deadline: Instant) -> Result<(), UsbTlsPairingProofError> {
+    if Instant::now() >= deadline {
+        Err(UsbTlsPairingProofError::Timeout)
+    } else {
+        Ok(())
+    }
 }
 
 fn valid_token(value: &str) -> bool {
