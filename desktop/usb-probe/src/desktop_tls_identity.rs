@@ -68,7 +68,7 @@ impl DesktopTlsIdentity {
         validate_desktop_name(desktop_name)?;
         let mut distinguished_name = DistinguishedName::new();
         distinguished_name.push(DnType::CommonName, desktop_name);
-        let mut params = CertificateParams::default();
+        let mut params = CertificateParams::new(vec!["localhost".to_string()]);
         params.distinguished_name = distinguished_name;
         params.key_pair = Some(key_pair);
         let certificate = Certificate::from_params(params)

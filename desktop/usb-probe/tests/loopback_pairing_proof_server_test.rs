@@ -1,9 +1,8 @@
 use std::{net::TcpStream, sync::Arc, thread, time::Duration};
 
 use rustls::{
-    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-    pki_types::{CertificateDer, ServerName, UnixTime},
-    ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme,
+    pki_types::{CertificateDer, ServerName},
+    ClientConfig, ClientConnection, RootCertStore,
 };
 use usb_probe::{DesktopTlsIdentity, LoopbackPairingProofServer, LoopbackPairingProofServerError};
 
@@ -18,25 +17,41 @@ fn loopback_tls_handshake_presents_identity_spki() {
 
     let addr = server.local_addr();
     let handle = thread::spawn(move || server.accept_one().unwrap());
-    let verifier = Arc::new(CaptureVerifier::new(expected_cert.clone()));
-    let config = ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(verifier.clone())
-        .with_no_client_auth();
-    let mut connection =
-        ClientConnection::new(Arc::new(config), ServerName::try_from("localhost").unwrap())
-            .unwrap();
+    let mut connection = ClientConnection::new(
+        Arc::new(client_config(&expected_cert)),
+        ServerName::try_from("localhost").unwrap(),
+    )
+    .unwrap();
     let mut stream = TcpStream::connect(addr).unwrap();
     while connection.is_handshaking() {
         connection.complete_io(&mut stream).unwrap();
     }
+    let peer_cert = connection.peer_certificates().unwrap()[0].as_ref().to_vec();
     handle.join().unwrap();
 
-    let cert = verifier.observed.lock().unwrap().clone().unwrap();
-    assert_eq!(cert, expected_cert);
-    assert!(cert
+    assert_eq!(peer_cert, expected_cert);
+    assert!(peer_cert
         .windows(expected_spki.len())
         .any(|window| window == expected_spki));
+}
+
+#[test]
+fn loopback_tls_handshake_rejects_wrong_trust_root() {
+    let server_identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
+    let wrong_identity = DesktopTlsIdentity::generate_ephemeral("Wrong Desktop").unwrap();
+    let server =
+        LoopbackPairingProofServer::bind(server_identity, Duration::from_millis(1500)).unwrap();
+    let addr = server.local_addr();
+    let handle = thread::spawn(move || server.accept_one());
+    let mut connection = ClientConnection::new(
+        Arc::new(client_config(wrong_identity.certificate_der())),
+        ServerName::try_from("localhost").unwrap(),
+    )
+    .unwrap();
+    let mut stream = TcpStream::connect(addr).unwrap();
+
+    assert!(connection.complete_io(&mut stream).is_err());
+    assert!(handle.join().unwrap().is_err());
 }
 
 #[test]
@@ -50,55 +65,10 @@ fn accept_one_times_out_without_client() {
     ));
 }
 
-#[derive(Debug)]
-struct CaptureVerifier {
-    expected: Vec<u8>,
-    observed: std::sync::Mutex<Option<Vec<u8>>>,
-}
-
-impl CaptureVerifier {
-    fn new(expected: Vec<u8>) -> Self {
-        Self {
-            expected,
-            observed: std::sync::Mutex::new(None),
-        }
-    }
-}
-
-impl ServerCertVerifier for CaptureVerifier {
-    fn verify_server_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        _: &[CertificateDer<'_>],
-        _: &ServerName<'_>,
-        _: &[u8],
-        _: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        let cert = end_entity.as_ref().to_vec();
-        assert_eq!(cert, self.expected);
-        *self.observed.lock().unwrap() = Some(cert);
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _: &[u8],
-        _: &CertificateDer<'_>,
-        _: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _: &[u8],
-        _: &CertificateDer<'_>,
-        _: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![SignatureScheme::ECDSA_NISTP256_SHA256]
-    }
+fn client_config(root_cert: &[u8]) -> ClientConfig {
+    let mut roots = RootCertStore::empty();
+    roots.add(CertificateDer::from(root_cert.to_vec())).unwrap();
+    ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth()
 }
