@@ -3,7 +3,10 @@ package dev.chinchillacam.usbprobe
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.IOException
+import java.io.OutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.security.KeyStore
@@ -43,6 +46,52 @@ class SslEngineUsbTlsChannelTest {
         assertTrue(result is SslEngineUsbTlsHandshakeResult.Rejected)
         assertEquals(true, pair.clientCloseable.closed)
         server.join(2000)
+    }
+
+    @Test
+    fun blockedReadDeadlineRejectsAndClosesUsbSession() {
+        val fixture = TlsFixture.create("valid")
+        val pair = sessionPair()
+        try {
+            val result = SslEngineUsbTlsChannel(readTimeoutMillis = 50)
+                .handshake(pair.client, fixture.certificate.publicKey.encoded)
+
+            assertTrue(result is SslEngineUsbTlsHandshakeResult.Rejected)
+            assertEquals(true, pair.clientCloseable.closed)
+        } finally {
+            pair.close()
+        }
+    }
+
+    @Test
+    fun usbWriteErrorRejectsAndClosesUsbSession() {
+        val fixture = TlsFixture.create("valid")
+        val closeable = RecordingCloseable()
+        val session = AccessoryIoSession(ByteArrayInputStream(ByteArray(0)), ThrowingOutputStream(), closeable)
+        try {
+            val result = SslEngineUsbTlsChannel(readTimeoutMillis = 100)
+                .handshake(session, fixture.certificate.publicKey.encoded)
+
+            assertTrue(result is SslEngineUsbTlsHandshakeResult.Rejected)
+            assertEquals(true, closeable.closed)
+        } finally {
+            session.close()
+        }
+    }
+
+    @Test
+    fun maxHandshakeStepLimitRejectsAndClosesUsbSession() {
+        val fixture = TlsFixture.create("valid")
+        val pair = sessionPair()
+        try {
+            val result = SslEngineUsbTlsChannel(maxHandshakeSteps = 1)
+                .handshake(pair.client, fixture.certificate.publicKey.encoded)
+
+            assertTrue(result is SslEngineUsbTlsHandshakeResult.Rejected)
+            assertEquals(true, pair.clientCloseable.closed)
+        } finally {
+            pair.close()
+        }
     }
 
     private fun serverHandshake(context: SSLContext, session: AccessoryIoSession) {
@@ -98,12 +147,23 @@ class SslEngineUsbTlsChannelTest {
         val client: AccessoryIoSession,
         val server: AccessoryIoSession,
         val clientCloseable: RecordingCloseable,
-    )
+    ) : AutoCloseable {
+        override fun close() {
+            runCatching { client.close() }
+            runCatching { server.close() }
+        }
+    }
 
     private class RecordingCloseable : java.io.Closeable {
         var closed = false
             private set
         override fun close() { closed = true }
+    }
+
+    private class ThrowingOutputStream : OutputStream() {
+        override fun write(b: Int) {
+            throw IOException("write failed")
+        }
     }
 
     private class TlsFixture(val context: SSLContext, val certificate: X509Certificate) {

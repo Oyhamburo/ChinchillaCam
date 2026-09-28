@@ -33,7 +33,11 @@ Evidencia:
 
 Estado: en progreso para e2a. Con autorización fresca, montar `SSLEngine` cliente sobre el adaptador e1, pinear el SPKI del QR con `PinnedDesktopTlsTrustManager`, completar handshake TLS 1.2+ sin socket/localhost y rechazar peers no esperados. e2a no confirma pairing ni envía `CCP1`; e2b requerirá autorización fresca para llevar `CCP1` dentro del canal TLS establecido. Esta tarea no debe usar `localhost` como ruta productiva en teléfono.
 
-Evidencia e2a1 (2026-09-28): `fb4ada9 feat(android): open pinned USB TLS channel` abre un canal TLS autenticado por SPKI y conserva el `SSLEngine`/sesión vivos para e2b. RED enfocado: referencias no resueltas antes de crear el canal. GREEN enfocado y full `testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` pasaron; revisión independiente exacta PASS con 370 líneas cambiadas y sin `CCP1`, pairing confirmation, sockets, LAN ni hardware.
+Evidencia e2a1 (2026-09-28): `fb4ada9 feat(android): open pinned USB TLS channel` abre un canal TLS autenticado por SPKI y conserva el `SSLEngine`/sesión vivos para e2b. RED enfocado: referencias no resueltas antes de crear el canal. GREEN enfocado y full `testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` pasaron; revisión independiente exacta PASS con 370 líneas cambiadas y sin `CCP1`, pairing confirmation, sockets, LAN ni hardware. Native START sobre el rango exacto falló por consent binding stale/expired, sin invocación nativa ni lineage; no hay ACK e2a1.
+
+Estado e2a2: en progreso para pruebas fail-closed de deadline absoluto, read/write error, overflow/step-limit si cabe; e2a2 debe conservar el canal vivo para e2b y no autenticar el teléfono por handshake solo.
+
+Evidencia e2a2 (2026-09-28): se agregaron pruebas fail-closed para deadline de lectura bloqueada, error de escritura USB y límite de pasos. Desviación TDD: el RED no se capturó por separado antes de los cambios; no se reclama TDD estricto para e2a2. GREEN enfocado y full `testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` pasaron. El cambio no modifica producción porque los tests pasaron sobre `fb4ada9`; se evitó editar source sin necesidad.
 
 ### [ ] e3 — Interoperabilidad socketless Rust ↔ JVM
 
