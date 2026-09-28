@@ -28,9 +28,9 @@ Llevar los bytes TLS de rustls sobre el transporte USB AOA existente sin abrir L
 ## Evidencia M3e3
 
 - RED: `cd desktop/usb-probe && ~/.cargo/bin/cargo test --test usb_pairing_proof_stdio_helper_test` falló con `CARGO_BIN_EXE_usb_pairing_proof_stdio_helper` no definido porque el binario aún no existía, exit code 101.
-- GREEN: `cd desktop/usb-probe && ~/.cargo/bin/cargo test --test usb_pairing_proof_stdio_helper_test` PASS, 1 test.
-- Alcance: helper stdio emite `CHINCHILLACAM-USB-INTEROP:v1`, `qr=CHINCHILLACAM-PAIR:v1:...`, flush antes de modo binario, y conecta `UsbTlsPairingProofServer::complete_handshake_and_pairing_proof` sobre `UsbTlsCiphertextStream<StdioUsbBulkIo>`/`FramedUsbStream` sin TCP/LAN/hardware ni persistencia de confianza.
-- Commit: pendiente.
+- GREEN: `cd desktop/usb-probe && ~/.cargo/bin/cargo test --test usb_pairing_proof_stdio_helper_test` PASS, 1 test; full `cargo fmt -- --check && cargo test` PASS; verificación independiente PASS.
+- Alcance: helper stdio emite `CHINCHILLACAM-USB-INTEROP:v1`, `qr=CHINCHILLACAM-PAIR:v1:...`, flush antes de modo binario, y conecta `UsbTlsPairingProofServer::complete_handshake_and_pairing_proof` sobre `UsbTlsCiphertextStream<StdioUsbBulkIo>`/`FramedUsbStream` sin TCP/LAN/hardware ni persistencia de confianza. La integración Android cross-language sigue pendiente.
+- Commit desktop helper: `7be0fda2a643e2b378d177cb99dfcdff5984ffb3` (`feat(desktop): add USB pairing stdio helper`).
 
 ## Evidencia M3e2
 
