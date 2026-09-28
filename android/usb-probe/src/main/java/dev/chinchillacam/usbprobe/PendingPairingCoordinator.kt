@@ -8,6 +8,8 @@ interface ChallengeNonceSource {
     fun nextChallenge(): PairingChallengeMaterial
 }
 
+class ChallengeNonceSourceException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+
 data class PairingChallengeMaterial(
     val challengeNonce: ByteArray,
     val sessionId: String,
@@ -83,6 +85,7 @@ sealed class PendingPairingStartResult {
         object AlreadyPending : Rejected()
         data class InvalidProofTime(val field: String) : Rejected()
         data class InvalidQr(val field: String) : Rejected()
+        data class ChallengeSourceRejected(val reason: String) : Rejected()
     }
 }
 
@@ -140,7 +143,11 @@ class PendingPairingCoordinator(
         if (liveNonceExpiries.containsKey(nonceKey)) return PendingPairingStartResult.Rejected.NonceReplay
         if (liveNonceExpiries.size >= maxLiveNonces) return PendingPairingStartResult.Rejected.NonceCacheFull
 
-        val challengeMaterial = challengeNonceSource.nextChallenge()
+        val challengeMaterial = try {
+            challengeNonceSource.nextChallenge()
+        } catch (error: ChallengeNonceSourceException) {
+            return PendingPairingStartResult.Rejected.ChallengeSourceRejected(error.message ?: error::class.java.simpleName)
+        }
         if (challengeMaterial.expiresAtEpochSeconds <= now) return PendingPairingStartResult.Rejected.Expired("challenge")
         require(challengeMaterial.challengeNonce.isNotEmpty()) { "challenge nonce must not be empty" }
         require(challengeMaterial.sessionId.isNotBlank()) { "session id must not be blank" }

@@ -43,3 +43,10 @@
 - Abrir un cliente `SSLSocket` solo contra endpoints `CCPB` de loopback y exigir TLS 1.2+ con `PinnedDesktopTlsTrustManager`.
 - Enviar/recibir frames `CCP1` acotados, cerrar recursos y rechazar timeouts, IO/TLS, status distinto de cero, ecos que no coinciden, QR/challenge expirados y nonces bajo mínimos del verificador (QR >=16 bytes, challenge >=32 bytes).
 - Usar tests JVM con servidor TLS local real y certificado P-256 de fixture; no conectar LAN externa, USB, decoder ni wiring de producción en este slice.
+
+## M3c5 — fuente productiva de challenge seguro
+
+- Crear `SecureRandomChallengeNonceSource` como fuente productiva real, sin fallback determinista.
+- Generar `challengeNonce` de 32 bytes con `SecureRandom` respaldado por el sistema operativo y `sessionId` independiente de 16 bytes codificado base64url ASCII sin padding.
+- Acotar TTL a 30..120 segundos y rechazar fail-closed relojes inválidos u overflow de expiración.
+- Mantener seams de RNG solo para tests y comprobar que valores repetidos difieren.

@@ -131,6 +131,23 @@ class PendingPairingCoordinatorTest {
     }
 
     @Test
+    fun challengeSourceFailureRejectsWithoutProofOrPersistence() {
+        val verifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge) }
+        val coordinator = PendingPairingCoordinator(
+            epochSecondsSource = EpochSecondsSource { 100 },
+            challengeNonceSource = SecureRandomChallengeNonceSource.forTesting(
+                epochSecondsSource = EpochSecondsSource { -1 },
+                ttlSeconds = 30,
+            ) { target -> target.fill(0x01) },
+            proofVerifier = verifier,
+        )
+
+        assertEquals(PendingPairingStartResult.Rejected.ChallengeSourceRejected("clock must not be negative"), coordinator.start(qr(), byteArrayOf(1)))
+        assertEquals(emptyList<ByteArray>(), verifier.proofs)
+        assertEquals(PendingPairingState.Idle, coordinator.state())
+    }
+
+    @Test
     fun invalidTrustMaterialIsRejectedBeforeChallengeProofOrPersistenceAndDoesNotConsumeNonce() {
         val challenges = RecordingChallengeSource(PairingChallengeMaterial(byteArrayOf(0x10), "session-1", expiresAtEpochSeconds = 200))
         val verifier = RecordingVerifier { challenge, _ -> verifiedFrom(challenge) }

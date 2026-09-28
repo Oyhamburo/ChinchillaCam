@@ -231,7 +231,7 @@ private fun decodeBase64UrlField(value: String, field: String): Result<ByteArray
 
 private fun ByteArray.toBase64Url(): String = Base64UrlNoPadding.encode(this)
 
-private object Base64UrlNoPadding {
+internal object Base64UrlNoPadding {
     private const val ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
     private val DECODE = IntArray(128) { -1 }.also { table ->
         ALPHABET.forEachIndexed { index, char -> table[char.code] = index }
