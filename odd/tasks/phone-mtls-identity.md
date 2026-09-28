@@ -49,9 +49,27 @@ Decisión del usuario del 2026-09-28 (opción 1): mTLS con clave del teléfono e
 
 Runner: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` (focused: `--tests <FQCN>`). Último límite revisado nativamente: `11b05ea`.
 
-### [ ] m1 — Certificado de cliente del teléfono en el canal USB TLS
+### [x] m1 — Certificado de cliente del teléfono en el canal USB TLS
 
 Nuevo seam `PhoneTlsIdentity` (`fun keyManagers(): Array<KeyManager>`, `val subjectPublicKeyInfoDer: ByteArray`); parámetro de constructor `phoneTlsIdentity: PhoneTlsIdentity? = null` en `SslEngineUsbTlsChannel` (hoy `init(null, …)` en `SslEngineUsbTlsChannel.kt:274`); identidad PKCS12 de test con la receta `keytool` existente (`TlsFixture.create`). RED: `presentsPhoneClientCertificateWhenServerRequiresClientAuth` (servidor JSSE con `needClientAuth=true` y trust manager que captura el SPKI). Test de caracterización: sin identidad y con servidor que exige client auth, el handshake termina `Rejected` y cierra la sesión. Estimado ~250 líneas.
+
+#### Evidencia m1
+
+- **RED observado** (falla de compilación, no de ejecución, porque el seam todavía no existía): al agregar sólo el test y el harness de soporte (sin tocar producción), `:android:usb-probe:compileDebugUnitTestKotlin` falló con, entre otras:
+  ```
+  e: .../SslEngineUsbTlsChannelTest.kt:252:45 Cannot find a parameter with this name: phoneTlsIdentity
+  e: .../SslEngineUsbTlsChannelTest.kt:449:75 Unresolved reference: PhoneTlsIdentity
+  e: .../SslEngineUsbTlsChannelTest.kt:450:9 'keyManagers' overrides nothing
+  e: .../SslEngineUsbTlsChannelTest.kt:451:9 'subjectPublicKeyInfoDer' overrides nothing
+  BUILD FAILED
+  ```
+- **GREEN focused** (tras crear `PhoneTlsIdentity.kt` y cablear el parámetro/ctor en `SslEngineUsbTlsChannel`): `:android:usb-probe:testDebugUnitTest --tests dev.chinchillacam.usbprobe.SslEngineUsbTlsChannelTest --rerun-tasks` → `BUILD SUCCESSFUL`, 14 tests, 0 fallas (11 preexistentes + 3 nuevos). Repetido 5 veces consecutivas sin flakiness.
+  - Se descubrió y corrigió una carrera real de TLS 1.3 durante el GREEN: el cliente termina su propio handshake al enviar su `Finished`, sin esperar al servidor; el servidor todavía puede hacer un `wrap` adicional (p. ej. `NewSessionTicket` post-handshake) y escribirlo en el pipe justo cuando el test cierra el lado cliente. Se resolvió en el test ordenando `server.join(...)` antes de `result.close()`. El mismo síntoma (`IOException: Pipe closed`, no capturado) aparece de fondo en `completesPinnedClientHandshakeOverUsbCiphertextFrames` (test preexistente, no modificado) en la misma corrida — no bloquea (esa prueba sólo verifica `!isAlive`), se deja constancia para una futura limpieza fuera de alcance de m1.
+- **Caracterización** (`rejectsHandshakeWhenServerRequiresClientAuthWithoutPhoneIdentity`): no pasó "gratis"; requirió investigación. Con TLS 1.3 (el que negocian por defecto ambos peers), JSSE deja el rechazo de un certificado de cliente vacío a discreción del servidor (RFC 8446 §4.4.2.4) y el `SSLEngine` sigue adelante sin nunca invocar el trust manager — verificado empíricamente (el cliente terminaba `Authenticated`, no `Rejected`). Además, aunque el servidor rechazara post-handshake, la asimetría de TLS 1.3 hace que el cliente ya haya retornado antes de que el servidor pueda reaccionar. La prueba fuerza `TLSv1.2` sólo del lado servidor de este test: ahí JSSE aborta él mismo con `SSLHandshakeException: Empty client certificate chain` en cuanto ve la cadena vacía, sin necesidad de lógica extra en el trust manager, y el cliente sí observa `Rejected` (cierra la sesión) porque en TLS 1.2 el `Finished` del servidor es el último mensaje del flujo. Pasó tras ese ajuste, estable en 5 corridas.
+- **Test opcional agregado** (`keyManagersFailureRejectsHandshakeFailClosed`, barato: sin hilo servidor): confirma que si `PhoneTlsIdentity.keyManagers()` lanza, `handshake()` retorna `Rejected` y cierra la sesión (ya cubierto por el `runCatching` existente alrededor de `newEngine()`, sin cambios adicionales de producción).
+- **Full**: `testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` → `BUILD SUCCESSFUL`. Total del módulo (agregando todos los XML de `testDebugUnitTest`): 364 tests, 2 skipped (los interop opt-in), 0 failures, 0 errors (baseline previo: 361/2/0).
+- **Líneas cambiadas**: 163 (additions+deletions) — `PhoneTlsIdentity.kt` nuevo (16), `SslEngineUsbTlsChannel.kt` (+2/-1), `SslEngineUsbTlsChannelTest.kt` (+140/-4).
+- **Commit**: `feat(android): present phone TLS client certificate`.
 
 ### [ ] m2 — Adaptador delgado `AndroidKeyStorePhoneTlsIdentity`
 
@@ -65,4 +83,4 @@ Criterios: el canal presenta el certificado sólo si recibe identidad; sin ident
 
 ## Progreso
 
-Plan creado el 2026-09-28; ninguna tarea iniciada.
+Plan creado el 2026-09-28. m1 completada el 2026-09-28 (ver Evidencia m1); m2 y m3 pendientes.

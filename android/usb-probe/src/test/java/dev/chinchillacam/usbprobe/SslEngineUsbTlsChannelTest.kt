@@ -13,15 +13,21 @@ import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.nio.ByteBuffer
 import java.security.KeyStore
+import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
+import javax.net.ssl.KeyManager
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLEngineResult
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLException
 import javax.net.ssl.SSLSession
+import javax.net.ssl.X509TrustManager
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 class SslEngineUsbTlsChannelTest {
@@ -223,8 +229,111 @@ class SslEngineUsbTlsChannelTest {
         }
     }
 
-    private fun serverHandshake(context: SSLContext, session: AccessoryIoSession) {
-        val engine = context.createSSLEngine().apply { useClientMode = false; beginHandshake() }
+    @Test
+    fun presentsPhoneClientCertificateWhenServerRequiresClientAuth() {
+        val desktopFixture = TlsFixture.create("desktop-client-auth")
+        val phoneFixture = TlsFixture.create("phone-client-auth")
+        val phoneIdentity = TestPhoneTlsIdentity(phoneFixture)
+        val trustManager = CapturingClientTrustManager()
+        val serverContext = SSLContext.getInstance("TLS").apply {
+            init(desktopFixture.keyManagers, arrayOf(trustManager), null)
+        }
+        val pair = sessionPair()
+        val serverError = AtomicReference<Throwable?>(null)
+        val serverCompleted = AtomicBoolean(false)
+        val server = thread {
+            try {
+                serverHandshake(serverContext, pair.server, needClientAuth = true)
+                serverCompleted.set(true)
+            } catch (error: Throwable) {
+                serverError.set(error)
+            }
+        }
+
+        val result = SslEngineUsbTlsChannel(phoneTlsIdentity = phoneIdentity)
+            .handshake(pair.client, desktopFixture.certificate.publicKey.encoded)
+
+        assertTrue(result is SslEngineUsbTlsHandshakeResult.Authenticated)
+        result as SslEngineUsbTlsHandshakeResult.Authenticated
+        // Join before closing: TLS 1.3 clients finish as soon as they send their own Finished
+        // message, without waiting on the server. The server still has to unwrap that Finished
+        // and often makes one more opportunistic wrap to send a post-handshake NewSessionTicket;
+        // closing the client side first can race that trailing write against a closed pipe.
+        server.join(2000)
+        serverError.get()?.let { throw it }
+        assertTrue(serverCompleted.get())
+        result.close()
+
+        val capturedChain = trustManager.capturedClientChain
+        assertTrue(capturedChain != null && capturedChain.isNotEmpty())
+        val phoneLeafSubjectPublicKeyInfo = capturedChain!![0].publicKey.encoded
+        assertTrue(phoneLeafSubjectPublicKeyInfo.contentEquals(phoneIdentity.subjectPublicKeyInfoDer))
+    }
+
+    @Test
+    fun rejectsHandshakeWhenServerRequiresClientAuthWithoutPhoneIdentity() {
+        val desktopFixture = TlsFixture.create("desktop-requires-auth")
+        val trustManager = CapturingClientTrustManager()
+        val serverContext = SSLContext.getInstance("TLS").apply {
+            init(desktopFixture.keyManagers, arrayOf(trustManager), null)
+        }
+        val pair = sessionPair()
+        val serverError = AtomicReference<Throwable?>(null)
+        val serverReachedTerminalState = AtomicBoolean(false)
+        val server = thread {
+            try {
+                // Force TLS 1.2: a TLS 1.3 client completes its own handshake as soon as it sends
+                // its Finished message, without waiting for the server, so a server-side rejection
+                // can never reach it in time (verified empirically). Under TLS 1.2 the server's own
+                // Finished is the last message of the flow, so a rejection here still reaches the
+                // client before its handshake() call returns.
+                serverHandshake(serverContext, pair.server, needClientAuth = true, forceProtocol = "TLSv1.2")
+            } catch (error: Throwable) {
+                serverError.set(error)
+            } finally {
+                serverReachedTerminalState.set(true)
+            }
+        }
+
+        val result = SslEngineUsbTlsChannel().handshake(pair.client, desktopFixture.certificate.publicKey.encoded)
+
+        assertTrue(result is SslEngineUsbTlsHandshakeResult.Rejected)
+        assertEquals(true, pair.clientCloseable.closed)
+        server.join(2000)
+        assertTrue(serverReachedTerminalState.get())
+        // JSSE itself aborts the TLS 1.2 handshake with SSLHandshakeException("Empty client
+        // certificate chain") as soon as needClientAuth=true and no certificate is presented,
+        // before ever consulting the trust manager above. That is a TLS-layer failure, not a bug
+        // in this test's harness; anything else must still reach the JUnit thread.
+        serverError.get()?.let { error ->
+            assertTrue("expected an SSLException on the server, got $error", error is SSLException)
+        }
+    }
+
+    @Test
+    fun keyManagersFailureRejectsHandshakeFailClosed() {
+        val desktopFixture = TlsFixture.create("desktop-key-manager-failure")
+        val throwingIdentity = ThrowingPhoneTlsIdentity(desktopFixture.certificate.publicKey.encoded)
+        val pair = sessionPair()
+
+        try {
+            val result = SslEngineUsbTlsChannel(phoneTlsIdentity = throwingIdentity)
+                .handshake(pair.client, desktopFixture.certificate.publicKey.encoded)
+
+            assertTrue(result is SslEngineUsbTlsHandshakeResult.Rejected)
+            assertEquals(true, pair.clientCloseable.closed)
+        } finally {
+            pair.close()
+        }
+    }
+
+    private fun serverHandshake(context: SSLContext, session: AccessoryIoSession, needClientAuth: Boolean = false, forceProtocol: String? = null) {
+        val engine = context.createSSLEngine().apply {
+            useClientMode = false
+            this.needClientAuth = needClientAuth
+            if (forceProtocol != null) enabledProtocols = arrayOf(forceProtocol)
+            beginHandshake()
+        }
         val adapter = UsbTlsCiphertextIoAdapter()
         val empty = java.nio.ByteBuffer.allocate(0)
         val peer = java.nio.ByteBuffer.allocate(USB_TLS_CIPHERTEXT_WRITE_MAX_BYTES)
@@ -383,7 +492,34 @@ class SslEngineUsbTlsChannelTest {
         }
     }
 
-    private class TlsFixture(val context: SSLContext, val certificate: X509Certificate) {
+    /** Server-side [X509TrustManager] that accepts any presented client chain and records it for assertions. */
+    private class CapturingClientTrustManager : X509TrustManager {
+        var capturedClientChain: Array<out X509Certificate>? = null
+            private set
+
+        override fun checkClientTrusted(chain: Array<out X509Certificate>, authType: String) {
+            capturedClientChain = chain
+        }
+
+        override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String) {
+            throw CertificateException("capturing client trust manager does not trust server certificates")
+        }
+
+        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+    }
+
+    /** Test-only PKCS12-backed [PhoneTlsIdentity] built from the same [TlsFixture] keytool recipe. */
+    private class TestPhoneTlsIdentity(private val fixture: TlsFixture) : PhoneTlsIdentity {
+        override fun keyManagers(): Array<KeyManager> = fixture.keyManagers
+        override val subjectPublicKeyInfoDer: ByteArray = fixture.certificate.publicKey.encoded
+    }
+
+    /** [PhoneTlsIdentity] whose [keyManagers] always fails, to exercise the fail-closed contract. */
+    private class ThrowingPhoneTlsIdentity(override val subjectPublicKeyInfoDer: ByteArray) : PhoneTlsIdentity {
+        override fun keyManagers(): Array<KeyManager> = throw IllegalStateException("phone TLS identity key managers unavailable")
+    }
+
+    private class TlsFixture(val context: SSLContext, val certificate: X509Certificate, val keyManagers: Array<KeyManager>) {
         companion object {
             fun create(alias: String): TlsFixture {
                 val temp = createTempDir(prefix = "cc-engine")
@@ -404,7 +540,7 @@ class SslEngineUsbTlsChannelTest {
                 context.init(kmf.keyManagers, null, null)
                 val certificate = keyStore.getCertificate(alias) as X509Certificate
                 temp.deleteRecursively()
-                return TlsFixture(context, certificate)
+                return TlsFixture(context, certificate, kmf.keyManagers)
             }
             private const val PASSWORD = "changeit"
         }

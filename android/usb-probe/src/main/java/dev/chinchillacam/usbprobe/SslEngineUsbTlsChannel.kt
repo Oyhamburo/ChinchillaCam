@@ -211,6 +211,7 @@ class SslEngineUsbTlsChannel(
     private val readTimeoutMillis: Long = DEFAULT_READ_TIMEOUT_MILLIS,
     private val maxHandshakeSteps: Int = DEFAULT_MAX_HANDSHAKE_STEPS,
     private val adapter: UsbTlsCiphertextIoAdapter = UsbTlsCiphertextIoAdapter(),
+    private val phoneTlsIdentity: PhoneTlsIdentity? = null,
 ) {
     init {
         require(readTimeoutMillis > 0) { "readTimeoutMillis must be positive" }
@@ -271,7 +272,7 @@ class SslEngineUsbTlsChannel(
     private fun newEngine(pinnedSpki: ByteArray): SSLEngine {
         val identity = DesktopTlsIdentityMaterial.validate(pinnedSpki).getOrThrow()
         return SSLContext.getInstance("TLS").apply {
-            init(null, arrayOf(PinnedDesktopTlsTrustManager(identity)), null)
+            init(phoneTlsIdentity?.keyManagers(), arrayOf(PinnedDesktopTlsTrustManager(identity)), null)
         }.createSSLEngine().apply {
             useClientMode = true
             enabledProtocols = supportedProtocols.filter { it == TLS_1_3 || it == TLS_1_2 }.toTypedArray()
