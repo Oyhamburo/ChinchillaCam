@@ -1,7 +1,6 @@
 package dev.chinchillacam.usbprobe
 
 import java.net.Socket
-import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.security.Principal
 import java.security.PrivateKey
@@ -14,9 +13,21 @@ import javax.net.ssl.X509ExtendedKeyManager
  * JVM-testable core of the phone's Android Keystore TLS identity (contract §4.1). Ensures a usable
  * EC P-256 key pair exists under [alias] in [keyStore]: calls [generateKeyPair] when the alias is
  * missing, and deletes then regenerates once when the alias exists but is unusable (no certificate
- * after an interrupted generation, not a private-key entry, or a non-canonical/non-P-256 key). If
- * the alias is still unusable after that single regeneration attempt, construction fails closed
- * with a clear [IllegalStateException] instead of retrying forever.
+ * after an interrupted generation, not a private-key entry, a non-X.509 certificate, or a
+ * non-canonical/non-P-256 key). If the alias is still unusable after that single regeneration
+ * attempt, construction fails closed with a clear [IllegalStateException] instead of retrying
+ * forever.
+ *
+ * Delete-and-regenerate is reserved for that kind of definitive, content-level invalidity. A
+ * transient failure while merely reading the existing entry -- for example a keystore
+ * implementation throwing [java.security.UnrecoverableKeyException] or
+ * [java.security.KeyStoreException] -- is a different thing entirely and is never treated as
+ * "unusable": [usableEntry] lets it propagate, so it fails the whole construction closed instead
+ * of being swallowed into a false "unusable" verdict. This matters because a swallowed read error
+ * used to reach the exact same delete-then-regenerate path as genuine content invalidity, so a
+ * transient read failure could silently destroy the phone's only long-term key and invalidate
+ * every desktop's existing trust in it (contract §4.1.4 and §4.1.6) -- with no corrupted content
+ * to justify it.
  *
  * [keyManagers] returns a single alias-pinned [X509ExtendedKeyManager]: it only ever offers
  * [alias]'s own certificate chain and private key, and only when an EC client certificate is
@@ -107,29 +118,29 @@ class KeyStorePhoneTlsIdentity(
 
         /**
          * Null when [alias] does not hold a usable private-key entry: absent, not a
-         * [KeyStore.PrivateKeyEntry], missing its certificate, or holding a SPKI that
-         * [DesktopTlsIdentityMaterial.validate] rejects (wrong algorithm or curve). Any
-         * [GeneralSecurityException] raised while probing is treated the same way: fail closed
-         * into "unusable" rather than surfacing a partially-read, possibly-corrupted entry.
+         * [KeyStore.PrivateKeyEntry], missing its certificate, holding a non-X.509 certificate, or
+         * holding a SPKI that [DesktopTlsIdentityMaterial.validate] rejects (wrong algorithm or
+         * curve) -- all definitive, content-level invalidity. Deliberately does NOT catch
+         * exceptions raised while reading the entry: a transient failure (for example
+         * [java.security.UnrecoverableKeyException] or [java.security.KeyStoreException]) is not
+         * "unusable" content, it is a read that never completed, so it propagates instead of being
+         * folded into the same verdict as genuine invalidity (closes the read-failure-deletes-key
+         * defect: see the class KDoc above).
          */
         fun usableEntry(
             keyStore: KeyStore,
             alias: String,
             keyProtection: KeyStore.ProtectionParameter?,
         ): UsableEntry? {
-            try {
-                if (!keyStore.entryInstanceOf(alias, KeyStore.PrivateKeyEntry::class.java)) return null
-                val entry = keyStore.getEntry(alias, keyProtection) as? KeyStore.PrivateKeyEntry ?: return null
-                val leaf = entry.certificate as? X509Certificate ?: return null
-                val validated = DesktopTlsIdentityMaterial.validate(leaf.publicKey.encoded).getOrNull() ?: return null
-                return UsableEntry(
-                    subjectPublicKeyInfoDer = validated.subjectPublicKeyInfoDer,
-                    certificateChain = entry.certificateChain.map { it as X509Certificate }.toTypedArray(),
-                    privateKey = entry.privateKey,
-                )
-            } catch (_: GeneralSecurityException) {
-                return null
-            }
+            if (!keyStore.entryInstanceOf(alias, KeyStore.PrivateKeyEntry::class.java)) return null
+            val entry = keyStore.getEntry(alias, keyProtection) as? KeyStore.PrivateKeyEntry ?: return null
+            val leaf = entry.certificate as? X509Certificate ?: return null
+            val validated = DesktopTlsIdentityMaterial.validate(leaf.publicKey.encoded).getOrNull() ?: return null
+            return UsableEntry(
+                subjectPublicKeyInfoDer = validated.subjectPublicKeyInfoDer,
+                certificateChain = entry.certificateChain.map { it as X509Certificate }.toTypedArray(),
+                privateKey = entry.privateKey,
+            )
         }
     }
 }

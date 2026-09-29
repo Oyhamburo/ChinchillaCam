@@ -6,6 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.io.File
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.security.cert.X509Certificate
 import java.util.concurrent.atomic.AtomicReference
@@ -53,6 +54,33 @@ class KeyStorePhoneTlsIdentityTest {
 
         assertFalse(identity.regenerated)
         assertTrue(existingSpki.contentEquals(identity.subjectPublicKeyInfoDer))
+    }
+
+    @Test
+    fun readFailureDoesNotDeleteOrRegenerateExistingKey() {
+        val keyStore = emptyPkcs12KeyStore()
+        importGeneratedEcEntry(keyStore, ALIAS)
+        val originalSpki = (keyStore.getCertificate(ALIAS) as X509Certificate).publicKey.encoded
+        var invocations = 0
+
+        val thrown = try {
+            KeyStorePhoneTlsIdentity(
+                keyStore = keyStore,
+                alias = ALIAS,
+                generateKeyPair = {
+                    invocations += 1
+                    importGeneratedEcEntry(keyStore, ALIAS)
+                },
+                keyProtection = KeyStore.PasswordProtection(WRONG_PASSWORD.toCharArray()),
+            )
+            null
+        } catch (error: Throwable) {
+            error
+        }
+
+        assertEquals(0, invocations)
+        assertTrue(originalSpki.contentEquals((keyStore.getCertificate(ALIAS) as X509Certificate).publicKey.encoded))
+        assertTrue(thrown is GeneralSecurityException || thrown?.cause is GeneralSecurityException)
     }
 
     @Test
@@ -189,5 +217,6 @@ class KeyStorePhoneTlsIdentityTest {
         const val OTHER_ALIAS = "other-ec-key"
         const val SERVER_ALIAS = "server"
         const val PASSWORD = "changeit"
+        const val WRONG_PASSWORD = "not-the-real-password"
     }
 }
