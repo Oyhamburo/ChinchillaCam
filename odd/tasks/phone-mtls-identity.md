@@ -194,6 +194,31 @@ Criterios: el canal presenta el certificado sólo si recibe identidad; sin ident
 - **Líneas cambiadas**: 105 (102 adiciones + 3 eliminaciones), un solo archivo — `SocketlessUsbPairingProofInteropTest.kt`.
 - **Commit**: `test(android): prove mutual TLS interop with desktop helper`.
 
+## Revisiones nativas finales
+
+Revisión nativa por slice de commits, cerrando la deuda de revisión de m3 señalada en Progreso.
+
+### Slice 1 — `c807f4a..84b87ff` (m2b + endurecimiento de tests TLS 1.3)
+
+- Lineage `review-1919496974936c73`, 4 lentes (R1 riesgo, R2 legibilidad, R3 confiabilidad, R4 resiliencia). Resultado: **aprobada sin corrección**; acknowledgement con autoridad `burned`.
+- Hallazgos:
+  - WARNING `R1-transient-probe-error-deletes-identity`, `R4-transient-keystore-error-deletes-valid-key`, `R3-transient-keystore-error-deletes-valid-key` — ya corregidos en m2c (`a76b002`); encontrados antes también por el readback del orquestador.
+  - WARNING `R4-regenerated-signal-lost-after-failed-regeneration` y `R3-regenerated-signal-lost-on-generation-failure` — si la generación falla después de borrar el alias, la señal `regenerated` se pierde en el siguiente arranque; requiere un marcador durable en la capa de wiring.
+  - WARNING `R3-fail-closed-after-regeneration-untested`.
+  - WARNING `R2-pinned-keymanager-test-silent-join-timeout`.
+  - SUGGESTION `R2-ensure-result-duplicates-usable-entry`, `R2-entryinstanceof-precheck-unexplained`, `R2-review-ids-and-history-in-code-comments`, `R2-duplicated-keytool-fixture`, `R3-certificate-chain-cast-escapes-fail-closed`, `R3-pinned-km-test-timing`.
+
+### Slice 2 — `84b87ff..fa0c6a4` (m2c + m3)
+
+- Lineage `review-6e9bc43ad84cc0fb`, 4 lentes (R1 riesgo, R2 legibilidad, R3 confiabilidad, R4 resiliencia). Resultado: **aprobada sin corrección**; acknowledgement con autoridad `burned`.
+- Hallazgos:
+  - WARNING `R4-persistent-read-failure-no-recovery` y `R3-permanent-read-failure-no-recovery` — una clave ilegible de forma permanente deja la construcción fallando siempre; requiere una acción explícita de "restablecer identidad del teléfono" en la capa de wiring/UI, nunca borrado automático.
+  - SUGGESTION `R2-duplicated-keytool-recipe`, `R2-reused-diagnostic-constant`, `R2-kdoc-change-history`, `R2-duplicated-hex-digest`.
+
+### Estado
+
+Feature Android completo (m1–m3, más m1b, m2b y m2c); último límite revisado `fa0c6a4`; validación en dispositivo del Keystore pendiente (M9); los hallazgos anteriores quedan como seguimientos no bloqueantes.
+
 ## Progreso
 
-Plan creado el 2026-09-28. m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada (lineage `review-37abf23d14631701`). m1b (endurecimiento post-revisión) completada el 2026-09-28 (ver Evidencia m1b). m2 completada el 2026-09-28 (ver Evidencia m2; desvío TDD declarado, validación física pendiente para M9). Revisión nativa m1b+m2 aprobada sin corrección (lineage `review-48052d68d919f710`). m2b (endurecimiento post-revisión: alias inservible recuperable, lock de proceso, KeyManager pinneado al alias, y calidad de tests en `SslEngineUsbTlsChannelTest`) completada el 2026-09-28 (ver Revisión nativa m1b+m2 y Evidencia m2b); los once hallazgos no bloqueantes quedan resueltos. m2c (defecto encontrado en readback del orquestador sobre `8ca23c4`: un error transitorio de lectura del keystore borraba y regeneraba la clave del teléfono en vez de propagar y fallar cerrado; corregido para que sólo la invalidez de contenido dispare borrar+regenerar) completada el 2026-09-28 (ver Evidencia m2c). m3 completada el 2026-09-28 (ver Evidencia m3): con autorización fresca del usuario para runtime entre worktrees, `SocketlessUsbPairingProofInteropTest` confirma que el desktop del commit `1a99938` exige y verifica el certificado de cliente del teléfono, y que el `phone_id` que reporta coincide con la huella SPKI local. Revisión nativa m3 pendiente.
+Plan creado el 2026-09-28. m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada (lineage `review-37abf23d14631701`). m1b (endurecimiento post-revisión) completada el 2026-09-28 (ver Evidencia m1b). m2 completada el 2026-09-28 (ver Evidencia m2; desvío TDD declarado, validación física pendiente para M9). Revisión nativa m1b+m2 aprobada sin corrección (lineage `review-48052d68d919f710`). m2b (endurecimiento post-revisión: alias inservible recuperable, lock de proceso, KeyManager pinneado al alias, y calidad de tests en `SslEngineUsbTlsChannelTest`) completada el 2026-09-28 (ver Revisión nativa m1b+m2 y Evidencia m2b); los once hallazgos no bloqueantes quedan resueltos. m2c (defecto encontrado en readback del orquestador sobre `8ca23c4`: un error transitorio de lectura del keystore borraba y regeneraba la clave del teléfono en vez de propagar y fallar cerrado; corregido para que sólo la invalidez de contenido dispare borrar+regenerar) completada el 2026-09-28 (ver Evidencia m2c). m3 completada el 2026-09-28 (ver Evidencia m3): con autorización fresca del usuario para runtime entre worktrees, `SocketlessUsbPairingProofInteropTest` confirma que el desktop del commit `1a99938` exige y verifica el certificado de cliente del teléfono, y que el `phone_id` que reporta coincide con la huella SPKI local. Revisión nativa final ejecutada por slices el 2026-09-28 (ver Revisiones nativas finales): slice `c807f4a..84b87ff` (lineage `review-1919496974936c73`) y slice `84b87ff..fa0c6a4` (lineage `review-6e9bc43ad84cc0fb`), ambas aprobadas sin corrección con autoridad `burned`; feature Android completo (m1-m3, más m1b, m2b y m2c), último límite revisado `fa0c6a4`; validación en dispositivo del Keystore pendiente (M9).

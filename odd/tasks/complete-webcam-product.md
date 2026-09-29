@@ -112,6 +112,8 @@ Gate M3 para LAN/T17: no abrir LAN sin protección. Antes de cualquier LAN auten
 
 Estado del gate (2026-09-28): T13b hecho; T13c hecho como MVP; prueba de posesión hecha (M3c por loopback y M3e por USB, ambas sólo en tests); nonce de uso único con expiración hecho; confirmación explícita hecha en la capa de dominio (`PendingPairingCoordinator.confirm`). Falta el threat model consolidado y, sobre todo, la identidad esperada del teléfono ante el desktop: hoy el teléfono pinnea al desktop, pero el desktop no autentica al teléfono (`TrustedPhoneIdentity` prevé una clave pública que nada produce todavía). Esto requiere una decisión de diseño de seguridad antes de componer el pairing de punta a punta y antes de T17/T19.
 
+Actualización del gate (2026-09-28, feature phone-mtls-identity): la identidad esperada del teléfono ya existe a nivel de dominio con TLS mutuo estándar en ambos lados — Android presenta un certificado de cliente P-256 respaldado por Android Keystore; el desktop lo exige, liga su SPKI al nonce de QR consumido durante el pairing, sólo persiste tras confirmación explícita que rechaza teléfonos revocados, y en la reconexión sólo acepta teléfonos confiables y no revocados. El threat model consolidado vive en `odd/tasks/phone-mtls-identity.md` §5 (ambos worktrees). Con esto, todos los ítems del gate existen a nivel de dominio; sigue faltando antes de T17: composición/wiring de producción del flujo, confirmación en UI con comparación de código corto (T25 y la UI del teléfono), y validación en dispositivo (M9).
+
 ### M4 — Transportes autenticados y cambio de modo
 
 14. **T15 — USB video transport sobre AOA bulk.** Reusar claim/framing existente para stream sostenido con backpressure/timeouts; sin prueba física todavía. T15a inicia con seam fake `UsbSessionFrameTransport` que anida `SessionFrame` como payload opaco dentro de `AccessoryFrame`.
@@ -154,6 +156,8 @@ Estado del gate (2026-09-28): T13b hecho; T13c hecho como MVP; prueba de posesi�
 36. **T37 — Support declaration pass.** Solo aquí mover hipótesis a soporte real o limitaciones por plataforma/dispositivo, basado en evidencia de T33–T36.
 
 ## Próxima unidad autorizada
+
+Actualización 2026-09-28 (tras phone-mtls-identity): la próxima unidad autorizada es componer el pairing USB de punta a punta a nivel de aplicación/dominio en ambos lados, sin UI ni LAN: en Android, `PendingPairingCoordinator` con `UsbTlsPairingProofVerifier` sobre un canal que presenta `PhoneTlsIdentity`; en el desktop, emisor de QR → handshake de pairing → candidato → confirmación explícita → reconexión confiable. Después, T16.
 
 Actualización 2026-09-28: M4/T15 (transporte fake de `SessionFrame` sobre `0x01020304`) y M3e están hechos. La próxima unidad depende de una decisión humana de seguridad: cómo se autentica el teléfono ante el desktop (identidad de par esperada del gate M3). Con esa decisión, cerrar M3 componiendo de punta a punta QR → TLS USB pinneado → `CCP1` → confirmación → confianza persistente en ambos lados; después seguir con T16 (Wi‑Fi fake/loopback, sin listener). La migración de `SessionFrame` al canal TLS vivo forma parte de los transportes autenticados de M4.
 
