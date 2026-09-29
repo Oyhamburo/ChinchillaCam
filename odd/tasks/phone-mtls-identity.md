@@ -231,6 +231,29 @@ Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --chec
 
 Criterios: ningún camino USB real acepta clientes sin certificado; pairing liga el SPKI a la sesión que consumió el nonce; reconexión rechaza desconocidos y revocados en el handshake; nada se persiste sin confirmación explícita; `cargo fmt -- --check` y `cargo test` verdes.
 
+## Revisiones nativas finales
+
+Revisión nativa por slice de commits, cerrando la deuda de revisión de m3+m4b señalada en Progreso.
+
+### Slice 1 — `86cc561..18e57fd` (m2b tests + m3)
+
+Lineage `review-74e4722094ea8a48`, 1 lente (reliability). Resultado: **aprobada**, sin corrección, acknowledgement con autoridad `burned`. Hallazgos no bloqueantes:
+
+- WARNING `R3-trusted-rejection-cause-unproved` — los tests de rechazo de m3 aceptan cualquier `Tls(_)` sin verificar la causa.
+- WARNING `R3-stdio-e2e-test-can-hang` — lecturas bloqueantes sin deadline en el test end-to-end del helper antes de la espera final.
+- SUGGESTION `R3-trusted-handshake-timeout-untested`.
+
+### Slice 2 — `18e57fd..1a99938` (m4 + m4b)
+
+Lineage `review-86db2a51558e722a`, 1 lente (reliability). Resultado: **aprobada**, sin corrección, acknowledgement con autoridad `burned`. Hallazgos:
+
+- WARNING `R3-race-test-ordering-unproved` — el test de carrera depende de un sleep de 25 ms para el orden.
+- SUGGESTION `R3-confirm-store-error-path-untested`.
+
+### Estado
+
+Feature desktop completo (m1–m4, más m1b, m2b y m4b); último límite revisado `1a99938`; los hallazgos anteriores quedan como seguimientos no bloqueantes (no reabren la revisión).
+
 ## Progreso
 
-Plan creado el 2026-09-28; m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada y sus 5 hallazgos atendidos en m1b el 2026-09-28 (ver Revisión nativa m1 y Evidencia m1b); m2 completada el 2026-09-28 (ver Evidencia m2); revisión nativa m1b+m2 aprobada y sus 4 hallazgos atendidos en m2b el 2026-09-28 (ver Revisión nativa m1b+m2 y Evidencia m2b); m3 completada el 2026-09-28 (ver Evidencia m3); m4 completada el 2026-09-28 (ver Evidencia m4); defecto TOCTOU en `PairedPhoneCandidate::confirm` encontrado por readback del orquestador (no por revisión nativa) y corregido el 2026-09-28 en m4b (ver Evidencia m4b). Las 4 tareas del plan (m1-m4) están completas; queda pendiente la revisión nativa de m3+m4b (aún no ejecutada en esta sesión).
+Plan creado el 2026-09-28; m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada y sus 5 hallazgos atendidos en m1b el 2026-09-28 (ver Revisión nativa m1 y Evidencia m1b); m2 completada el 2026-09-28 (ver Evidencia m2); revisión nativa m1b+m2 aprobada y sus 4 hallazgos atendidos en m2b el 2026-09-28 (ver Revisión nativa m1b+m2 y Evidencia m2b); m3 completada el 2026-09-28 (ver Evidencia m3); m4 completada el 2026-09-28 (ver Evidencia m4); defecto TOCTOU en `PairedPhoneCandidate::confirm` encontrado por readback del orquestador (no por revisión nativa) y corregido el 2026-09-28 en m4b (ver Evidencia m4b). Las 4 tareas del plan (m1-m4) están completas; revisión nativa final ejecutada por slices el 2026-09-28 (ver Revisiones nativas finales): feature desktop completo (m1-m4, más m1b, m2b y m4b), último límite revisado `1a99938`, hallazgos anteriores como seguimientos no bloqueantes que no reabren la revisión.
