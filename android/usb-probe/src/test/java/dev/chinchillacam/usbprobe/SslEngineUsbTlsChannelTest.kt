@@ -334,17 +334,19 @@ class SslEngineUsbTlsChannelTest {
         val serverError = AtomicReference<Throwable?>(null)
         val server = thread {
             try {
-                // No forced protocol: both peers negotiate their default, highest mutually
-                // supported version. Empirically (see below), this JDK's SSLEngine rejects an
-                // empty client certificate chain the same way under TLS 1.3 as under TLS 1.2
-                // above: sun.security.ssl.CertificateMessage$T13CertificateConsumer throws
-                // SSLHandshakeException("Empty client certificate chain") from a delegated task,
-                // confirming the negotiated protocol is TLS 1.3 and that the trust manager above
-                // is never consulted (the engine itself aborts first). This contradicts an
-                // earlier, non-committed exploration recorded in m1's evidence, which assumed
-                // JSSE would let TLS 1.3 continue per RFC 8446 §4.4.2.4's discretion clause; this
-                // committed test replaces that assumption with what this JDK actually does.
-                serverHandshake(serverContext, pair.server, needClientAuth = true)
+                // Force TLSv1.3 on the server: relying on default negotiation left this test's
+                // name and comments claiming TLS 1.3 without ever proving it, so a JDK whose
+                // default fell back to TLS 1.2 would have silently exercised the wrong protocol
+                // (see R2-tls13-name-unasserted-protocol). Empirically (see below), this JDK's
+                // SSLEngine rejects an empty client certificate chain the same way under TLS 1.3
+                // as under TLS 1.2 above: sun.security.ssl.CertificateMessage$T13CertificateConsumer
+                // throws SSLHandshakeException("Empty client certificate chain") from a delegated
+                // task, confirming the trust manager above is never consulted (the engine itself
+                // aborts first). This contradicts an earlier, non-committed exploration recorded
+                // in m1's evidence, which assumed JSSE would let TLS 1.3 continue per RFC 8446
+                // §4.4.2.4's discretion clause; this committed test replaces that assumption with
+                // what this JDK actually does.
+                serverHandshake(serverContext, pair.server, needClientAuth = true, forceProtocol = "TLSv1.3")
             } catch (error: Throwable) {
                 serverError.set(error)
             } finally {
@@ -368,6 +370,10 @@ class SslEngineUsbTlsChannelTest {
             // the first application read below, not at the handshake result.
             assertTrue(result is SslEngineUsbTlsHandshakeResult.Authenticated)
             result as SslEngineUsbTlsHandshakeResult.Authenticated
+            // The server was forced to TLSv1.3 above and offers no other protocol, so a
+            // successful negotiation here can only be TLSv1.3: assert it instead of merely
+            // assuming it (see R2-tls13-name-unasserted-protocol).
+            assertEquals("TLSv1.3", result.protocol)
 
             server.join(2000)
             val observedServerError = serverError.get()
@@ -379,11 +385,20 @@ class SslEngineUsbTlsChannelTest {
 
             // SslEngineUsbTlsEstablishedChannel reports failure through exceptions, not a typed
             // result the way handshake() does: the first application read must throw and must
-            // never hand back application bytes.
+            // never hand back application bytes. The server thread above closed the raw USB
+            // session without ever wrapping a TLS alert (see its finally block), so the client's
+            // first read observes end-of-stream and readCiphertext() throws this specific
+            // IllegalStateException (SslEngineUsbTlsChannel.kt); narrowed from a generic
+            // `catch (Exception)` so a different, unrelated failure would surface instead of
+            // being swallowed here (see R2-broad-catch-first-read).
             try {
                 val bytes = result.channel.readApplicationData(16, System.nanoTime() + TimeUnit.SECONDS.toNanos(2))
                 fail("expected the first application read to fail closed, but got ${bytes.size} application bytes")
-            } catch (error: Exception) {
+            } catch (error: IllegalStateException) {
+                assertTrue(
+                    "expected the USB ciphertext EOF message, got: ${error.message}",
+                    error.message.orEmpty().contains("USB TLS ciphertext read failed: EofEmpty"),
+                )
                 assertEquals(true, pair.clientCloseable.closed)
             }
         } finally {
@@ -409,7 +424,7 @@ class SslEngineUsbTlsChannelTest {
         }
     }
 
-    private fun serverHandshake(context: SSLContext, session: AccessoryIoSession, needClientAuth: Boolean = false, forceProtocol: String? = null): SSLEngine {
+    private fun serverHandshake(context: SSLContext, session: AccessoryIoSession, needClientAuth: Boolean = false, forceProtocol: String? = null) {
         val engine = context.createSSLEngine().apply {
             useClientMode = false
             this.needClientAuth = needClientAuth
@@ -447,7 +462,6 @@ class SslEngineUsbTlsChannelTest {
                 else -> Unit
             }
         }
-        return engine
     }
 
     private fun sessionPair(): SessionPair {

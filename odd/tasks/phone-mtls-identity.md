@@ -141,6 +141,20 @@ Genera o carga el alias, spec del contrato §4.1, `KeyManagerFactory.init(Androi
 - **Líneas cambiadas**: 434 (407 adiciones + 27 eliminaciones) — `KeyStorePhoneTlsIdentity.kt` nuevo (178, incluye `AliasPinnedX509KeyManager`), `KeyStorePhoneTlsIdentityTest.kt` nuevo (193), `AndroidKeyStorePhoneTlsIdentity.kt` (+25/-27, ahora delega), `DesktopTlsIdentityMaterial.kt` (+11, sólo KDoc, sin cambio de comportamiento).
 - **Commit**: `fix(android): recover unusable phone TLS keystore alias`.
 
+#### Evidencia m2b (continuación: calidad de tests)
+
+- **Correcciones en `SslEngineUsbTlsChannelTest.kt`** (sin tests nuevos; ver Revisión nativa m1b+m2 arriba):
+  - `serverHandshake` deja de declarar `: SSLEngine` y de retornar el engine: los 4 call sites ya lo ignoraban (`R2-dead-serverhandshake-return`).
+  - `tls13ServerRequiringClientAuthRejectsMissingPhoneIdentityOnFirstRead` ahora fuerza `forceProtocol = "TLSv1.3"` del lado servidor (antes dependía de la negociación por defecto) y afirma `result.protocol == "TLSv1.3"` del lado cliente (`R2-tls13-name-unasserted-protocol`, `R3-tls13-test-protocol-and-exception-unasserted`).
+  - El catch de la primera lectura de aplicación en ese mismo test pasa de `catch (Exception)` a `catch (IllegalStateException)`, afirmando que el mensaje contiene `"USB TLS ciphertext read failed: EofEmpty"` (confirmado leyendo `UsbTlsCiphertextIoAdapter.read` → `UsbTlsCiphertextReadResult.EofEmpty` y `SslEngineUsbTlsEstablishedChannel.readCiphertext`, que arma ese mensaje exacto) en vez de aceptar cualquier excepción (`R2-broad-catch-first-read`).
+  - Corrección de texto (`R2-evidence-import-count`): la Evidencia m1b de arriba decía "imports (+2)"; `git show 8e47482 -- .../SslEngineUsbTlsChannelTest.kt` muestra un solo import agregado (`SSLHandshakeException`). Se deja esta nota en vez de reescribir la evidencia original de m1b, para no alterar un registro histórico ya commiteado.
+- **Focused** (`--tests dev.chinchillacam.usbprobe.SslEngineUsbTlsChannelTest --rerun-tasks`), 3 corridas consecutivas: `BUILD SUCCESSFUL`, 15 tests, 0 fallas cada vez (sin cambio en la cantidad de tests respecto a m1b).
+- **Full**: `testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` → `BUILD SUCCESSFUL`. Total del módulo: 370 tests, 2 skipped (interop opt-in), 0 failures, 0 errors (sin cambio respecto al commit anterior: estos ajustes son sobre aserciones de tests existentes, no tests nuevos). `lintDebug` no reporta hallazgos sobre el archivo tocado.
+- **Líneas cambiadas**: 44 (29 adiciones + 15 eliminaciones), un solo archivo — `SslEngineUsbTlsChannelTest.kt`.
+- **Commit**: `test(android): tighten TLS 1.3 client auth assertions`.
+
+Con esto, los once hallazgos no bloqueantes de la revisión nativa m1b+m2 (lineage `review-48052d68d919f710`, listados arriba) quedan resueltos.
+
 ### [ ] m3 — Interoperabilidad JSSE ↔ rustls con client auth obligatorio
 
 Requiere autorización fresca del usuario para runtime entre worktrees. `SocketlessUsbPairingProofInteropTest` presenta identidad PKCS12 contra el helper desktop actualizado y compara el `phone_id` que el helper reporta por stderr con la huella local del SPKI. Estimado ~120 líneas.
@@ -149,4 +163,4 @@ Criterios: el canal presenta el certificado sólo si recibe identidad; sin ident
 
 ## Progreso
 
-Plan creado el 2026-09-28. m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada (lineage `review-37abf23d14631701`). m1b (endurecimiento post-revisión) completada el 2026-09-28 (ver Evidencia m1b). m2 completada el 2026-09-28 (ver Evidencia m2; desvío TDD declarado, validación física pendiente para M9). m3 pendiente (requiere autorización fresca del usuario para runtime entre worktrees).
+Plan creado el 2026-09-28. m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada (lineage `review-37abf23d14631701`). m1b (endurecimiento post-revisión) completada el 2026-09-28 (ver Evidencia m1b). m2 completada el 2026-09-28 (ver Evidencia m2; desvío TDD declarado, validación física pendiente para M9). Revisión nativa m1b+m2 aprobada sin corrección (lineage `review-48052d68d919f710`). m2b (endurecimiento post-revisión: alias inservible recuperable, lock de proceso, KeyManager pinneado al alias, y calidad de tests en `SslEngineUsbTlsChannelTest`) completada el 2026-09-28 (ver Revisión nativa m1b+m2 y Evidencia m2b); los once hallazgos no bloqueantes quedan resueltos. m3 pendiente (requiere autorización fresca del usuario para runtime entre worktrees).
