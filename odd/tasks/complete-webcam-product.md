@@ -157,6 +157,8 @@ Actualización del gate (2026-09-28, feature phone-mtls-identity): la identidad 
 
 ## Próxima unidad autorizada
 
+Actualización 2026-09-29 (tras usb-authenticated-session): M3 queda compuesto de punta a punta a nivel de dominio por USB (pairing con canal vivo, confirmación explícita en ambos lados, reconexión confiable con `HANDSHAKE_HELLO`/`HANDSHAKE_ACCEPT`, `SessionFrame` sobre TLS); la prueba cruzada de la sesión completa quedó pospuesta por decisión del usuario. Próxima unidad: vitalidad de la sesión (lecturas tolerantes a inactividad y keepalive en ambos lados) junto con los tests de seguridad pendientes de la reconexión; después, T16.
+
 Actualización 2026-09-28 (tras phone-mtls-identity): la próxima unidad autorizada es componer el pairing USB de punta a punta a nivel de aplicación/dominio en ambos lados, sin UI ni LAN: en Android, `PendingPairingCoordinator` con `UsbTlsPairingProofVerifier` sobre un canal que presenta `PhoneTlsIdentity`; en el desktop, emisor de QR → handshake de pairing → candidato → confirmación explícita → reconexión confiable. Después, T16.
 
 Actualización 2026-09-28: M4/T15 (transporte fake de `SessionFrame` sobre `0x01020304`) y M3e están hechos. La próxima unidad depende de una decisión humana de seguridad: cómo se autentica el teléfono ante el desktop (identidad de par esperada del gate M3). Con esa decisión, cerrar M3 componiendo de punta a punta QR → TLS USB pinneado → `CCP1` → confirmación → confianza persistente en ambos lados; después seguir con T16 (Wi‑Fi fake/loopback, sin listener). La migración de `SessionFrame` al canal TLS vivo forma parte de los transportes autenticados de M4.

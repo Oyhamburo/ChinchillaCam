@@ -17,7 +17,7 @@ Continuación del plan maestro tras `phone-mtls-identity` (ver `odd/tasks/comple
 1. Modo por conexión: el teléfono inicia pairing (tras escanear un QR) o reconexión (desktop ya confiable en su store). El desktop elige la política por conexión según su propio estado: ventana de pairing abierta (QR visible) → `complete_handshake_and_pairing_proof`; si no → `complete_trusted_phone_handshake`. Un desacuerdo de modo falla cerrado (CCP1 inválido o certificado no confiable) sin persistir nada.
 2. Tras un pairing exitoso, el canal TLS vivo se conserva hasta la confirmación explícita de cada lado; rechazo, cancelación o vencimiento cierran el canal. La confirmación del teléfono persiste la confianza (store C6) y activa vía `ActiveDesktopAuthority`; la del desktop usa `PairedPhoneCandidate::confirm` (atómica, rechaza revocados).
 3. `SessionFrame` sobre TLS: cada frame de aplicación es un prefijo u32 big-endian con la longitud (1..=1048576) seguido de exactamente un `SessionFrame` CCSF v1 codificado; lecturas acotadas con deadline absoluto; longitud cero, excesiva o frame inválido cierran el canal (fail closed). El tráfico de sesión autenticado viaja sólo dentro de TLS (stream AOA `0x01020305`); `0x01020304` en claro queda como legacy/test.
-4. Reconexión: el teléfono abre TLS pinneando el SPKI del desktop desde su store y presentando su certificado de cliente. Como en TLS 1.3 el cliente no ve el rechazo del desktop hasta leer, la sesión sólo se considera activa cuando el teléfono envía `HANDSHAKE_HELLO` y recibe `HANDSHAKE_ACCEPT`; `HANDSHAKE_REJECT`, cierre o deadline → rechazo tipado y cierre. La activación pasa por `ActiveDesktopAuthority`. El `device_id` de `HANDSHAKE_HELLO` es el `phone_id` (SHA-256 hex en minúscula del SPKI del teléfono); el desktop rechaza con `HANDSHAKE_REJECT` un `device_id` distinto del `phone_id` autenticado por TLS.
+4. Reconexión: el teléfono abre TLS pinneando el fingerprint SHA-256 del SPKI del desktop guardado en su store (el store de Android guarda sólo el fingerprint, no el SPKI completo), verificado por `PinnedDesktopFingerprintTrustManager`, y presentando su certificado de cliente. Como en TLS 1.3 el cliente no ve el rechazo del desktop hasta leer, la sesión sólo se considera activa cuando el teléfono envía `HANDSHAKE_HELLO` y recibe `HANDSHAKE_ACCEPT`; `HANDSHAKE_REJECT`, cierre o deadline → rechazo tipado y cierre. La activación pasa por `ActiveDesktopAuthority`. El `device_id` de `HANDSHAKE_HELLO` es el `phone_id` (SHA-256 hex en minúscula del SPKI del teléfono); el desktop rechaza con `HANDSHAKE_REJECT` un `device_id` distinto del `phone_id` autenticado por TLS.
 5. Después de un pairing confirmado en ambos lados, el mismo canal vivo puede iniciar la sesión con `HANDSHAKE_HELLO`/`HANDSHAKE_ACCEPT`.
 6. Fuera de alcance: UI/Activity, LAN/listener, hardware, reemplazar el receptor de video de producción del desktop (el camino TLS se agrega en paralelo), one-active-phone en el desktop (pregunta de producto para T16/T17), marcador durable de regeneración y acción "restablecer identidad" (seguimientos de `phone-mtls-identity` para la etapa de wiring).
 
@@ -124,11 +124,30 @@ Revisión nativa de 4 lentes sobre s1+s1b (lineage `review-4e11b7ee8e01c0ee`): *
 - **Líneas cambiadas**: 639 (165 en `UsbTrustedReconnect.kt` nuevo; 44 en `PinnedDesktopTlsTrustManager.kt`; 34 en `SslEngineUsbTlsChannel.kt`; 400 en `UsbTrustedReconnectTest.kt` nuevo). Excede la heurística de ~350 estimada y la de ~400 por commit: sin recorte artificial. La producción real (165+44+34 = 243 líneas) incluye la desviación arquitectónica necesaria de arriba, no contemplada en la estimación original; el resto (400) es infraestructura de test SSLEngine/ByteBuffer, mismo estilo ya establecido.
 - **Commit**: `feat(android): reconnect to trusted desktops over USB TLS` (`c8e0a75`).
 
-### [ ] s4 — Prueba cruzada de la sesión completa
+### [ ] s4 — Prueba cruzada de la sesión completa (pospuesta por decisión del usuario, 2026-09-29)
 
 Requiere autorización fresca del usuario: pairing + confirmación + reconexión + hello contra el helper desktop. ~150 líneas.
 
 Criterios: ningún camino entrega un canal sin confirmación o aceptación; todo rechazo cierra el canal; framing acotado y fail closed; tests existentes verdes.
+
+## Revisiones nativas finales
+
+- **Slice `56dedca..fcd38e9` (s2)**: lineage `review-dd87c18f278d97a0`, 4 lentes, aprobada sin corrección, autoridad `burned`. Hallazgos no bloqueantes: `R4-idle-deadline-teardown` (WARNING: el deadline de `read()` empieza antes de que llegue el prefijo y cubre la espera del próximo frame, por lo que una sesión ociosa se cierra), `R2-001` (WARNING: `TlsSessionFrameIoException` extiende `IllegalStateException` pese a su nombre), `R2-003`, `R3-oversize-test-not-discriminating`, `R3-zero-length-test-not-discriminating` (WARNING: tests de longitud no discriminan), `R3-untested-failure-paths` (WARNING); SUGGESTION: `R4-interrupt-swallowed`, `R2-002`, `R3-readexactly-progress-assumption`.
+- **Slice `fcd38e9..b13a0b9` (s3 + docs)**: lineage `review-053271eec0593e0a`, 4 lentes, aprobada sin corrección, autoridad `burned`. Hallazgos: `R3-fingerprint-mismatch-rejection-unproved` (WARNING: ningún test prueba que `PinnedDesktopFingerprintTrustManager`, única barrera de autenticación en la reconexión, rechace un fingerprint distinto), `R3-activation-rejected-close-unproved` (WARNING), `R2-tlsrejected-overloaded-for-hello-failures` (WARNING), `R2-contract-text-still-says-spki-pinning` (WARNING; corregido en este commit de docs); SUGGESTION: `R1-fingerprint-mismatch-rejection-untested`, `R4-activation-exception-leaks-channel`, `R4-timeout-test-elapsed-includes-handshake`, `R2-dead-sanity-assertion`, `R2-duplicated-jsse-test-harness`, `R3-hello-close-and-unexpected-frame-unproved`, `R3-unknown-expired-gate-unproved`, `R3-stale-now-for-activation`, `R3-kept-active-prior-channel-ownership`.
+- Último límite revisado: `b13a0b9`.
+
+## Seguimientos prioritarios
+
+1. Test de rechazo por fingerprint distinto en `PinnedDesktopFingerprintTrustManager`.
+2. Semántica de lectura de sesión tolerante a inactividad + keepalive (`R4-idle-deadline-teardown`).
+3. Test de cierre ante `ActivationRejected` y fuga de canal si la activación lanza excepción.
+4. I/O de TLS dentro de monitores `@Synchronized` (riesgo de ANR al cablear la UI, de la revisión de s1).
+5. Tests de longitud discriminantes y rutas de fallo sin cubrir.
+6. Nombres/tipos de error (`TlsSessionFrameIoException`, `TlsRejected` sobrecargado).
+
+## Cierre del feature
+
+Tareas s1, s1b, s2 y s3 completadas y revisadas nativamente (ver "Revisiones nativas finales" y "Revisión nativa s1"). La prueba cruzada de la sesión completa (Android s4 / desktop s3) quedó pospuesta por decisión del usuario el 2026-09-29 y no se ejecutó; la tarea sigue registrada como `[ ] s4` en §7, con la nota correspondiente. Seguimientos pendientes en "Seguimientos prioritarios".
 
 ## Progreso
 
@@ -139,3 +158,5 @@ s2 completada el 2026-09-29 (ver Evidencia s2): `TlsSessionFrameIoAdapter` enmar
 s3 completada el 2026-09-29 (ver Evidencia s3): `UsbTrustedReconnect` reconecta a un desktop ya confiable por contrato §4.4: gate de confianza antes de abrir TLS, TLS pinneado por fingerprint (no por SPKI crudo -- ver la desviación arquitectónica declarada en la evidencia, que agregó `PinnedDesktopFingerprintTrustManager` y `SslEngineUsbTlsChannel.handshakeWithPinnedFingerprint`), `HANDSHAKE_HELLO`/`HANDSHAKE_ACCEPT` (con `deviceId` = `phone_id`, adenda de contrato incorporada durante la tarea y ya reflejada en §4.4) y activación vía `ActiveDesktopAuthority`. Commit `c8e0a75`.
 
 Pendiente: s4 (prueba cruzada de la sesión completa, requiere autorización fresca del usuario).
+
+Cierre del feature el 2026-09-29: s1, s1b, s2 y s3 completadas y aprobadas en revisión nativa de 4 lentes cada slice (ver "Revisiones nativas finales"). s4 (prueba cruzada de la sesión completa) queda pospuesta por decisión del usuario y no se ejecutó. Seguimientos registrados en "Seguimientos prioritarios".
