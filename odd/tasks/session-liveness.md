@@ -59,9 +59,21 @@ Test unitario de `PinnedDesktopFingerprintTrustManager` que rechaza un fingerpri
 - Full (`testDebugUnitTest --rerun-tasks`, `assembleDebug`, `lintDebug`): BUILD SUCCESSFUL. Totales XML: 391 tests, 2 skipped, 0 failures, 0 errors (388 + 3 nuevos).
 - Cambios: `TlsSessionFrameIoAdapter.kt` +57/-12; `UsbTrustedReconnect.kt` +9/-2; `TlsSessionFrameIoAdapterTest.kt` +76/-0.
 
-### [ ] l3 — KEEPALIVE y tracker
+### [x] l3 — KEEPALIVE y tracker
 
 Tipo 10 en el codec y `SessionLivenessTracker`. RED: `roundTripsKeepaliveFrame`, `sendsKeepaliveAfterIntervalOfSilence`, `declaresDeadPeerAfterThreshold`, `receivingAnyFrameResetsPeerDeadline`. ~250 líneas.
+
+**Evidencia l3** (commit `feat(android): add session keepalive frames and liveness tracker`):
+- RED real, desvío declarado (mismo patrón que l1/l2): `SessionFrameTest` referenciaba `SessionPayload.Keepalive` (no existía) y `SessionLivenessTrackerTest` referenciaba la clase `SessionLivenessTracker` completa (tampoco existía) -- el módulo no compilaba (`Unresolved reference: Keepalive` / `Unresolved reference: SessionLivenessTracker`).
+- GREEN codec: `SessionFrameType.KEEPALIVE(10)` + `SessionPayload.Keepalive` (objeto, sin campos) agregados a `PayloadSizer`/`PayloadWriter`/`PayloadReader` (payload de longitud 0); un decodificador que no conoce el tipo 10 lo rechaza como cualquier tipo desconocido (fail closed, contrato §4.3), sin necesidad de código nuevo para eso.
+- GREEN tracker: `SessionLivenessTracker` puro y sin hilos (`recordSent`, `recordReceived`, `shouldSendKeepalive`, `isPeerDead`), todos con `nowMillis` explícito (no lee reloj interno); `init` exige `deadPeerThresholdMillis > keepaliveIntervalMillis` (contrato §4.2). Defaults 2000/6000 ms.
+- Tests agregados más allá de la lista RED explícita (declarado): `acceptsMatchingFingerprint...` ya cubierto en l1; aquí sumé `neverDeclaresPeerDeadBeforeAnyFrameWasEverReceived` (caracteriza el default seguro antes de la primera lectura) y `rejectsDeadPeerThresholdNotExceedingInterval` (caracteriza el `require` del contrato §4.2). Mismo criterio que en l1: pruebas mínimas, no listadas por nombre en el contrato pero directamente derivadas de él.
+- **Golden KEEPALIVE**: `SessionFrame(version = 1, sequence = 7, sessionId = "s", payload = Keepalive)` codifica exactamente a (hex minúscula, sin espacios):
+  `43435346010a0000000700017300000000`
+  (con espacios: `43 43 53 46 01 0a 00 00 00 07 00 01 73 00 00 00 00`; 17 bytes: magic + version(01) + type(0a) + sequence BE(00000007) + sessionIdLen BE(0001) + "s"(73) + payloadLen BE(00000000) + payload vacío). Verificado por `assertArrayEquals` en `preservesCanonicalKeepaliveGolden` y por cálculo independiente (Python) fuera de Gradle.
+- Focalizado: `SessionFrameTest` 24/24 verdes; `SessionLivenessTrackerTest` 5/5 verdes.
+- Full (`testDebugUnitTest --rerun-tasks`, `assembleDebug`, `lintDebug`): BUILD SUCCESSFUL. Totales XML: 398 tests, 2 skipped, 0 failures, 0 errors (391 + 7 nuevos).
+- Cambios: `SessionFrame.kt` +10/-1; `SessionFrameTest.kt` +21/-0; `SessionLivenessTracker.kt` +59/-0 (nuevo); `SessionLivenessTrackerTest.kt` +59/-0 (nuevo).
 
 Criterios: ninguna sesión se corta por esperar el próximo frame dentro del umbral; frames empezados se completan acotados; KEEPALIVE interoperable; tests de seguridad verdes; tests existentes verdes.
 
@@ -69,4 +81,5 @@ Criterios: ninguna sesión se corta por esperar el próximo frame dentro del umb
 
 Plan creado el 2026-09-29.
 l1 completada el 2026-09-29 (ver evidencia bajo la tarea).
-l2 completada el 2026-09-29 (ver evidencia bajo la tarea). Siguiente: l3.
+l2 completada el 2026-09-29 (ver evidencia bajo la tarea).
+l3 completada el 2026-09-29 (ver evidencia bajo la tarea). Lado Android del contrato completo (l1-l3); queda pendiente, fuera de esta unidad, el loop de sesión que efectivamente envía keepalives y lee en paralelo (§4.6, unidad posterior) y la paridad con el codec del lado desktop (§4.6, prueba cruzada pospuesta por el usuario).

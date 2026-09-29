@@ -28,6 +28,15 @@ class SessionFrameTest {
     }
 
     @Test
+    fun roundTripsKeepaliveFrame() {
+        val frame = SessionFrame(version = 1, sequence = 7, sessionId = "s", payload = SessionPayload.Keepalive)
+
+        val decoded = SessionFrameCodec.decode(SessionFrameCodec.encode(frame)).getOrThrow()
+
+        assertFrameEquals(frame, decoded)
+    }
+
+    @Test
     fun encodingIsDeterministicAndBigEndian() {
         val frame = SessionFrame(1, 9, "abc", SessionPayload.HandshakeAccept("pc", "ok"))
 
@@ -63,6 +72,18 @@ class SessionFrameTest {
     fun preservesCanonicalVideoChunkFragmentV1GoldenFromRust() {
         val frame = SessionFrame(1, 0, "s", SessionPayload.VideoChunkFragmentV1(0, 0L, SessionVideoFrameKind.KEY, 0, 2, 70_000, byteArrayOf(0x65)))
         val expected = hexBytes("43 43 53 46 01 09 00 00 00 00 00 01 73 00 00 00 1c 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 02 00 01 11 70 00 01 65")
+
+        val encoded = SessionFrameCodec.encode(frame)
+        val decoded = SessionFrameCodec.decode(expected).getOrThrow()
+
+        assertArrayEquals(expected, encoded)
+        assertFrameEquals(frame, decoded)
+    }
+
+    @Test
+    fun preservesCanonicalKeepaliveGolden() {
+        val frame = SessionFrame(version = 1, sequence = 7, sessionId = "s", payload = SessionPayload.Keepalive)
+        val expected = hexBytes("43 43 53 46 01 0a 00 00 00 07 00 01 73 00 00 00 00")
 
         val encoded = SessionFrameCodec.encode(frame)
         val decoded = SessionFrameCodec.decode(expected).getOrThrow()

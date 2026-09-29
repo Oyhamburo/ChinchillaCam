@@ -29,7 +29,10 @@ enum class SessionFrameType(val id: Int) {
     METRICS_SNAPSHOT(6),
     CAMERA_CONTROL_COMMAND(7),
     VIDEO_CHUNK_V2(8),
-    VIDEO_CHUNK_FRAGMENT_V1(9);
+    VIDEO_CHUNK_FRAGMENT_V1(9),
+
+    /** Empty-payload liveness frame (task l3, `session-liveness` §4.3): a decoder that does not know it fails closed, like any other unknown type. */
+    KEEPALIVE(10);
 
     companion object {
         fun fromId(id: Int): SessionFrameType? = values().firstOrNull { it.id == id }
@@ -166,6 +169,9 @@ sealed class SessionPayload(val type: SessionFrameType) {
         val command: String,
         val arguments: Map<String, String>,
     ) : SessionPayload(SessionFrameType.CAMERA_CONTROL_COMMAND)
+
+    /** Liveness frame (task l3, `session-liveness` §4.3): no fields, always encodes to a zero-length payload. */
+    object Keepalive : SessionPayload(SessionFrameType.KEEPALIVE)
 }
 
 sealed class SessionFrameDecodeError(message: String) : Exception(message) {
@@ -364,6 +370,7 @@ private class PayloadSizer(private val maxPayloadBytes: Int) {
                     addString(value)
                 }
             }
+            is SessionPayload.Keepalive -> Unit
         }
         return size
     }
@@ -457,6 +464,7 @@ private class PayloadWriter {
                     writeString(value)
                 }
             }
+            is SessionPayload.Keepalive -> Unit
         }
     }
 
@@ -571,6 +579,7 @@ private class PayloadReader(private val bytes: ByteArray) {
                 }
                 SessionPayload.CameraControlCommand(command, arguments)
             }
+            SessionFrameType.KEEPALIVE -> SessionPayload.Keepalive
         }
         if (reader.remaining != 0) {
             throw SessionFrameDecodeError.InvalidPayload("trailing payload bytes")
