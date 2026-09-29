@@ -201,10 +201,24 @@ fn pairing_handshake_without_client_certificate_does_not_consume_qr_nonce() {
         server.join().unwrap()
     });
 
-    assert!(
-        server_result.is_err(),
-        "expected the handshake to fail without a phone client certificate, got Ok"
-    );
+    // rustls 0.23.45 reports a missing client certificate server-side as
+    // `Error::NoCertificatesPresented` (Display: "peer sent no certificates"), surfaced
+    // through `complete_io`'s `io::Error` and wrapped by `map_complete_io_error` into
+    // `UsbTlsPairingProofError::Tls(_)` -- empirically observed, not just `is_err()`.
+    match server_result {
+        Err(UsbTlsPairingProofError::Tls(message)) => {
+            assert!(
+                message.contains("no certificates"),
+                "expected rustls' NoCertificatesPresented text, got {message:?}"
+            );
+        }
+        Ok(_) => {
+            panic!("expected the handshake to fail without a phone client certificate, got Ok")
+        }
+        Err(other) => panic!(
+            "expected Err(Tls(_)) reporting a missing client certificate, got Err({other:?})"
+        ),
+    }
 
     // The QR nonce must still be consumable afterwards by a proper client, proving the
     // rejected handshake above never consumed it.

@@ -156,6 +156,49 @@ fn trusted_only_rejects_revoked_phone_despite_earlier_duplicate_trusted_record()
 }
 
 #[test]
+fn trusted_only_rejects_client_when_store_has_conflicting_non_revoked_duplicate_keys() {
+    // Native review finding R3-corrupt-store-branch-untested: `phone_trust_snapshot`'s
+    // `CorruptStore` branch (two NON-revoked records for the same phone_id that disagree
+    // on public_key -- state `trust`/`revoke` can never produce, but a hand-edited or
+    // externally written file could) had no test through the public API. Unlike the
+    // `..._despite_earlier_duplicate_trusted_record` test above (one revoked, one not --
+    // resolves to `Revoked`), both records here are `trusted`, so neither revocation nor a
+    // single agreed-upon key can win: the store must fail closed instead of picking either
+    // key arbitrarily.
+    let identity = DesktopTlsIdentity::generate_ephemeral("Conflicting Duplicate Phone").unwrap();
+    let cert_der = CertificateDer::from(identity.certificate_der().to_vec());
+    let spki = identity.spki_der_p256().to_vec();
+    let phone_id = phone_id_for_spki(&spki);
+    let other_spki = DesktopTlsIdentity::generate_ephemeral("Other Duplicate Phone")
+        .unwrap()
+        .spki_der_p256()
+        .to_vec();
+
+    let path = unique_store_path("conflicting-duplicate");
+    write_duplicate_non_revoked_phone_id_store(
+        &path,
+        &phone_id,
+        &hex_lower(&spki),
+        &hex_lower(&other_spki),
+    );
+
+    let store = FileTrustedPhoneStore::new(&path);
+    let verifier = PhoneClientCertVerifier::trusted_only(Arc::new(store));
+    let result = verifier.verify_client_cert(&cert_der, &[], UnixTime::now());
+
+    match result {
+        Err(RustlsError::General(message)) => {
+            assert!(
+                message.contains("CorruptStore"),
+                "expected the CorruptStore error text in the General message, got {message:?}"
+            );
+        }
+        other => panic!("expected Err(General(_)) containing CorruptStore, got {other:?}"),
+    }
+    cleanup(path);
+}
+
+#[test]
 fn trusted_only_rejects_trusted_phone_with_different_public_key() {
     // Characterization test: `verify_client_cert` already rejects a `Trusted` status whose
     // stored public key does not match the presented certificate's SPKI (the `if public_key
@@ -230,6 +273,21 @@ impl TrustedPhoneLookup for MismatchedKeyTrustedPhoneLookup {
 fn write_duplicate_phone_id_store(path: &std::path::Path, phone_id: &str, trusted_hex_key: &str) {
     let contents = format!(
         "CHINCHILLACAM_TRUSTED_PHONES_V1\ntrusted\t{phone_id}\tOriginal\t{trusted_hex_key}\nrevoked\t{phone_id}\tRotated\tdeadbeef\n"
+    );
+    std::fs::write(path, contents).unwrap();
+}
+
+/// Same on-disk format as `write_duplicate_phone_id_store`, but both records are
+/// `trusted` (neither revoked) and disagree on public key -- the shape that must
+/// trigger `TrustedPhoneStoreError::CorruptStore` instead of a `Revoked`/`Trusted` guess.
+fn write_duplicate_non_revoked_phone_id_store(
+    path: &std::path::Path,
+    phone_id: &str,
+    first_hex_key: &str,
+    second_hex_key: &str,
+) {
+    let contents = format!(
+        "CHINCHILLACAM_TRUSTED_PHONES_V1\ntrusted\t{phone_id}\tOriginal\t{first_hex_key}\ntrusted\t{phone_id}\tRotated\t{second_hex_key}\n"
     );
     std::fs::write(path, contents).unwrap();
 }

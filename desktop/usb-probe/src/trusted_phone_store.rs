@@ -426,3 +426,58 @@ fn hex_nibble(byte: u8) -> Result<u8, TrustedPhoneStoreError> {
         )),
     }
 }
+
+/// Direct unit tests of `TempFileGuard`, a private type reachable only from inside this
+/// module: cheaper and more deterministic than forcing a real `save_records` failure
+/// between its `write` and `rename` (there is no test seam between those two calls, and
+/// simulating an OS-level rename failure would be either non-deterministic or
+/// platform-specific). Addresses native review suggestion R3-temp-guard-cleanup-untested.
+#[cfg(test)]
+mod tests {
+    use super::TempFileGuard;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn temp_file_guard_removes_file_on_drop_unless_disarmed() {
+        let path = unique_temp_guard_path("armed");
+        fs::write(&path, b"leftover").unwrap();
+        assert!(path.exists());
+
+        drop(TempFileGuard::new(path.clone()));
+
+        assert!(
+            !path.exists(),
+            "expected an armed TempFileGuard to remove its temp file on drop"
+        );
+    }
+
+    #[test]
+    fn temp_file_guard_leaves_file_when_disarmed() {
+        let path = unique_temp_guard_path("disarmed");
+        fs::write(&path, b"kept").unwrap();
+
+        let guard = TempFileGuard::new(path.clone());
+        guard.disarm();
+
+        assert!(
+            path.exists(),
+            "expected a disarmed TempFileGuard to leave its temp file in place"
+        );
+        fs::remove_file(&path).unwrap();
+    }
+
+    fn unique_temp_guard_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "chinchillacam-temp-file-guard-{name}-{}-{nanos}.tmp",
+            std::process::id()
+        ))
+    }
+}
