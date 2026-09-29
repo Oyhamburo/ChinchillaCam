@@ -124,6 +124,82 @@ class TlsSessionFrameIoAdapterTest {
         }
     }
 
+    // ---- Two-phase read tests (task l2, `session-liveness` §4.1): the idle budget alone governs
+    // waiting for the NEXT frame's first byte(s); once any byte arrives, a fresh frame deadline
+    // governs completing the rest of that frame. ----
+
+    @Test
+    fun idleSessionDoesNotTimeOutWaitingForNextFrame() {
+        val inbound = SessionFrame(sequence = 1, sessionId = "idle-ok", payload = SessionPayload.CameraControlCommand("ping", emptyMap()))
+        val session = connect("s-l2-idle-ok-desktop", "s-l2-idle-ok-phone") { tls ->
+            // Delayed well past what the frame deadline alone would tolerate, but still inside the
+            // idle budget: proves the idle budget -- not the frame deadline -- governs this wait.
+            Thread.sleep(800)
+            val encoded = SessionFrameCodec.encode(inbound)
+            tls.writeApplicationFrame(encoded.size.toBigEndianBytes() + encoded)
+            tls.close()
+        }
+
+        val adapter = TlsSessionFrameIoAdapter(readTimeoutMillis = 300, idleBudgetMillis = 2_000)
+        try {
+            assertEquals(inbound, adapter.read(session.channel))
+        } finally {
+            session.channel.close()
+            session.finish()
+        }
+    }
+
+    @Test
+    fun idleBeyondThresholdFailsAsPeerIdle() {
+        val session = connect("s-l2-idle-fail-desktop", "s-l2-idle-fail-phone") { _ ->
+            // Never sends anything, but stays alive well past the idle budget: if this thread exited
+            // early instead, PipedInputStream would raise its own immediate "write end dead" failure,
+            // which would mask the bounded-idle-budget path this test exists to prove (matching
+            // UsbTrustedReconnectTest.reconnectTimesOutWithoutAccept's documented convention).
+            Thread.sleep(1_000)
+        }
+
+        val adapter = TlsSessionFrameIoAdapter(readTimeoutMillis = 5_000, idleBudgetMillis = 300)
+        try {
+            val startNanos = System.nanoTime()
+            val error = assertThrowsTlsSessionFrameIoException { adapter.read(session.channel) }
+            val elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000
+            assertEquals(TlsSessionFrameIoFailureReason.PEER_IDLE, error.reason)
+            assertTrue(
+                "expected the idle budget (300ms) to govern, not the frame deadline (5000ms); took ${elapsedMillis}ms",
+                elapsedMillis in 300..2_000,
+            )
+            assertTrue(session.pair.clientCloseable.closed)
+        } finally {
+            session.finish()
+        }
+    }
+
+    @Test
+    fun stalledFrameAfterFirstByteTimesOut() {
+        val session = connect("s-l2-stall-desktop", "s-l2-stall-phone") { tls ->
+            // Sends only the first byte of the length prefix, then goes silent (but stays alive,
+            // same reasoning as idleBeyondThresholdFailsAsPeerIdle) well past the frame deadline.
+            tls.writeApplicationFrame(byteArrayOf(0))
+            Thread.sleep(1_000)
+        }
+
+        val adapter = TlsSessionFrameIoAdapter(readTimeoutMillis = 300, idleBudgetMillis = 5_000)
+        try {
+            val startNanos = System.nanoTime()
+            val error = assertThrowsTlsSessionFrameIoException { adapter.read(session.channel) }
+            val elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000
+            assertEquals(TlsSessionFrameIoFailureReason.GENERAL, error.reason)
+            assertTrue(
+                "expected the frame deadline (300ms) to govern once the first byte arrived, not the idle budget (5000ms); took ${elapsedMillis}ms",
+                elapsedMillis in 0..2_000,
+            )
+            assertTrue(session.pair.clientCloseable.closed)
+        } finally {
+            session.finish()
+        }
+    }
+
     private fun assertThrowsTlsSessionFrameIoException(block: () -> Unit): TlsSessionFrameIoException {
         try {
             block()

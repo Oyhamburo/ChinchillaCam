@@ -78,8 +78,15 @@ class UsbTrustedReconnect(
     /** The phone's own trust fingerprint, hex-encoded -- the `phone_id` the desktop authenticates `HANDSHAKE_HELLO.deviceId` against. */
     private val phoneId: String = PairingTrustFingerprint.fromTrustMaterial(phoneTlsIdentity.subjectPublicKeyInfoDer).hex
 
-    /** Bounded strictly by [helloTimeoutMillis], independent of [sessionFrameAdapter]'s own (typically more generous) session-traffic timeout. */
-    private val helloFrameAdapter = TlsSessionFrameIoAdapter(readTimeoutMillis = helloTimeoutMillis)
+    /**
+     * Bounded strictly by [helloTimeoutMillis], independent of [sessionFrameAdapter]'s own (typically
+     * more generous) session-traffic timeout. Passes its own idle budget too (task l2,
+     * `session-liveness` §4.1): [TlsSessionFrameIoAdapter]'s default idle budget (6s) would otherwise
+     * outlast a short [helloTimeoutMillis] (e.g. the 300ms used by
+     * [UsbTrustedReconnectTest.reconnectTimesOutWithoutAccept]), so both phases of the hello read
+     * share the same single [helloTimeoutMillis] deadline, matching this class's pre-l2 behavior.
+     */
+    private val helloFrameAdapter = TlsSessionFrameIoAdapter(readTimeoutMillis = helloTimeoutMillis, idleBudgetMillis = helloTimeoutMillis)
 
     fun reconnect(
         desktopId: String,

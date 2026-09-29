@@ -47,9 +47,17 @@ Test unitario de `PinnedDesktopFingerprintTrustManager` que rechaza un fingerpri
 - Full (`testDebugUnitTest --rerun-tasks`, `assembleDebug`, `lintDebug`): BUILD SUCCESSFUL. Totales XML: 388 tests, 2 skipped, 0 failures, 0 errors (baseline 384 + 4 nuevos).
 - Cambios: `UsbTrustedReconnect.kt` +20/-9; `PinnedDesktopTlsTrustManagerTest.kt` +27/-0; `UsbTrustedReconnectTest.kt` +98/-0.
 
-### [ ] l2 — Lectura en dos fases
+### [x] l2 — Lectura en dos fases
 
 `TlsSessionFrameIoAdapter` con espera acotada por el umbral y deadline de frame. RED: `idleSessionDoesNotTimeOutWaitingForNextFrame`, `idleBeyondThresholdFailsAsPeerIdle`, `stalledFrameAfterFirstByteTimesOut`. ~250 líneas.
+
+**Evidencia l2** (commit `fix(android): let idle TLS sessions wait for the next frame`):
+- RED real, desvío declarado (mismo patrón que l1): las 3 pruebas nuevas referencian el parámetro `idleBudgetMillis` y el enum `TlsSessionFrameIoFailureReason`, que todavía no existían -- el módulo no compilaba (`Cannot find a parameter with this name: idleBudgetMillis`, `Unresolved reference: TlsSessionFrameIoFailureReason`).
+- GREEN: `TlsSessionFrameIoAdapter.read()` ahora es de dos fases -- primero espera el/los primer(os) byte(s) del prefijo de longitud acotado por `idleBudgetMillis` (default 6000 ms, contrato §4.2); apenas llega alguno, el resto del prefijo + payload se completa dentro de un deadline nuevo derivado de `readTimeoutMillis` (default 5000 ms, sin cambios). El vencimiento del umbral ocioso cierra el canal y lanza `TlsSessionFrameIoException` con `reason = PEER_IDLE`; cualquier otra falla (incluido el deadline de frame una vez iniciado) usa `reason = GENERAL`.
+- `UsbTrustedReconnect.helloFrameAdapter` pasa `idleBudgetMillis = helloTimeoutMillis` explícitamente para conservar su comportamiento de deadline único pre-l2 (si no, el default de 6000 ms del umbral ocioso superaría un `helloTimeoutMillis` corto, p. ej. los 300 ms de `reconnectTimesOutWithoutAccept`).
+- Focalizado: `TlsSessionFrameIoAdapterTest` 7/7 verdes (corrido 3 veces por ser pruebas con hilos; sin flakiness); `UsbTrustedReconnectTest` 6/6 verdes (sin regresión en su propio deadline de hello).
+- Full (`testDebugUnitTest --rerun-tasks`, `assembleDebug`, `lintDebug`): BUILD SUCCESSFUL. Totales XML: 391 tests, 2 skipped, 0 failures, 0 errors (388 + 3 nuevos).
+- Cambios: `TlsSessionFrameIoAdapter.kt` +57/-12; `UsbTrustedReconnect.kt` +9/-2; `TlsSessionFrameIoAdapterTest.kt` +76/-0.
 
 ### [ ] l3 — KEEPALIVE y tracker
 
@@ -60,4 +68,5 @@ Criterios: ninguna sesión se corta por esperar el próximo frame dentro del umb
 ## Progreso
 
 Plan creado el 2026-09-29.
-l1 completada el 2026-09-29 (ver evidencia bajo la tarea). Siguiente: l2.
+l1 completada el 2026-09-29 (ver evidencia bajo la tarea).
+l2 completada el 2026-09-29 (ver evidencia bajo la tarea). Siguiente: l3.

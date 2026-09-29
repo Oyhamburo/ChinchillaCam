@@ -12,12 +12,28 @@ const val TLS_SESSION_FRAME_MAX_BYTES: Int = 1_048_576
 private const val TLS_SESSION_FRAME_LENGTH_PREFIX_BYTES: Int = 4
 private const val DEFAULT_TLS_SESSION_FRAME_READ_TIMEOUT_MILLIS: Long = 5_000
 
+/** Default idle budget for [TlsSessionFrameIoAdapter.read] (contract `session-liveness` §4.2): three keepalive intervals. */
+private const val DEFAULT_TLS_SESSION_FRAME_IDLE_BUDGET_MILLIS: Long = 6_000
+
+/** Distinguishes why [TlsSessionFrameIoAdapter.read] failed (task l2, `session-liveness` §4.1). */
+enum class TlsSessionFrameIoFailureReason {
+    /** No byte of the next frame arrived within the configured idle budget; the peer is presumed dead. */
+    PEER_IDLE,
+
+    /** Any other read/write/framing/decode failure, including a frame that started but did not complete within the frame deadline. */
+    GENERAL,
+}
+
 /**
  * Thrown by [TlsSessionFrameIoAdapter] for any framing, length, or decode failure. The adapter
  * always closes the [SslEngineUsbTlsEstablishedChannel] before or while throwing -- see each
  * method's doc -- and the channel must never be reused afterward.
  */
-class TlsSessionFrameIoException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
+class TlsSessionFrameIoException(
+    message: String,
+    cause: Throwable? = null,
+    val reason: TlsSessionFrameIoFailureReason = TlsSessionFrameIoFailureReason.GENERAL,
+) : IllegalStateException(message, cause)
 
 /**
  * Frames CCSF v1 [SessionFrame]s over an already-authenticated [SslEngineUsbTlsEstablishedChannel]
@@ -32,16 +48,26 @@ class TlsSessionFrameIoException(message: String, cause: Throwable? = null) : Il
  * mirrors the bounded-read pattern already used by [UsbTlsPairingProofVerifier]'s private CCP1
  * frame reader, generalized here to every [SessionFrameType] instead of just the pairing-proof
  * protocol.
+ *
+ * [read] is two-phase (task l2, `session-liveness` §4.1): it first waits for the first byte(s) of
+ * the next frame's length prefix, bounded by [idleBudgetMillis] -- an idle session between frames
+ * must not time out just because it is quiet -- then, once any byte has arrived, the rest of that
+ * frame (remaining prefix and payload) must complete within a fresh [readTimeoutMillis] deadline.
+ * Idle-budget expiry closes the channel and throws with [TlsSessionFrameIoFailureReason.PEER_IDLE];
+ * every other failure (including a frame-deadline expiry once started) uses
+ * [TlsSessionFrameIoFailureReason.GENERAL].
  */
 class TlsSessionFrameIoAdapter(
     private val maxFrameBytes: Int = TLS_SESSION_FRAME_MAX_BYTES,
     private val readTimeoutMillis: Long = DEFAULT_TLS_SESSION_FRAME_READ_TIMEOUT_MILLIS,
+    private val idleBudgetMillis: Long = DEFAULT_TLS_SESSION_FRAME_IDLE_BUDGET_MILLIS,
 ) {
     init {
         require(maxFrameBytes in TLS_SESSION_FRAME_MIN_BYTES..TLS_SESSION_FRAME_MAX_BYTES) {
             "maxFrameBytes must be between $TLS_SESSION_FRAME_MIN_BYTES and $TLS_SESSION_FRAME_MAX_BYTES"
         }
         require(readTimeoutMillis > 0) { "readTimeoutMillis must be positive" }
+        require(idleBudgetMillis > 0) { "idleBudgetMillis must be positive" }
     }
 
     /**
@@ -65,24 +91,37 @@ class TlsSessionFrameIoAdapter(
     }
 
     /**
-     * Reads exactly one length-prefixed [SessionFrame]: 4 bytes of declared length, validated
-     * against `[TLS_SESSION_FRAME_MIN_BYTES]..[maxFrameBytes]` *before* reading/allocating the
-     * payload, then exactly that many payload bytes (looping over
-     * [SslEngineUsbTlsEstablishedChannel.readApplicationData], bounded by an absolute deadline
-     * derived from [readTimeoutMillis]), then decodes them. Any failure at any step -- oversized or
-     * zero length, a truncated/closed channel, a read timeout, or an invalid decoded frame -- closes
-     * the channel and throws [TlsSessionFrameIoException]; the channel must not be reused after.
+     * Reads exactly one length-prefixed [SessionFrame], two-phase per the class doc above: first
+     * waits for the first byte(s) of the 4-byte declared length, bounded by [idleBudgetMillis]; once
+     * any byte has arrived, the rest of the declared length (validated against
+     * `[TLS_SESSION_FRAME_MIN_BYTES]..[maxFrameBytes]` *before* reading/allocating the payload) and
+     * the payload itself are read (looping over
+     * [SslEngineUsbTlsEstablishedChannel.readApplicationData]) bounded by a fresh absolute deadline
+     * derived from [readTimeoutMillis], then decoded. Any failure at any step closes the channel and
+     * throws [TlsSessionFrameIoException]; the channel must not be reused after.
      */
     fun read(channel: SslEngineUsbTlsEstablishedChannel): SessionFrame {
-        val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(readTimeoutMillis)
+        val idleDeadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(idleBudgetMillis)
+        val firstPrefixBytes = try {
+            channel.readApplicationData(TLS_SESSION_FRAME_LENGTH_PREFIX_BYTES, idleDeadlineNanos)
+        } catch (error: Exception) {
+            // channel already closed by readApplicationData itself.
+            throw TlsSessionFrameIoException(
+                error.message ?: "no session frame arrived within the idle budget",
+                error,
+                TlsSessionFrameIoFailureReason.PEER_IDLE,
+            )
+        }
+
+        val frameDeadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(readTimeoutMillis)
         try {
-            val length = readExactly(channel, TLS_SESSION_FRAME_LENGTH_PREFIX_BYTES, deadlineNanos).toBigEndianInt()
+            val length = readExactly(channel, TLS_SESSION_FRAME_LENGTH_PREFIX_BYTES, frameDeadlineNanos, firstPrefixBytes).toBigEndianInt()
             if (length < TLS_SESSION_FRAME_MIN_BYTES || length > maxFrameBytes) {
                 throw IllegalArgumentException(
                     "declared session frame length $length outside $TLS_SESSION_FRAME_MIN_BYTES..$maxFrameBytes",
                 )
             }
-            val payload = readExactly(channel, length, deadlineNanos)
+            val payload = readExactly(channel, length, frameDeadlineNanos)
             return SessionFrameCodec.decode(payload, maxFrameBytes).getOrThrow()
         } catch (error: Exception) {
             runCatching { channel.close() }
@@ -90,8 +129,14 @@ class TlsSessionFrameIoAdapter(
         }
     }
 
-    private fun readExactly(channel: SslEngineUsbTlsEstablishedChannel, bytes: Int, deadlineNanos: Long): ByteArray {
+    private fun readExactly(
+        channel: SslEngineUsbTlsEstablishedChannel,
+        bytes: Int,
+        deadlineNanos: Long,
+        alreadyRead: ByteArray = ByteArray(0),
+    ): ByteArray {
         val out = ByteArrayOutputStream(bytes)
+        out.write(alreadyRead)
         while (out.size() < bytes) {
             out.write(channel.readApplicationData(bytes - out.size(), deadlineNanos))
         }
