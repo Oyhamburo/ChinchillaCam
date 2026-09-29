@@ -34,9 +34,18 @@ TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecuci�
 
 Runner: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug`. Último límite revisado: `0d7f048`.
 
-### [ ] l1 — Tests de seguridad de la reconexión y fuga de canal
+### [x] l1 — Tests de seguridad de la reconexión y fuga de canal
 
 Test unitario de `PinnedDesktopFingerprintTrustManager` que rechaza un fingerprint distinto (fixtures de `PinnedDesktopTlsTrustManagerTest`); `UsbTrustedReconnect` cierra el canal si `requestActivation` lanza o rechaza. RED: `rejectsMismatchedFingerprint`, `activationExceptionClosesChannel`, `activationRejectedClosesChannel`. ~200 líneas.
+
+**Evidencia l1** (commit `fix(android): close reconnect channel when activation fails`):
+- `rejectsMismatchedFingerprint` + `acceptsMatchingFingerprintForPinnedDesktopFingerprintTrustManager` (agregado): caracterización honesta. `PinnedDesktopFingerprintTrustManager` ya rechazaba/aceptaba correctamente antes de este commit (sin test dedicado); ambos PASAN sin ningún cambio de producción.
+- `activationRejectedClosesChannel`: caracterización honesta. El branch `Rejected` de `requestActivation` ya cerraba el canal (`runCatching { channel.close() }`) antes de este commit; ese código quedó textualmente idéntico. No se pudo aislar su RED porque el archivo entero no compilaba (ver el punto siguiente), pero la revisión del código confirma que este camino nunca cambió.
+- `activationExceptionClosesChannel`: RED real, desvío declarado. Antes del fix el módulo no compilaba: `Unresolved reference: ActivationFailed` en `UsbTrustedReconnectTest.kt:247` (el tipo de rechazo tipado todavía no existía) -- RED obtenido por falla de compilación en vez de una aserción, tal como habilitan las reglas de ejecución.
+- GREEN: `UsbTrustedReconnect.reconnect()` envuelve la llamada a `requestActivation` en `try/catch(Exception)`; cualquier excepción cierra el canal (`runCatching { channel.close() }`) y se reporta como `UsbTrustedReconnectResult.Rejected.ActivationFailed(desktopId, cause)` (tipo nuevo, mismo estilo que los demás rechazos tipados del archivo).
+- Focalizado: `PinnedDesktopTlsTrustManagerTest` 8/8 verdes; `UsbTrustedReconnectTest` 6/6 verdes.
+- Full (`testDebugUnitTest --rerun-tasks`, `assembleDebug`, `lintDebug`): BUILD SUCCESSFUL. Totales XML: 388 tests, 2 skipped, 0 failures, 0 errors (baseline 384 + 4 nuevos).
+- Cambios: `UsbTrustedReconnect.kt` +20/-9; `PinnedDesktopTlsTrustManagerTest.kt` +27/-0; `UsbTrustedReconnectTest.kt` +98/-0.
 
 ### [ ] l2 — Lectura en dos fases
 
@@ -50,4 +59,5 @@ Criterios: ninguna sesión se corta por esperar el próximo frame dentro del umb
 
 ## Progreso
 
-Plan creado el 2026-09-29; ninguna tarea iniciada.
+Plan creado el 2026-09-29.
+l1 completada el 2026-09-29 (ver evidencia bajo la tarea). Siguiente: l2.

@@ -208,6 +208,104 @@ class UsbTrustedReconnectTest {
         assertNotEquals(0, arbitraryFingerprint.size) // sanity: the fixture fingerprint is non-empty, not itself under test
     }
 
+    // ---- Channel-leak-on-activation tests (task l1, `session-liveness` §2, §7): before this task
+    // requestActivation() was called outside any try/finally relative to the already-open channel,
+    // so a thrown exception leaked it. Both tests below drive reconnect() all the way through a
+    // successful handshake/hello exchange, only diverging at the activation step itself. ----
+
+    @Test
+    fun activationExceptionClosesChannel() {
+        val desktop = desktopFixture("l1-activation-exception-desktop")
+        val phone = phoneFixture("l1-activation-exception-phone")
+        val pair = sessionPair()
+        val serverError = AtomicReference<Throwable?>(null)
+        val serverCompleted = AtomicBoolean(false)
+
+        val server = thread {
+            try {
+                val tls = handshakeAsServer(desktop.context, pair.server)
+                val helloFrame = decodeFrame(tls.readApplicationFrame())
+                val accept = SessionFrame(sequence = helloFrame.sequence + 1, sessionId = helloFrame.sessionId, payload = SessionPayload.HandshakeAccept("pc-1", "welcome back"))
+                tls.writeApplicationFrame(encodeFrame(accept))
+                tls.close()
+                serverCompleted.set(true)
+            } catch (error: Throwable) {
+                serverError.set(error)
+            }
+        }
+
+        // Succeeds trust's own pre-TLS evaluate() call (reconnect()'s own gate, before any I/O),
+        // then throws on the second evaluate() call -- the one requestActivation makes internally --
+        // so the exception genuinely originates from activation, with the channel already open.
+        val store = EvaluateFailsAfterFirstCallTrustedDesktopStore(trustedStoreFor("pc-1", "Studio", desktop.spki))
+        val authority = ActiveDesktopAuthority()
+        val reconnect = UsbTrustedReconnect(epochSecondsSource = { 2_000 }, phoneTlsIdentity = phone)
+
+        try {
+            val result = reconnect.reconnect("pc-1", pair.client, store, authority)
+
+            val rejected = result as UsbTrustedReconnectResult.Rejected.ActivationFailed
+            assertEquals("pc-1", rejected.desktopId)
+            assertTrue(pair.clientCloseable.closed)
+        } finally {
+            server.join(2_000)
+            serverError.get()?.let { throw it }
+            assertTrue(serverCompleted.get())
+        }
+    }
+
+    @Test
+    fun activationRejectedClosesChannel() {
+        val desktop = desktopFixture("l1-activation-rejected-desktop")
+        val phone = phoneFixture("l1-activation-rejected-phone")
+        val pair = sessionPair()
+        val serverError = AtomicReference<Throwable?>(null)
+        val serverCompleted = AtomicBoolean(false)
+
+        val server = thread {
+            try {
+                val tls = handshakeAsServer(desktop.context, pair.server)
+                val helloFrame = decodeFrame(tls.readApplicationFrame())
+                val accept = SessionFrame(sequence = helloFrame.sequence + 1, sessionId = helloFrame.sessionId, payload = SessionPayload.HandshakeAccept("pc-1", "welcome back"))
+                tls.writeApplicationFrame(encodeFrame(accept))
+                tls.close()
+                serverCompleted.set(true)
+            } catch (error: Throwable) {
+                serverError.set(error)
+            }
+        }
+
+        val store = trustedStoreFor("pc-1", "Studio", desktop.spki)
+        // A different desktop is already active, so requestActivation returns Rejected.SecondActiveDesktop.
+        val authority = ActiveDesktopAuthority(initialState = ActiveDesktopAuthority.State.ActiveDesktop("other-desktop"))
+        val reconnect = UsbTrustedReconnect(epochSecondsSource = { 2_000 }, phoneTlsIdentity = phone)
+
+        try {
+            val result = reconnect.reconnect("pc-1", pair.client, store, authority)
+
+            val rejected = result as UsbTrustedReconnectResult.Rejected.ActivationRejected
+            assertEquals("pc-1", rejected.desktopId)
+            assertTrue(pair.clientCloseable.closed)
+        } finally {
+            server.join(2_000)
+            serverError.get()?.let { throw it }
+            assertTrue(serverCompleted.get())
+        }
+    }
+
+    /** Delegates every [TrustedDesktopStore] operation except [evaluate], which throws from its second call onward (its first call is reconnect()'s own pre-TLS trust gate). */
+    private class EvaluateFailsAfterFirstCallTrustedDesktopStore(
+        private val delegate: TrustedDesktopStore,
+    ) : TrustedDesktopStore by delegate {
+        private var evaluateCallCount = 0
+
+        override fun evaluate(desktopId: String, presentedTrustMaterialFingerprint: ByteArray, nowEpochSeconds: Long): TrustedDesktopAuthResult {
+            evaluateCallCount += 1
+            if (evaluateCallCount > 1) throw IllegalStateException("simulated trusted desktop store failure")
+            return delegate.evaluate(desktopId, presentedTrustMaterialFingerprint, nowEpochSeconds)
+        }
+    }
+
     private fun trustedStoreFor(desktopId: String, desktopName: String, desktopSpki: ByteArray): TrustedDesktopStore {
         val store = InMemoryTrustedDesktopStore()
         store.save(

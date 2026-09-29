@@ -78,6 +78,33 @@ class PinnedDesktopTlsTrustManagerTest {
         assertEquals("pinned desktop TLS trust manager does not trust client certificates", error.message)
     }
 
+    // ---- PinnedDesktopFingerprintTrustManager (task l1, `session-liveness` §7): reconnection's
+    // fingerprint-only counterpart of PinnedDesktopTlsTrustManager above. Reuses the same cert
+    // fixtures, pinning the SHA-256 fingerprint of the valid cert's SPKI instead of the raw SPKI. ----
+
+    @Test
+    fun acceptsMatchingFingerprintForPinnedDesktopFingerprintTrustManager() {
+        val trustManager = PinnedDesktopFingerprintTrustManager(pinnedValidDesktopFingerprint())
+
+        trustManager.checkServerTrusted(arrayOf(VALID_DESKTOP_CERT), "ECDHE_ECDSA")
+
+        assertArrayEquals(emptyArray<X509Certificate>(), trustManager.acceptedIssuers)
+    }
+
+    @Test
+    fun rejectsMismatchedFingerprint() {
+        val trustManager = PinnedDesktopFingerprintTrustManager(pinnedValidDesktopFingerprint())
+
+        val error = assertCertificateException {
+            trustManager.checkServerTrusted(arrayOf(MISMATCH_DESKTOP_CERT), "ECDHE_ECDSA")
+        }
+
+        assertEquals("desktop TLS leaf SubjectPublicKeyInfo fingerprint does not match trusted desktop store", error.message)
+    }
+
+    private fun pinnedValidDesktopFingerprint(): ByteArray =
+        PairingTrustFingerprint.fromTrustMaterial(VALID_DESKTOP_CERT.publicKey.encoded).bytes
+
     private fun pinnedValidDesktopIdentity(): DesktopTlsIdentityMaterial =
         DesktopTlsIdentityMaterial.validate(VALID_DESKTOP_CERT.publicKey.encoded).getOrThrow()
 

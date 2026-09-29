@@ -35,6 +35,9 @@ sealed class UsbTrustedReconnectResult {
 
         /** The desktop accepted the handshake, but [ActiveDesktopAuthority] rejected activation (e.g. a second live desktop). */
         data class ActivationRejected(val desktopId: String, val activation: ActiveDesktopAuthority.ActivationResult.Rejected) : Rejected()
+
+        /** [ActiveDesktopAuthority.requestActivation] itself threw (task l1, `session-liveness` §2, §7: this used to leak the channel). */
+        data class ActivationFailed(val desktopId: String, val cause: Throwable) : Rejected()
     }
 }
 
@@ -113,16 +116,24 @@ class UsbTrustedReconnect(
             return helloRejection
         }
 
-        return when (
-            val activation = activeDesktopAuthority.requestActivation(desktopId, record.trustMaterialFingerprint, now, trustedDesktopStore)
-        ) {
-            is ActiveDesktopAuthority.ActivationResult.Activated,
-            is ActiveDesktopAuthority.ActivationResult.KeptActive,
-            -> UsbTrustedReconnectResult.Reconnected(desktopId, channel, sessionFrameAdapter)
-            is ActiveDesktopAuthority.ActivationResult.Rejected -> {
-                runCatching { channel.close() }
-                UsbTrustedReconnectResult.Rejected.ActivationRejected(desktopId, activation)
+        return try {
+            when (
+                val activation = activeDesktopAuthority.requestActivation(desktopId, record.trustMaterialFingerprint, now, trustedDesktopStore)
+            ) {
+                is ActiveDesktopAuthority.ActivationResult.Activated,
+                is ActiveDesktopAuthority.ActivationResult.KeptActive,
+                -> UsbTrustedReconnectResult.Reconnected(desktopId, channel, sessionFrameAdapter)
+                is ActiveDesktopAuthority.ActivationResult.Rejected -> {
+                    runCatching { channel.close() }
+                    UsbTrustedReconnectResult.Rejected.ActivationRejected(desktopId, activation)
+                }
             }
+        } catch (error: Exception) {
+            // Activation happens after the channel is already open (step 4): a thrown exception must
+            // not leak it (task l1, `session-liveness` §2) -- close it and report a typed rejection,
+            // matching exchangeHandshakeHello's own catch-and-classify style above.
+            runCatching { channel.close() }
+            UsbTrustedReconnectResult.Rejected.ActivationFailed(desktopId, error)
         }
     }
 
