@@ -109,6 +109,38 @@ Genera o carga el alias, spec del contrato §4.1, `KeyManagerFactory.init(Androi
 - **Líneas cambiadas**: 65 (archivo nuevo) — `AndroidKeyStorePhoneTlsIdentity.kt`.
 - **Commit**: `feat(android): add Android Keystore phone TLS identity`.
 
+#### Revisión nativa m1b+m2
+
+- Lineage `review-48052d68d919f710`, 4 lentes (R1 riesgo, R2 legibilidad, R3 confiabilidad, R4 resiliencia). Resultado: **aprobada sin corrección**; acknowledgement con autoridad `burned`.
+- Hallazgos no bloqueantes y dónde se resuelven (todos en **m2b**, este cambio):
+  - WARNING `R4-keystore-alias-no-recovery` + WARNING `R3-keystore-alias-unrecoverable-state` (si el alias existe pero es inservible — sin certificado por una generación interrumpida, no es una entrada de clave privada, o una clave no canónica/no P-256 — la construcción fallaba para siempre, sin recuperación) — resuelto en el commit `fix(android): recover unusable phone TLS keystore alias`: `KeyStorePhoneTlsIdentity.ensure()` borra la entrada y regenera una vez; si sigue inservible, falla cerrado con una excepción clara en lugar de reintentar indefinidamente.
+  - SUGGESTION `R4-keystore-check-then-generate-race` (`containsAlias` + `generate` no es atómico) — resuelto en el mismo commit: `ensure()` corre bajo un lock de proceso compartido por todas las instancias de la clase.
+  - SUGGESTION `R1-001` (el `KeyManager` sobre todo el keystore podía presentar una clave distinta a `subjectPublicKeyInfoDer` si se guardara otra clave de firma) — resuelto en el mismo commit: `AliasPinnedX509KeyManager` sólo ofrece el alias pinneado (chain/clave privada sólo para ese alias; `chooseClientAlias`/`chooseEngineClientAlias` sólo cuando se pide tipo `"EC"`; métodos de servidor devuelven `null`).
+  - SUGGESTION `R2-init-order-dependency` (orden implícito de declaración entre el `init` que asegura el alias y la propiedad que lee el certificado) — resuelto en el mismo commit: `regenerated`, `subjectPublicKeyInfoDer` y el `KeyManager` se asignan juntos desde un único resultado de `ensure()` computado dentro de un solo bloque `init`.
+  - SUGGESTION `R2-desktop-validator-for-phone-spki` (aclarar que el validador es agnóstico del par) — resuelto en el mismo commit: KDoc nuevo en `DesktopTlsIdentityMaterial` sin renombrar el tipo público.
+  - WARNING `R2-dead-serverhandshake-return` (retorno de `serverHandshake` sin uso en los 4 call sites) — resuelto en el commit `test(android): tighten TLS 1.3 client auth assertions` (ver Evidencia m2b, continuación).
+  - WARNING `R2-tls13-name-unasserted-protocol` + SUGGESTION `R3-tls13-test-protocol-and-exception-unasserted` (el test de TLS 1.3 nunca fuerza ni afirma el protocolo negociado) — resuelto en el mismo commit de continuación.
+  - SUGGESTION `R2-broad-catch-first-read` (catch de `Exception` genérico en la primera lectura) — resuelto en el mismo commit de continuación.
+  - SUGGESTION `R2-evidence-import-count` (la evidencia de m1b dice "imports (+2)"; el diff real de `8e47482` agregó 1 import, `SSLHandshakeException`, verificado con `git show 8e47482 -- .../SslEngineUsbTlsChannelTest.kt`) — corregido en el mismo commit de continuación (ver también la corrección de texto más abajo).
+
+#### Evidencia m2b
+
+- **RED observado** (falla de compilación, no de ejecución, porque `KeyStorePhoneTlsIdentity` todavía no existía): al agregar sólo `KeyStorePhoneTlsIdentityTest.kt` (sin tocar producción), `:android:usb-probe:compileDebugUnitTestKotlin` falló con, entre otras:
+  ```
+  e: .../KeyStorePhoneTlsIdentityTest.kt:25:24 Unresolved reference: KeyStorePhoneTlsIdentity
+  e: .../KeyStorePhoneTlsIdentityTest.kt:47:24 Unresolved reference: KeyStorePhoneTlsIdentity
+  e: .../KeyStorePhoneTlsIdentityTest.kt:64:24 Unresolved reference: KeyStorePhoneTlsIdentity
+  e: .../KeyStorePhoneTlsIdentityTest.kt:82:24 Unresolved reference: KeyStorePhoneTlsIdentity
+  e: .../KeyStorePhoneTlsIdentityTest.kt:101:24 Unresolved reference: KeyStorePhoneTlsIdentity
+  BUILD FAILED
+  ```
+- **Investigación** (la firma de ejemplo del contrato no alcanzaba): medido empíricamente con un script Java standalone contra el mismo JDK (Homebrew OpenJDK 17.0.16, el que resuelve `java.home` en las corridas de Gradle) que `KeyStore.getKey(alias, null)` y `KeyStore.getEntry(alias, null)` lanzan `UnrecoverableKeyException` sobre un PKCS12 con contraseña real, incluso cuando `-storepass` y `-keypass` coinciden (`getKey(null)` → "Cannot read the array length because password is null"; `getEntry(null)` → "requested entry requires a password"; ambos funcionan con la contraseña real). `"AndroidKeyStore"` en cambio exige protección `null` (no soporta contraseñas; así lo asume el código de m2 ya aprobado). Se agregó un cuarto parámetro opcional `keyProtection: KeyStore.ProtectionParameter? = null` a `KeyStorePhoneTlsIdentity`: `AndroidKeyStorePhoneTlsIdentity` no lo pasa (preserva el `null` de siempre), los tests JVM pasan `KeyStore.PasswordProtection`. Desviación menor respecto a la firma de ejemplo del diseño, documentada acá en vez de asumida sin verificar.
+- **GREEN focused** (`--tests dev.chinchillacam.usbprobe.KeyStorePhoneTlsIdentityTest --rerun-tasks`), 3 corridas consecutivas: `BUILD SUCCESSFUL`, 5 tests, 0 fallas cada vez (`generatesKeyWhenAliasMissing`, `reusesValidAliasWithoutRegenerating`, `regeneratesWhenAliasHoldsNonP256Key`, `regeneratesWhenAliasHasNoPrivateKeyEntry`, `pinnedKeyManagerPresentsOnlyPinnedAliasWhenStoreHasOtherEcKeys`), verde ya en el primer intento tras la investigación anterior.
+- **Implementación**: `KeyStorePhoneTlsIdentity` (core JVM-testeable) + `AliasPinnedX509KeyManager` (privada, en el mismo archivo) — ver Revisión nativa m1b+m2 arriba para el detalle de qué resuelve cada pieza. `AndroidKeyStorePhoneTlsIdentity` pasa a ser un adaptador delgado que sólo aporta `KeyStore.getInstance("AndroidKeyStore")` y el generador `KeyGenParameterSpec` (sin cambio de spec); expone `regenerated` además de la interfaz `PhoneTlsIdentity`. El comportamiento específico del provider real (generación de clave, TLS 1.3 desde API 29+) sigue pendiente de validación física (M9); lo que antes no era JVM-testeable en absoluto ahora sí lo es en su lógica de ensure/regenerar/pinning.
+- **Full**: `testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug` → `BUILD SUCCESSFUL`. Total del módulo: 370 tests, 2 skipped (interop opt-in), 0 failures, 0 errors (baseline m2: 365/2/0). `lintDebug` no reporta hallazgos sobre ninguno de los archivos tocados.
+- **Líneas cambiadas**: 434 (407 adiciones + 27 eliminaciones) — `KeyStorePhoneTlsIdentity.kt` nuevo (178, incluye `AliasPinnedX509KeyManager`), `KeyStorePhoneTlsIdentityTest.kt` nuevo (193), `AndroidKeyStorePhoneTlsIdentity.kt` (+25/-27, ahora delega), `DesktopTlsIdentityMaterial.kt` (+11, sólo KDoc, sin cambio de comportamiento).
+- **Commit**: `fix(android): recover unusable phone TLS keystore alias`.
+
 ### [ ] m3 — Interoperabilidad JSSE ↔ rustls con client auth obligatorio
 
 Requiere autorización fresca del usuario para runtime entre worktrees. `SocketlessUsbPairingProofInteropTest` presenta identidad PKCS12 contra el helper desktop actualizado y compara el `phone_id` que el helper reporta por stderr con la huella local del SPKI. Estimado ~120 líneas.

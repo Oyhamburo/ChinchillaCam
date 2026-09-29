@@ -6,43 +6,41 @@ import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.spec.ECGenParameterSpec
 import javax.net.ssl.KeyManager
-import javax.net.ssl.KeyManagerFactory
 import javax.security.auth.x500.X500Principal
 
 /**
- * Production [PhoneTlsIdentity] backed by a non-exportable EC P-256 key in the Android Keystore
- * (contract §4.1): alias [ALIAS], [KeyProperties.PURPOSE_SIGN], digests
- * [KeyProperties.DIGEST_NONE] (required for TLS client auth per the AOSP [KeyGenParameterSpec]
- * javadoc) and [KeyProperties.DIGEST_SHA256]. Generates the key pair on first use if the alias is
- * missing; never exports the private key and never logs key material.
+ * Production [PhoneTlsIdentity]: wires [KeyStorePhoneTlsIdentity] to the real Android Keystore
+ * (contract §4.1). Supplies `KeyStore.getInstance("AndroidKeyStore")` and the
+ * [KeyGenParameterSpec] generator for the EC P-256 key -- alias [ALIAS],
+ * [KeyProperties.PURPOSE_SIGN], digests [KeyProperties.DIGEST_NONE] (required for TLS client auth
+ * per the AOSP [KeyGenParameterSpec] javadoc) and [KeyProperties.DIGEST_SHA256]. All ensure,
+ * regenerate and key-pinning behavior lives in [KeyStorePhoneTlsIdentity]; this class stays free
+ * of logging key material and of Activity/UI wiring.
  *
  * Not exercised by JVM unit tests: "AndroidKeyStore" is a platform provider unavailable outside a
- * device or emulator. This is a declared TDD deviation (no RED/GREEN for this file); behavior on
- * device (key generation, TLS client auth with DIGEST_NONE, TLS 1.3 only from API 29+) is pending
- * physical validation (M9). See odd/tasks/phone-mtls-identity.md, task m2.
+ * device or emulator. This is a declared TDD deviation for this thin wrapper only (no RED/GREEN
+ * for this file); the ensure/regenerate/pinning logic it delegates to is JVM-tested against a
+ * PKCS12 keystore in `KeyStorePhoneTlsIdentityTest`. Behavior specific to the real provider (key
+ * generation, TLS client auth with DIGEST_NONE, TLS 1.3 only from API 29+) is still pending
+ * physical validation (M9). See odd/tasks/phone-mtls-identity.md, tasks m2 and m2b.
  */
 class AndroidKeyStorePhoneTlsIdentity : PhoneTlsIdentity {
-    private val keyStore: KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE_PROVIDER).apply { load(null) }
+    private val delegate = KeyStorePhoneTlsIdentity(
+        keyStore = KeyStore.getInstance(ANDROID_KEYSTORE_PROVIDER).apply { load(null) },
+        alias = ALIAS,
+        generateKeyPair = ::generateKey,
+    )
 
-    init {
-        if (!keyStore.containsAlias(ALIAS)) generateKey()
-    }
+    /**
+     * `true` when construction had to delete and regenerate an unusable [ALIAS] entry. A new key
+     * invalidates every desktop's existing trust in this phone (contract §4.1.4): callers must
+     * surface this to the user so they can re-pair. Re-pairing UI is out of scope here.
+     */
+    val regenerated: Boolean get() = delegate.regenerated
 
-    override fun keyManagers(): Array<KeyManager> =
-        KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply {
-            init(keyStore, null)
-        }.keyManagers
+    override fun keyManagers(): Array<KeyManager> = delegate.keyManagers()
 
-    override val subjectPublicKeyInfoDer: ByteArray = run {
-        val certificate = keyStore.getCertificate(ALIAS)
-            ?: throw IllegalStateException("Android Keystore alias \"$ALIAS\" has no certificate")
-        DesktopTlsIdentityMaterial.validate(certificate.publicKey.encoded).getOrElse {
-            throw IllegalStateException(
-                "Android Keystore alias \"$ALIAS\" is not a canonical P-256 SubjectPublicKeyInfo",
-                it,
-            )
-        }.subjectPublicKeyInfoDer
-    }
+    override val subjectPublicKeyInfoDer: ByteArray get() = delegate.subjectPublicKeyInfoDer
 
     private fun generateKey() {
         val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, ANDROID_KEYSTORE_PROVIDER)

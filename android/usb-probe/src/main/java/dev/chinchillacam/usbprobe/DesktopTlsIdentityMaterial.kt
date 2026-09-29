@@ -11,6 +11,17 @@ import java.security.spec.X509EncodedKeySpec
 
 private const val DEFAULT_MAX_DESKTOP_TLS_IDENTITY_BYTES = 512
 
+/**
+ * Canonical DER SubjectPublicKeyInfo validator for the mutual-TLS pinned-peer contract (§4.1):
+ * [validate] accepts only a non-empty, size-bounded, canonically-encoded EC P-256
+ * SubjectPublicKeyInfo, and rejects certificates, oversized or malformed input, and any other
+ * algorithm or curve.
+ *
+ * The name is historical: this was written first to validate the desktop's SPKI, pinned by the
+ * phone from the pairing QR code. The check itself is peer-agnostic -- [KeyStorePhoneTlsIdentity]
+ * reuses it verbatim to validate the phone's own Android Keystore key before presenting it as a
+ * TLS client certificate. Not renamed here to keep this task's diff scoped to its stated goal.
+ */
 class DesktopTlsIdentityMaterial private constructor(
     subjectPublicKeyInfoDer: ByteArray,
     val publicKey: PublicKey,
