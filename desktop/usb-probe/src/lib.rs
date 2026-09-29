@@ -64,7 +64,8 @@ pub use usb_tls_ciphertext_stream::{
     USB_TLS_CIPHERTEXT_MAX_PENDING_READ_BYTES, USB_TLS_CIPHERTEXT_STREAM_ID,
 };
 pub use usb_tls_pairing_proof::{
-    CompletedPairingProof, PairedPhoneCandidate, UsbTlsPairingProofError, UsbTlsPairingProofServer,
+    complete_trusted_phone_handshake, CompletedPairingProof, CompletedTrustedHandshake,
+    PairedPhoneCandidate, UsbTlsPairingProofError, UsbTlsPairingProofServer,
 };
 pub use video_decoder::{DecodingEncodedVideoSink, VideoDecoder, VideoDecoderError};
 pub use video_fragment_reassembler::{

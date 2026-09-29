@@ -13,8 +13,8 @@ use rustls::{
 use crate::{
     phone_client_cert_verifier::accepted_client_spki, phone_id_for_spki, DesktopTlsIdentity,
     PairingProofFrame, PairingProofRequest, PairingProofResponse, PairingQrIssuer,
-    PairingQrIssuerError, PairingQrNonceGenerator, PhoneClientCertVerifier, UsbBulkIo,
-    UsbTlsCiphertextStream,
+    PairingQrIssuerError, PairingQrNonceGenerator, PhoneClientCertVerifier, TrustedPhoneLookup,
+    UsbBulkIo, UsbTlsCiphertextStream,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +146,13 @@ fn paired_phone_candidate(
 fn server_config(
     identity: &DesktopTlsIdentity,
 ) -> Result<Arc<ServerConfig>, UsbTlsPairingProofError> {
+    build_server_config(identity, PhoneClientCertVerifier::pairing())
+}
+
+fn build_server_config(
+    identity: &DesktopTlsIdentity,
+    verifier: Arc<PhoneClientCertVerifier>,
+) -> Result<Arc<ServerConfig>, UsbTlsPairingProofError> {
     let provider = rustls::crypto::ring::default_provider();
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
         identity.private_key_pkcs8_der().to_vec(),
@@ -154,10 +161,56 @@ fn server_config(
     let config = ServerConfig::builder_with_provider(provider.into())
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .map_err(|error| UsbTlsPairingProofError::Tls(error.to_string()))?
-        .with_client_cert_verifier(PhoneClientCertVerifier::pairing())
+        .with_client_cert_verifier(verifier)
         .with_single_cert(vec![cert], key)
         .map_err(|error| UsbTlsPairingProofError::Tls(error.to_string()))?;
     Ok(Arc::new(config))
+}
+
+/// Task m3: reconnection without a QR. Accepts only a phone the given `lookup` reports as
+/// trusted and not revoked, rejecting unknown and revoked phones (and any lookup failure)
+/// AT THE HANDSHAKE itself -- there is no `CCP1` exchange here, unlike
+/// `complete_handshake_and_pairing_proof`. The returned `phone_id` is re-derived from the
+/// peer certificate of this same completed connection (`paired_phone_candidate`, shared
+/// with the pairing flow above), never trusted from a caller-supplied value.
+pub fn complete_trusted_phone_handshake<I>(
+    identity: &DesktopTlsIdentity,
+    lookup: Arc<dyn TrustedPhoneLookup + Send + Sync>,
+    stream: UsbTlsCiphertextStream<I>,
+    timeout: Duration,
+) -> Result<CompletedTrustedHandshake<I>, UsbTlsPairingProofError>
+where
+    I: UsbBulkIo,
+{
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or(UsbTlsPairingProofError::Timeout)?;
+    let config = build_server_config(identity, PhoneClientCertVerifier::trusted_only(lookup))?;
+    let mut connection = ServerConnection::new(config)
+        .map_err(|error| UsbTlsPairingProofError::Tls(error.to_string()))?;
+    let mut stream = stream;
+    while connection.is_handshaking() {
+        ensure_before_deadline(deadline)?;
+        connection
+            .complete_io(&mut stream)
+            .map_err(map_complete_io_error)?;
+        ensure_before_deadline(deadline)?;
+    }
+
+    let candidate = paired_phone_candidate(&connection)?;
+    let tls = StreamOwned::new(connection, stream);
+    Ok(CompletedTrustedHandshake {
+        tls,
+        phone_id: candidate.phone_id,
+    })
+}
+
+/// The outcome of a completed trusted-reconnection handshake (task m3): the still-live TLS
+/// stream and the `phone_id` its peer certificate authenticated, re-derived from the same
+/// connection rather than trusted from a caller-supplied value.
+pub struct CompletedTrustedHandshake<I: UsbBulkIo> {
+    pub tls: StreamOwned<ServerConnection, UsbTlsCiphertextStream<I>>,
+    pub phone_id: String,
 }
 
 fn map_complete_io_error(error: io::Error) -> UsbTlsPairingProofError {
