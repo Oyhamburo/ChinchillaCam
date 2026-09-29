@@ -56,7 +56,7 @@ pub use session_frame::{
     SessionFramePayload, VideoFrameKind,
 };
 pub use trusted_phone_store::{
-    FileTrustedPhoneStore, TrustedPhoneIdentity, TrustedPhoneStoreError,
+    FileTrustedPhoneStore, TrustUnlessRevoked, TrustedPhoneIdentity, TrustedPhoneStoreError,
     TrustedPhoneStoreWriteCoordinator,
 };
 pub use usb_tls_ciphertext_stream::{

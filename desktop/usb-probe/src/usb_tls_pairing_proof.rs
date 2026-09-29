@@ -14,8 +14,8 @@ use crate::{
     phone_client_cert_verifier::accepted_client_spki, phone_id_for_spki, DesktopTlsIdentity,
     FileTrustedPhoneStore, PairingProofFrame, PairingProofRequest, PairingProofResponse,
     PairingQrIssuer, PairingQrIssuerError, PairingQrNonceGenerator, PhoneClientCertVerifier,
-    TrustedPhoneIdentity, TrustedPhoneLookup, TrustedPhoneStoreError, UsbBulkIo,
-    UsbTlsCiphertextStream,
+    TrustUnlessRevoked, TrustedPhoneIdentity, TrustedPhoneLookup, TrustedPhoneStoreError,
+    UsbBulkIo, UsbTlsCiphertextStream,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,17 +95,22 @@ impl PairedPhoneCandidate {
     /// the reconnection handshake ever calls `store.trust` on their own (task m4, contract
     /// section 4.6). Confirming a phone_id that is currently revoked fails closed rather
     /// than silently un-revoking it.
+    ///
+    /// Uses `store.trust_unless_revoked` -- a single atomic check-and-write -- instead of
+    /// a separate `is_revoked` check followed by `trust`: that two-step sequence took the
+    /// store's lock separately for each call, leaving a window in which a `revoke`
+    /// landing between them was silently overwritten by the unconditional upsert in
+    /// `trust` (time-of-check/time-of-use; found in native review readback, task m4b).
     pub fn confirm(
         &self,
         label: &str,
         store: &FileTrustedPhoneStore,
     ) -> Result<TrustedPhoneIdentity, PairedPhoneCandidateConfirmError> {
-        if store.is_revoked(&self.phone_id)? {
-            return Err(PairedPhoneCandidateConfirmError::PhoneRevoked);
-        }
         let identity = TrustedPhoneIdentity::new(self.phone_id.clone(), label, self.spki.clone())?;
-        store.trust(identity.clone())?;
-        Ok(identity)
+        match store.trust_unless_revoked(identity.clone())? {
+            TrustUnlessRevoked::Trusted => Ok(identity),
+            TrustUnlessRevoked::Refused => Err(PairedPhoneCandidateConfirmError::PhoneRevoked),
+        }
     }
 }
 

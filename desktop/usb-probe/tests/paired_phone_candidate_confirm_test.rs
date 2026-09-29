@@ -6,8 +6,8 @@
 use std::{
     collections::VecDeque,
     io::{Read, Write},
-    path::PathBuf,
-    sync::{Arc, Condvar, Mutex},
+    path::{Path, PathBuf},
+    sync::{mpsc, Arc, Condvar, Mutex},
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -20,8 +20,9 @@ use usb_probe::{
     complete_trusted_phone_handshake, DesktopTlsIdentity, FileTrustedPhoneStore,
     FrameTransferBudget, FramedUsbStream, PairedPhoneCandidate, PairedPhoneCandidateConfirmError,
     PairingProofFrame, PairingProofRequest, PairingQrIssuer, PairingQrIssuerError,
-    PairingQrNonceGenerator, TrustedPhoneIdentity, UsbBulkIo, UsbProbeError,
-    UsbTlsCiphertextStream, UsbTlsPairingProofError, UsbTlsPairingProofServer,
+    PairingQrNonceGenerator, TrustedPhoneIdentity, TrustedPhoneStoreError,
+    TrustedPhoneStoreWriteCoordinator, UsbBulkIo, UsbProbeError, UsbTlsCiphertextStream,
+    UsbTlsPairingProofError, UsbTlsPairingProofServer,
 };
 
 #[test]
@@ -130,6 +131,59 @@ fn confirmed_phone_reconnects_and_revoked_phone_is_rejected() {
         Err(other) => panic!("expected Err(Tls(_)) after revocation, got Err({other:?})"),
         Ok(_) => panic!("expected the revoked phone to be rejected at the handshake, got Ok"),
     }
+
+    cleanup(path);
+}
+
+/// End-to-end proof that `confirm` itself (not just the store method it uses) closes the
+/// time-of-check/time-of-use race: a `revoke` that completes while `confirm`'s call is
+/// blocked waiting for the store's lock must still be visible to `confirm`, so it must
+/// refuse instead of persisting a phone that is, by then, revoked. Before the fix,
+/// `confirm` composed a lock-free `is_revoked` check with a separately-locked `trust`
+/// call, so a revoke landing between them was silently overwritten; see
+/// `trusted_phone_store_test.rs`'s `trust_unless_revoked_refuses_when_revocation_completes_while_call_is_pending`
+/// for the same race exercised directly against the store.
+#[test]
+fn confirm_refuses_when_revocation_completes_while_confirm_is_pending() {
+    let path = unique_store_path("confirm-race");
+    FileTrustedPhoneStore::new(&path)
+        .trust(TrustedPhoneIdentity::new("phone-confirm-race", "Original", vec![9]).unwrap())
+        .unwrap();
+
+    let (loaded_tx, loaded_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let coordinator = Arc::new(PauseOnceAfterLoad::new(loaded_tx, release_rx));
+    let revoking_store = FileTrustedPhoneStore::with_write_coordinator(&path, coordinator);
+
+    let revoke = thread::spawn(move || revoking_store.revoke("phone-confirm-race").unwrap());
+    loaded_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    let candidate = PairedPhoneCandidate {
+        phone_id: "phone-confirm-race".to_string(),
+        spki: vec![1, 2, 3],
+    };
+    let confirming_store = FileTrustedPhoneStore::new(&path);
+    let confirm = thread::spawn(move || candidate.confirm("Stale Confirm", &confirming_store));
+
+    thread::sleep(Duration::from_millis(25));
+    release_tx.send(()).unwrap();
+
+    assert!(revoke.join().unwrap());
+    let result = confirm.join().unwrap();
+
+    assert!(
+        matches!(result, Err(PairedPhoneCandidateConfirmError::PhoneRevoked)),
+        "expected Err(PhoneRevoked), got {result:?}"
+    );
+    assert!(FileTrustedPhoneStore::new(&path)
+        .is_revoked("phone-confirm-race")
+        .unwrap());
+    assert_eq!(
+        FileTrustedPhoneStore::new(&path)
+            .trusted_identity("phone-confirm-race")
+            .unwrap(),
+        None
+    );
 
     cleanup(path);
 }
@@ -371,5 +425,38 @@ impl BulkPipe {
             read += 1;
         }
         Ok(read)
+    }
+}
+
+/// A `TrustedPhoneStoreWriteCoordinator` that pauses once, right after a store operation
+/// has loaded its records but before it writes anything back, and resumes only once
+/// released. Duplicated from `trusted_phone_store_test.rs` -- each integration test file
+/// is its own compilation unit, and this crate's established pattern is to duplicate such
+/// helpers rather than share them (see `odd/tasks/phone-mtls-identity.md`, Evidencia m4).
+struct PauseOnceAfterLoad {
+    loaded_tx: Mutex<Option<mpsc::Sender<()>>>,
+    release_rx: Mutex<mpsc::Receiver<()>>,
+}
+
+impl PauseOnceAfterLoad {
+    fn new(loaded_tx: mpsc::Sender<()>, release_rx: mpsc::Receiver<()>) -> Self {
+        Self {
+            loaded_tx: Mutex::new(Some(loaded_tx)),
+            release_rx: Mutex::new(release_rx),
+        }
+    }
+}
+
+impl TrustedPhoneStoreWriteCoordinator for PauseOnceAfterLoad {
+    fn after_records_loaded(&self, _path: &Path) -> Result<(), TrustedPhoneStoreError> {
+        if let Some(sender) = self.loaded_tx.lock().unwrap().take() {
+            sender.send(()).unwrap();
+            self.release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+        }
+        Ok(())
     }
 }

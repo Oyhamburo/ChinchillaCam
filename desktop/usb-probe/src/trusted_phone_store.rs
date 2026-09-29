@@ -77,6 +77,16 @@ pub enum PhoneTrustSnapshot {
     Unknown,
 }
 
+/// Outcome of `FileTrustedPhoneStore::trust_unless_revoked`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustUnlessRevoked {
+    /// `identity.phone_id` was not revoked; it is now trusted, exactly as `trust` would
+    /// have left it.
+    Trusted,
+    /// `identity.phone_id` is currently revoked; nothing was written.
+    Refused,
+}
+
 pub trait TrustedPhoneStoreWriteCoordinator: Send + Sync {
     fn after_records_loaded(&self, path: &Path) -> Result<(), TrustedPhoneStoreError>;
 }
@@ -122,6 +132,38 @@ impl FileTrustedPhoneStore {
             revoked: false,
         });
         self.save_records(&records)
+    }
+
+    /// Persists `identity` exactly like `trust`, unless `identity.phone_id` is currently
+    /// revoked, in which case it refuses without writing anything. Calling `is_revoked`
+    /// and `trust` as two separate operations each takes the store's lock on its own,
+    /// leaving a window between them in which another caller's `revoke` can commit and
+    /// then be silently undone by `trust`'s unconditional upsert (the time-of-check/
+    /// time-of-use bug found in native review readback of `PairedPhoneCandidate::confirm`,
+    /// task m4b). This checks and writes under a SINGLE lock hold and a SINGLE loaded
+    /// snapshot instead, so there is no such window. `trust`, `revoke`, and `is_revoked`
+    /// keep their existing behavior unchanged; `confirm` is the only caller of this method.
+    pub fn trust_unless_revoked(
+        &self,
+        identity: TrustedPhoneIdentity,
+    ) -> Result<TrustUnlessRevoked, TrustedPhoneStoreError> {
+        identity.validate()?;
+        let _lock = self.acquire_write_lock()?;
+        let mut records = self.load_records()?;
+        self.write_coordinator.after_records_loaded(&self.path)?;
+        if records
+            .iter()
+            .any(|record| record.identity.phone_id == identity.phone_id && record.revoked)
+        {
+            return Ok(TrustUnlessRevoked::Refused);
+        }
+        records.retain(|record| record.identity.phone_id != identity.phone_id);
+        records.push(TrustedPhoneRecord {
+            identity,
+            revoked: false,
+        });
+        self.save_records(&records)?;
+        Ok(TrustUnlessRevoked::Trusted)
     }
 
     pub fn trusted_identity(

@@ -7,7 +7,7 @@ use std::{
 };
 
 use usb_probe::{
-    FileTrustedPhoneStore, TrustedPhoneIdentity, TrustedPhoneStoreError,
+    FileTrustedPhoneStore, TrustUnlessRevoked, TrustedPhoneIdentity, TrustedPhoneStoreError,
     TrustedPhoneStoreWriteCoordinator,
 };
 
@@ -126,6 +126,96 @@ fn trusted_phone_store_prevents_stale_trust_from_overwriting_concurrent_revoke()
     assert!(FileTrustedPhoneStore::new(&path)
         .is_revoked("phone-race")
         .unwrap());
+
+    cleanup(path);
+}
+
+#[test]
+fn trust_unless_revoked_refuses_and_writes_nothing_when_already_revoked() {
+    let path = unique_store_path("trust-unless-revoked-refuses");
+    let store = FileTrustedPhoneStore::new(&path);
+    store
+        .trust(TrustedPhoneIdentity::new("phone-refuse", "Original", vec![9]).unwrap())
+        .unwrap();
+    store.revoke("phone-refuse").unwrap();
+    let before = fs::read_to_string(&path).unwrap();
+
+    let outcome = store
+        .trust_unless_revoked(
+            TrustedPhoneIdentity::new("phone-refuse", "New Label", vec![1, 2, 3]).unwrap(),
+        )
+        .unwrap();
+
+    assert_eq!(outcome, TrustUnlessRevoked::Refused);
+    assert!(store.is_revoked("phone-refuse").unwrap());
+    assert_eq!(store.trusted_identity("phone-refuse").unwrap(), None);
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        before,
+        "a refused trust_unless_revoked must not write to the store file at all"
+    );
+    cleanup(path);
+}
+
+#[test]
+fn trust_unless_revoked_trusts_when_not_currently_revoked() {
+    let path = unique_store_path("trust-unless-revoked-trusts");
+    let store = FileTrustedPhoneStore::new(&path);
+    let identity = TrustedPhoneIdentity::new("phone-trust", "New Phone", vec![4, 5, 6]).unwrap();
+
+    let outcome = store.trust_unless_revoked(identity.clone()).unwrap();
+
+    assert_eq!(outcome, TrustUnlessRevoked::Trusted);
+    assert_eq!(
+        store.trusted_identity("phone-trust").unwrap(),
+        Some(identity)
+    );
+    assert!(!store.is_revoked("phone-trust").unwrap());
+    cleanup(path);
+}
+
+#[test]
+fn trust_unless_revoked_refuses_when_revocation_completes_while_call_is_pending() {
+    let path = unique_store_path("trust-unless-revoked-race");
+    FileTrustedPhoneStore::new(&path)
+        .trust(TrustedPhoneIdentity::new("phone-race2", "Original", vec![9]).unwrap())
+        .unwrap();
+
+    let (loaded_tx, loaded_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let coordinator = Arc::new(PauseOnceAfterLoad::new(loaded_tx, release_rx));
+    let revoking_store = FileTrustedPhoneStore::with_write_coordinator(&path, coordinator);
+    let confirming_store = FileTrustedPhoneStore::new(&path);
+
+    let revoke = thread::spawn(move || revoking_store.revoke("phone-race2").unwrap());
+    loaded_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    let confirm = thread::spawn(move || {
+        confirming_store.trust_unless_revoked(
+            TrustedPhoneIdentity::new("phone-race2", "Stale Confirm", vec![1, 2, 3]).unwrap(),
+        )
+    });
+    thread::sleep(Duration::from_millis(25));
+    release_tx.send(()).unwrap();
+
+    assert!(revoke.join().unwrap());
+    let outcome = confirm.join().unwrap().unwrap();
+
+    assert_eq!(
+        outcome,
+        TrustUnlessRevoked::Refused,
+        "a revoke that completes while trust_unless_revoked is waiting on the lock must \
+         still be visible to its single load, so it must refuse instead of overwriting it"
+    );
+    assert!(FileTrustedPhoneStore::new(&path)
+        .is_revoked("phone-race2")
+        .unwrap());
+    assert_eq!(
+        FileTrustedPhoneStore::new(&path)
+            .trusted_identity("phone-race2")
+            .unwrap(),
+        None
+    );
 
     cleanup(path);
 }
