@@ -13,6 +13,16 @@
 //! TLS connection (e.g. a `StreamOwned<ServerConnection, _>` or
 //! `StreamOwned<ClientConnection, _>`) is responsible for closing/shutting it down
 //! instead of reusing it.
+//!
+//! # Deadline is soft, not hard (task s1b, native review finding R3-soft-deadline)
+//!
+//! `read_session_frame`'s `deadline` is only checked BETWEEN individual `Read::read` calls,
+//! never while one is blocked in progress. A single blocking read that never returns (e.g. a
+//! transport with no read timeout of its own, or one longer than `deadline`) can overrun
+//! `deadline` by however long that one call takes to return. Callers that need a HARD upper
+//! bound on wall-clock time must impose a read timeout on the underlying transport itself
+//! (as `FramedUsbStream`/`UsbTlsCiphertextStream` already do via `FrameTransferBudget`);
+//! `deadline` here only bounds the number of retries once a read call actually returns.
 
 use std::{
     fmt,
@@ -126,6 +136,19 @@ pub fn read_session_frame<S: Read>(
 /// Reimplemented locally (rather than exposed from `usb_tls_pairing_proof.rs`) because
 /// that module's helper returns `UsbTlsPairingProofError`, a different typed-error domain;
 /// only the visibility of that helper -- not its signature -- was available to change.
+///
+/// Task s1b (native review of s1, finding R3-error-kind-mapping) changed two things here
+/// relative to that reused pattern (and relative to `usb_tls_pairing_proof.rs`'s own
+/// `read_exact_before`, which was deliberately left as-is -- see "Evidencia s1b"):
+/// `ErrorKind::Interrupted` is now retried transparently, exactly like
+/// `std::io::Read::read_exact` does, instead of surfacing as `TlsSessionFrameError::Io`; and
+/// `WouldBlock`/`TimedOut` are retried too -- looping back to the top of the loop, the only
+/// place that decides `Timeout`, once `deadline` has actually passed -- instead of being
+/// mapped to `Timeout` on the very first occurrence regardless of how much of `deadline`
+/// actually remains. Both retries still pass back through the same deadline check on their
+/// next iteration, so a signal storm or a transport stuck on `WouldBlock` past `deadline`
+/// still fails closed with `Timeout` rather than retrying forever (see
+/// `would_block_past_the_deadline_still_times_out` in `tls_session_frame_test.rs`).
 fn read_exact_before_deadline<S: Read>(
     stream: &mut S,
     mut buf: &mut [u8],
@@ -140,7 +163,22 @@ fn read_exact_before_deadline<S: Read>(
                 ensure_before_deadline(deadline)?;
                 buf = &mut buf[read..];
             }
-            Err(error) => return Err(map_read_error(error)),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                // Consumed no bytes; retry the same (unconsumed) `buf` slice, like
+                // `std::io::Read::read_exact` does.
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                // Not necessarily a real timeout yet: a non-blocking transport (or one with
+                // its own shorter internal timeout) can report this well before our
+                // absolute `deadline`. Loop back to the top instead of deciding `Timeout`
+                // here.
+            }
+            Err(error) => return Err(TlsSessionFrameError::Io(error.to_string())),
         }
     }
     Ok(())
@@ -151,17 +189,6 @@ fn ensure_before_deadline(deadline: Instant) -> Result<(), TlsSessionFrameError>
         Err(TlsSessionFrameError::Timeout)
     } else {
         Ok(())
-    }
-}
-
-fn map_read_error(error: io::Error) -> TlsSessionFrameError {
-    if matches!(
-        error.kind(),
-        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-    ) {
-        TlsSessionFrameError::Timeout
-    } else {
-        TlsSessionFrameError::Io(error.to_string())
     }
 }
 

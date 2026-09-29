@@ -6,8 +6,8 @@
 //! trusted-store machinery and only set up a plain mutually authenticated TLS pair.
 
 use std::{
-    collections::VecDeque,
-    io::Cursor,
+    collections::{BTreeMap, VecDeque},
+    io::{self, Cursor, Read},
     sync::{Arc, Condvar, Mutex},
     thread,
     time::{Duration, Instant},
@@ -99,8 +99,200 @@ fn read_times_out_when_deadline_already_passed() {
     assert_eq!(result, Err(TlsSessionFrameError::Timeout));
 }
 
+/// Task s1b (native review of s1, finding R3-missing-boundary-coverage): s1 tested a
+/// truncated PAYLOAD (`truncated_frame_fails_closed` above) but never a truncated length
+/// PREFIX itself.
+#[test]
+fn truncated_length_prefix_fails_closed() {
+    let mut source = Cursor::new(vec![0x00, 0x01]); // only 2 of the 4 length-prefix bytes
+
+    let result = read_session_frame(&mut source, test_deadline());
+
+    assert_eq!(
+        result,
+        Err(TlsSessionFrameError::TruncatedFrame("length prefix"))
+    );
+}
+
+/// Task s1b (native review of s1, finding R3-missing-boundary-coverage): the inclusive
+/// upper bound (`declared_len == MAX_TLS_SESSION_FRAME_LEN`, i.e. exactly 1_048_576) was
+/// never exercised, only the oversized (`+1`) and zero-length rejections above. This closes
+/// that gap with a real frame at the exact boundary, round-tripped over TLS.
+#[test]
+fn accepts_frame_at_exact_max_length_boundary() {
+    let frame = max_length_session_frame();
+    let encoded = SessionFrameCodec::encode(&frame).unwrap();
+    assert_eq!(
+        encoded.len(),
+        SessionFrameCodec::DEFAULT_MAX_FRAME_SIZE,
+        "fixture must hit the exact boundary for this test to be meaningful"
+    );
+
+    let (mut server_tls, mut client_tls) = connected_tls_pair();
+    write_session_frame(&mut server_tls, &frame).unwrap();
+    let received = read_session_frame(&mut client_tls, test_deadline()).unwrap();
+
+    assert_eq!(received, frame);
+}
+
+/// Task s1b (native review finding R3-error-kind-mapping): `std::io::Read::read_exact`
+/// retries `ErrorKind::Interrupted` transparently (it never reaches a caller as an error);
+/// `read_session_frame` must do the same instead of surfacing it as `TlsSessionFrameError::Io`.
+#[test]
+fn retries_interrupted_read_like_read_exact() {
+    let bytes = encoded_frame_with_length_prefix(&sample_session_frame());
+    let mut source = InterruptOnceThenRead {
+        interrupted: false,
+        inner: Cursor::new(bytes),
+    };
+
+    let result = read_session_frame(&mut source, test_deadline());
+
+    assert_eq!(
+        result,
+        Ok(sample_session_frame()),
+        "an Interrupted read must be retried like std::io::Read::read_exact, not surfaced as an error"
+    );
+}
+
+/// Task s1b (native review finding R3-error-kind-mapping): a `WouldBlock`/`TimedOut` read
+/// reported well before the absolute deadline is not necessarily a real timeout (a
+/// non-blocking transport can report it long before `deadline`); it must be retried, not
+/// mapped straight to `TlsSessionFrameError::Timeout`.
+#[test]
+fn retries_would_block_before_the_deadline_instead_of_timing_out_immediately() {
+    let bytes = encoded_frame_with_length_prefix(&sample_session_frame());
+    let mut source = WouldBlockThenRead {
+        would_block_remaining: 3,
+        inner: Cursor::new(bytes),
+    };
+    let generous_deadline = Instant::now() + Duration::from_millis(500);
+
+    let result = read_session_frame(&mut source, generous_deadline);
+
+    assert_eq!(
+        result,
+        Ok(sample_session_frame()),
+        "a transient WouldBlock well before the deadline must be retried, not surfaced as Timeout immediately"
+    );
+}
+
+/// Companion to the test above: NOT a RED test (see "Evidencia s1b" in
+/// `odd/tasks/usb-authenticated-session.md` -- this already passed before the s1b fix too,
+/// since the old code also mapped `WouldBlock` straight to `Timeout`). It guards against a
+/// regression where retrying `WouldBlock` until the deadline could turn into an unbounded
+/// spin: this reader NEVER produces data, so the retry loop must still fail closed with
+/// `Timeout` once `deadline` actually passes.
+#[test]
+fn would_block_past_the_deadline_still_times_out() {
+    let mut source = AlwaysWouldBlockRead;
+    let short_deadline = Instant::now() + Duration::from_millis(30);
+
+    let result = read_session_frame(&mut source, short_deadline);
+
+    assert_eq!(result, Err(TlsSessionFrameError::Timeout));
+}
+
 fn test_deadline() -> Instant {
     Instant::now() + Duration::from_millis(1500)
+}
+
+fn sample_session_frame() -> SessionFrame {
+    SessionFrame::new(
+        1,
+        "session-01",
+        SessionFramePayload::HandshakeAccept {
+            desktop_id: "desktop-01".to_string(),
+            message: "welcome".to_string(),
+        },
+    )
+}
+
+fn encoded_frame_with_length_prefix(frame: &SessionFrame) -> Vec<u8> {
+    let encoded = SessionFrameCodec::encode(frame).unwrap();
+    let mut bytes = (encoded.len() as u32).to_be_bytes().to_vec();
+    bytes.extend_from_slice(&encoded);
+    bytes
+}
+
+/// See `accepts_frame_at_exact_max_length_boundary`: builds a `SessionFrame` whose CCSF v1
+/// encoding is exactly `SessionFrameCodec::DEFAULT_MAX_FRAME_SIZE` (1_048_576) bytes -- the
+/// exact upper bound the length prefix must still accept (contract section 4.3:
+/// `1..=1_048_576`). A single string/bytes field is length-prefixed with `u16` (max 65_535
+/// bytes), so no single field can reach the 1 MiB bound alone: this uses 16
+/// `CameraControlCommand` argument entries instead (15 at the maximum 65_535-byte value,
+/// plus one final entry sized to close the exact remaining gap: 16*2-byte keys + 15*65_535
+/// + 1*65_433 value bytes + 4 bytes per entry of length-prefix overhead + the 16-byte CCSF
+/// header + 1-byte session id + 1-byte command + 2-byte argument-count field == 1_048_576).
+/// The arithmetic is asserted against the real encoder's output above rather than trusted
+/// blindly.
+fn max_length_session_frame() -> SessionFrame {
+    let mut arguments = BTreeMap::new();
+    for index in 0..15u32 {
+        arguments.insert(format!("{index:02}"), "a".repeat(u16::MAX as usize));
+    }
+    arguments.insert("15".to_string(), "a".repeat(65_433));
+
+    SessionFrame::new(
+        1,
+        "s",
+        SessionFramePayload::CameraControlCommand {
+            command: "c".to_string(),
+            arguments,
+        },
+    )
+}
+
+/// Returns `Interrupted` on the very first `read` call (consuming no bytes), then
+/// delegates to `inner` for every subsequent call.
+struct InterruptOnceThenRead<R> {
+    interrupted: bool,
+    inner: R,
+}
+
+impl<R: Read> Read for InterruptOnceThenRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.interrupted {
+            self.interrupted = true;
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "simulated interrupt",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// Returns `WouldBlock` for the first `would_block_remaining` calls (consuming no bytes),
+/// then delegates to `inner` for every subsequent call.
+struct WouldBlockThenRead<R> {
+    would_block_remaining: usize,
+    inner: R,
+}
+
+impl<R: Read> Read for WouldBlockThenRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.would_block_remaining > 0 {
+            self.would_block_remaining -= 1;
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "simulated would-block",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// Always returns `WouldBlock`, never any data.
+struct AlwaysWouldBlockRead;
+
+impl Read for AlwaysWouldBlockRead {
+    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+        Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "simulated would-block",
+        ))
+    }
 }
 
 /// Builds a plain (non-pairing, non-trusted-reconnect) mutually authenticated TLS pair
