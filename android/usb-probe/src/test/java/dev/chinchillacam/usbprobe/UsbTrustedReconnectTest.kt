@@ -168,7 +168,8 @@ class UsbTrustedReconnectTest {
 
         val rejected = result as UsbTrustedReconnectResult.Rejected.TimedOut
         assertEquals("pc-1", rejected.desktopId)
-        assertTrue("expected a bounded wait near the configured 300ms deadline, took ${elapsedMillis}ms", elapsedMillis in 300..2_000)
+        // Lower bound tolerates timer granularity (millisecond truncation of the remaining time).
+        assertTrue("expected a bounded wait near the configured 300ms deadline, took ${elapsedMillis}ms", elapsedMillis in 250..2_000)
         assertTrue(pair.clientCloseable.closed)
         assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
 

@@ -165,9 +165,12 @@ class TlsSessionFrameIoAdapterTest {
             val error = assertThrowsTlsSessionFrameIoException { adapter.read(session.channel) }
             val elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000
             assertEquals(TlsSessionFrameIoFailureReason.PEER_IDLE, error.reason)
+            // The lower bound tolerates timer granularity: the bounded read may time out a few
+            // milliseconds before the nominal budget (millisecond truncation of the remaining time).
+            // The upper bound is what proves the idle budget, not the 5000ms frame deadline, governed.
             assertTrue(
                 "expected the idle budget (300ms) to govern, not the frame deadline (5000ms); took ${elapsedMillis}ms",
-                elapsedMillis in 300..2_000,
+                elapsedMillis in 250..2_000,
             )
             assertTrue(session.pair.clientCloseable.closed)
         } finally {

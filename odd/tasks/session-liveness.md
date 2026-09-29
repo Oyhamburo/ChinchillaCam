@@ -77,6 +77,8 @@ Tipo 10 en el codec y `SessionLivenessTracker`. RED: `roundTripsKeepaliveFrame`,
 
 Criterios: ninguna sesión se corta por esperar el próximo frame dentro del umbral; frames empezados se completan acotados; KEEPALIVE interoperable; tests de seguridad verdes; tests existentes verdes.
 
+Evidencia de verificación del orquestador (2026-09-29): una corrida de control falló en `idleBeyondThresholdFailsAsPeerIdle` ("took 299ms" contra el piso de 300 ms). No es un defecto de producción: la lectura acotada puede vencer unos milisegundos antes del presupuesto nominal por el truncamiento a milisegundos del tiempo restante. Se relajó el piso a 250 ms en ese test y en `reconnectTimesOutWithoutAccept`, que tenía el mismo patrón; el techo sigue probando que gobierna el presupuesto correcto. Tres corridas enfocadas seguidas verdes (7/7 y 6/6) y suite completa 398 tests, 2 omitidos opt-in, 0 fallos. Paridad de codec: el hex golden de `KEEPALIVE` (`43435346010a0000000700017300000000`) coincide byte a byte con el del desktop.
+
 ## Progreso
 
 Plan creado el 2026-09-29.
