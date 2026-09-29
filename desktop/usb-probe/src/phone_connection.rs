@@ -56,6 +56,11 @@ pub enum PhoneConnectionError {
     /// failed: the phone never observed acceptance, so contract section 4.4 says this must
     /// NOT be treated as an active session.
     AcceptWriteFailed(TlsSessionFrameError),
+    /// The `HandshakeHello` decoded cleanly and its payload type was correct, but its
+    /// `device_id` did not match the `phone_id` this connection's TLS client certificate
+    /// authenticated (contract section 4.4 addendum, task s2b): rejected with a
+    /// best-effort `HandshakeReject` before closing, same as `UnexpectedFirstFrame`.
+    HelloDeviceIdMismatch,
 }
 
 impl fmt::Display for PhoneConnectionError {
@@ -75,6 +80,10 @@ impl fmt::Display for PhoneConnectionError {
             Self::AcceptWriteFailed(error) => {
                 write!(formatter, "writing HandshakeAccept failed: {error}")
             }
+            Self::HelloDeviceIdMismatch => write!(
+                formatter,
+                "reconnected phone's HandshakeHello device_id did not match its TLS-authenticated phone_id"
+            ),
         }
     }
 }
@@ -192,20 +201,48 @@ where
         }
     };
 
-    if !matches!(hello.payload(), SessionFramePayload::HandshakeHello { .. }) {
+    let device_id = match hello.payload() {
+        SessionFramePayload::HandshakeHello { device_id, .. } => device_id.clone(),
+        _ => {
+            let reject = SessionFrame::new(
+                hello.sequence().saturating_add(1),
+                hello.session_id().to_string(),
+                SessionFramePayload::HandshakeReject {
+                    reason_code: "unexpected_frame".to_string(),
+                    message: "expected HandshakeHello".to_string(),
+                },
+            );
+            // Best-effort: framing was intact, so the channel is still usable for one more
+            // framed write, but the phone is rejected regardless of whether it observes
+            // this.
+            let _ = write_session_frame(&mut tls, &reject);
+            close_best_effort(tls);
+            return Err(PhoneConnectionError::UnexpectedFirstFrame);
+        }
+    };
+
+    // Contract section 4.4 addendum (task s2b, agreed with the Android side): a
+    // `HandshakeHello`'s `device_id` must equal the `phone_id` THIS connection's TLS
+    // client certificate authenticated (`handshake.phone_id`, re-derived from the
+    // connection itself -- see `complete_trusted_phone_handshake`'s own doc comment). A
+    // trusted certificate only vouches for its own `phone_id`, never for whatever
+    // `device_id` the application-layer HELLO happens to claim.
+    if device_id != handshake.phone_id {
         let reject = SessionFrame::new(
             hello.sequence().saturating_add(1),
             hello.session_id().to_string(),
             SessionFramePayload::HandshakeReject {
-                reason_code: "unexpected_frame".to_string(),
-                message: "expected HandshakeHello".to_string(),
+                reason_code: "device_id_mismatch".to_string(),
+                message: "HandshakeHello device_id does not match the TLS-authenticated phone_id"
+                    .to_string(),
             },
         );
-        // Best-effort: framing was intact, so the channel is still usable for one more
-        // framed write, but the phone is rejected regardless of whether it observes this.
+        // Best-effort, same reasoning as the unexpected-frame-type case above: framing
+        // was intact, so a reply is still attempted, but the phone is rejected regardless
+        // of whether it observes this.
         let _ = write_session_frame(&mut tls, &reject);
         close_best_effort(tls);
-        return Err(PhoneConnectionError::UnexpectedFirstFrame);
+        return Err(PhoneConnectionError::HelloDeviceIdMismatch);
     }
 
     // `desktop_id` is derived the same way a phone's own stable id is (`phone_id_for_spki`

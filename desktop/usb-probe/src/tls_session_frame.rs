@@ -27,7 +27,8 @@
 use std::{
     fmt,
     io::{self, Read, Write},
-    time::Instant,
+    thread,
+    time::{Duration, Instant},
 };
 
 use crate::{SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError};
@@ -37,6 +38,15 @@ const LENGTH_PREFIX_BYTES: usize = 4;
 /// Same bound as `SessionFrameCodec::DEFAULT_MAX_FRAME_SIZE`, reused (not duplicated) as
 /// the framing-layer limit so the two never drift apart.
 const MAX_TLS_SESSION_FRAME_LEN: usize = SessionFrameCodec::DEFAULT_MAX_FRAME_SIZE;
+
+/// Bounded backoff between `WouldBlock`/`TimedOut` retries (task s2b, native review
+/// finding R3-timedout-retry-desync): a non-blocking transport that keeps reporting
+/// `WouldBlock` would otherwise be retried in a tight loop with no wait at all, busy-spinning
+/// a full CPU core for no benefit until `deadline` passes. This is small enough to not
+/// meaningfully delay a real (non-would-block) read, and is itself capped by whatever time
+/// actually remains until `deadline` so it never sleeps past it (see
+/// `read_exact_before_deadline`).
+const WOULD_BLOCK_RETRY_BACKOFF: Duration = Duration::from_millis(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TlsSessionFrameError {
@@ -149,6 +159,15 @@ pub fn read_session_frame<S: Read>(
 /// next iteration, so a signal storm or a transport stuck on `WouldBlock` past `deadline`
 /// still fails closed with `Timeout` rather than retrying forever (see
 /// `would_block_past_the_deadline_still_times_out` in `tls_session_frame_test.rs`).
+///
+/// Task s2b (native review of s1b+s2, finding R3-timedout-retry-desync) added one more
+/// thing: the `WouldBlock`/`TimedOut` retry now sleeps a small bounded amount
+/// (`WOULD_BLOCK_RETRY_BACKOFF`, capped by whatever time is actually left until `deadline`)
+/// before looping back, instead of retrying immediately with no wait at all. A transport
+/// that keeps reporting `WouldBlock` (e.g. genuinely non-blocking, with no data yet) would
+/// otherwise busy-spin a full CPU core until `deadline`. `Interrupted` keeps retrying with
+/// no backoff, matching `std::io::Read::read_exact`'s own semantics: a signal is rare
+/// enough that the busy-spin risk does not apply the same way.
 fn read_exact_before_deadline<S: Read>(
     stream: &mut S,
     mut buf: &mut [u8],
@@ -176,7 +195,14 @@ fn read_exact_before_deadline<S: Read>(
                 // Not necessarily a real timeout yet: a non-blocking transport (or one with
                 // its own shorter internal timeout) can report this well before our
                 // absolute `deadline`. Loop back to the top instead of deciding `Timeout`
-                // here.
+                // here -- but sleep a small bounded amount first (capped by whatever time
+                // remains until `deadline`) so a transport that keeps reporting
+                // `WouldBlock` is a slow poll rather than a tight busy-spin loop.
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let backoff = WOULD_BLOCK_RETRY_BACKOFF.min(remaining);
+                if !backoff.is_zero() {
+                    thread::sleep(backoff);
+                }
             }
             Err(error) => return Err(TlsSessionFrameError::Io(error.to_string())),
         }

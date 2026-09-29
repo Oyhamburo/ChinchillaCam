@@ -23,7 +23,7 @@ use usb_probe::{
     DesktopTlsIdentity, FileTrustedPhoneStore, FrameTransferBudget, FramedUsbStream,
     PairingProofFrame, PairingProofRequest, PairingProofResponse, PairingQrIssuer,
     PairingQrIssuerError, PhoneConnectionError, SessionFrame, SessionFramePayload,
-    TrustedPhoneIdentity, UsbBulkIo, UsbProbeError, UsbTlsCiphertextStream,
+    TlsSessionFrameError, TrustedPhoneIdentity, UsbBulkIo, UsbProbeError, UsbTlsCiphertextStream,
 };
 
 #[test]
@@ -228,6 +228,77 @@ fn reconnect_mode_accepts_trusted_phone_hello() {
     cleanup(store_path);
 }
 
+/// Task s2b (contract section 4.4 addendum, agreed with the Android side): a trusted
+/// phone's certificate authenticates ITS OWN `phone_id` for this connection, so a
+/// `HandshakeHello` claiming a DIFFERENT `device_id` must be rejected even though the TLS
+/// handshake itself succeeded against a trusted certificate.
+#[test]
+fn reconnect_mode_rejects_hello_with_foreign_device_id() {
+    let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Reconnecting Phone").unwrap();
+    let phone_id = phone_id_for_spki(phone_identity.spki_der_p256());
+    let foreign_device_id = format!("{phone_id}-not-mine");
+
+    let store_path = unique_store_path("reconnect-rejects-foreign-device-id");
+    let store = FileTrustedPhoneStore::new(&store_path);
+    store
+        .trust(
+            TrustedPhoneIdentity::new(
+                phone_id.clone(),
+                "Reconnecting Phone",
+                phone_identity.spki_der_p256().to_vec(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let cert = identity.certificate_der().to_vec();
+    let (desktop_io, phone_io) = crossed_bulk_pair();
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            accept_phone_reconnect_connection(
+                ciphertext_stream(desktop_io),
+                &identity,
+                Arc::new(store),
+                Duration::from_millis(1500),
+            )
+        });
+
+        let mut phone_tls = phone_tls_stream(phone_io, &cert, &phone_identity);
+        // The certificate proves `phone_id`, but the HELLO claims a different device_id:
+        // the desktop must not take the phone's word for its own identity.
+        let hello = SessionFrame::new(
+            1,
+            "session-01",
+            SessionFramePayload::HandshakeHello {
+                device_id: foreign_device_id,
+                app_name: "ChinchillaCam".to_string(),
+                capabilities: vec!["video".to_string()],
+            },
+        );
+        usb_probe::write_session_frame(&mut phone_tls, &hello).unwrap();
+
+        match usb_probe::read_session_frame(&mut phone_tls, test_deadline()) {
+            Ok(frame) => assert!(
+                matches!(frame.payload(), SessionFramePayload::HandshakeReject { .. }),
+                "expected HandshakeReject, got {frame:?}"
+            ),
+            Err(error) => {
+                panic!("expected a decodable HandshakeReject, got a read error instead: {error:?}")
+            }
+        }
+
+        match server.join().unwrap() {
+            Err(PhoneConnectionError::HelloDeviceIdMismatch) => {}
+            Err(other) => panic!("expected Err(HelloDeviceIdMismatch), got Err({other:?})"),
+            Ok(_) => panic!("expected Err(HelloDeviceIdMismatch), got Ok"),
+        }
+    });
+
+    cleanup(store_path);
+}
+
 #[test]
 fn reconnect_mode_rejects_invalid_hello() {
     let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
@@ -273,17 +344,20 @@ fn reconnect_mode_rejects_invalid_hello() {
         );
         usb_probe::write_session_frame(&mut phone_tls, &not_hello).unwrap();
 
-        // Expected outcome per this implementation: framing was intact (the read itself
-        // succeeded), so the channel is still usable for one best-effort HandshakeReject
-        // reply before closing. A closed channel without a reply is also tolerated here,
-        // since the contract only requires "HandshakeReject when the channel is still
-        // usable", not that the phone always observes it.
+        // Task s2b (native review finding R3-reject-not-asserted): tightened from
+        // tolerating any read error to requiring the phone actually receive a decodable
+        // HandshakeReject. Framing was intact (the read itself succeeded), so the channel
+        // is still usable for a best-effort reply before closing, and this in-memory
+        // transport is synchronous and deterministic (no real network raciness), so the
+        // reply must be observable if it was written.
         match usb_probe::read_session_frame(&mut phone_tls, test_deadline()) {
             Ok(frame) => assert!(
                 matches!(frame.payload(), SessionFramePayload::HandshakeReject { .. }),
                 "expected HandshakeReject, got {frame:?}"
             ),
-            Err(_) => {}
+            Err(error) => {
+                panic!("expected a decodable HandshakeReject, got a read error instead: {error:?}")
+            }
         }
 
         match server.join().unwrap() {
@@ -291,6 +365,80 @@ fn reconnect_mode_rejects_invalid_hello() {
             Err(other) => panic!("expected Err(UnexpectedFirstFrame), got Err({other:?})"),
             Ok(_) => panic!("expected Err(UnexpectedFirstFrame), got Ok"),
         }
+    });
+
+    cleanup(store_path);
+}
+
+/// Task s2b (native review finding R3-error-paths-uncovered, partial): a first frame that
+/// fails to even decode (as opposed to decoding cleanly into some other payload type, see
+/// `reconnect_mode_rejects_invalid_hello` above) must map to `InvalidHello`, not
+/// `UnexpectedFirstFrame`, and per `tls_session_frame`'s own fail-closed contract the
+/// channel is closed WITHOUT attempting a `HandshakeReject` (the stream may already be
+/// desynchronized by a bad length prefix).
+#[test]
+fn reconnect_mode_rejects_unparseable_first_frame_as_invalid_hello() {
+    let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Reconnecting Phone").unwrap();
+    let phone_id = phone_id_for_spki(phone_identity.spki_der_p256());
+
+    let store_path = unique_store_path("reconnect-rejects-unparseable-first-frame");
+    let store = FileTrustedPhoneStore::new(&store_path);
+    store
+        .trust(
+            TrustedPhoneIdentity::new(
+                phone_id.clone(),
+                "Reconnecting Phone",
+                phone_identity.spki_der_p256().to_vec(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let cert = identity.certificate_der().to_vec();
+    let (desktop_io, phone_io) = crossed_bulk_pair();
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            accept_phone_reconnect_connection(
+                ciphertext_stream(desktop_io),
+                &identity,
+                Arc::new(store),
+                Duration::from_millis(1500),
+            )
+        });
+
+        let mut phone_tls = phone_tls_stream(phone_io, &cert, &phone_identity);
+        // An oversized length prefix (no valid frame behind it): `read_session_frame` must
+        // reject it before allocating or reading further.
+        phone_tls.write_all(&[0xFF, 0xFF, 0xFF, 0xFF]).unwrap();
+        phone_tls.flush().unwrap();
+
+        match server.join().unwrap() {
+            Err(PhoneConnectionError::InvalidHello(TlsSessionFrameError::InvalidLength(
+                length,
+            ))) => {
+                assert_eq!(length, 0xFFFF_FFFF);
+            }
+            Err(other) => {
+                panic!("expected Err(InvalidHello(InvalidLength(_))), got Err({other:?})")
+            }
+            Ok(_) => panic!("expected Err(InvalidHello(InvalidLength(_))), got Ok"),
+        }
+
+        // Fail-closed contract: no HandshakeReject is attempted for a read/decode error
+        // (unlike `UnexpectedFirstFrame`/`HelloDeviceIdMismatch` above), but the channel is
+        // still closed regardless.
+        let mut probe = [0u8; 1];
+        let observed_close = match phone_tls.read(&mut probe) {
+            Ok(0) => true,
+            Err(error) => error.kind() == io::ErrorKind::UnexpectedEof,
+            Ok(_) => false,
+        };
+        assert!(
+            observed_close,
+            "expected the channel to be closed after an unparseable first frame"
+        );
     });
 
     cleanup(store_path);
