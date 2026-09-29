@@ -108,6 +108,31 @@ sealed class PendingPairingConfirmResult {
     }
 }
 
+/**
+ * Channel-capable counterpart of [PairingProofVerifier] (task s1, `usb-authenticated-session` §4):
+ * verifies a pairing proof exchanged over an already-open [AccessoryIoSession] (USB mTLS) instead
+ * of a flat byte blob, and on success hands back the live, authenticated TLS channel the proof was
+ * verified over so the caller can retain it until an explicit confirmation, rejection,
+ * cancellation, or expiry. [UsbTlsPairingProofVerifier.verify] already matches this signature and
+ * can be passed as a bound method reference.
+ */
+fun interface ChannelPairingProofVerifier {
+    fun verify(challenge: PairingProofChallenge, session: AccessoryIoSession): UsbTlsPairingProofVerificationResult
+}
+
+/**
+ * Result of [PendingPairingCoordinator.start] when called with a [ChannelPairingProofVerifier].
+ * [channel] is the live TLS channel the proof was verified over; it is non-null if and only if
+ * [result] is a [PendingPairingStartResult.PendingConfirmation]. Every rejection path — including
+ * one discovered only after a successful proof, such as a post-verify expiry race or a binding
+ * mismatch — closes the channel before returning, so callers never need to close a rejected
+ * channel themselves.
+ */
+data class ChannelPairingStartResult(
+    val result: PendingPairingStartResult,
+    val channel: SslEngineUsbTlsEstablishedChannel?,
+)
+
 class PendingPairingCoordinator(
     private val epochSecondsSource: EpochSecondsSource,
     private val challengeNonceSource: ChallengeNonceSource,
@@ -128,27 +153,47 @@ class PendingPairingCoordinator(
     }
 
     @Synchronized
-    fun start(qrPayload: PairingQrPayload, proofBytes: ByteArray): PendingPairingStartResult {
+    fun start(qrPayload: PairingQrPayload, proofBytes: ByteArray): PendingPairingStartResult =
+        startCore(qrPayload) { challenge -> ProofOutcome.from(proofVerifier.verify(challenge, proofBytes.copyOf())) }.result
+
+    /**
+     * Channel-capable overload (task s1, `usb-authenticated-session` §4): shares every QR/trust-material
+     * validation, nonce, expiry, and binding rule with [start] via [startCore]; only the proof step
+     * differs, exchanged over [session] via [channelVerifier] instead of a flat byte blob. See
+     * [ChannelPairingStartResult] for the channel-liveness contract.
+     */
+    @Synchronized
+    fun start(
+        qrPayload: PairingQrPayload,
+        session: AccessoryIoSession,
+        channelVerifier: ChannelPairingProofVerifier,
+    ): ChannelPairingStartResult =
+        startCore(qrPayload) { challenge -> ProofOutcome.from(channelVerifier.verify(challenge, session)) }
+
+    private fun startCore(qrPayload: PairingQrPayload, verify: (PairingProofChallenge) -> ProofOutcome): ChannelPairingStartResult {
         val now = epochSecondsSource.nowEpochSeconds()
         pruneExpiredNonces(now)
-        if (pending != null) return PendingPairingStartResult.Rejected.AlreadyPending
-        validateQrPayload(qrPayload)?.let { return it }
+        if (pending != null) return ChannelPairingStartResult(PendingPairingStartResult.Rejected.AlreadyPending, null)
+        validateQrPayload(qrPayload)?.let { return ChannelPairingStartResult(it, null) }
         val trustMaterial = DesktopTlsIdentityMaterial.validate(qrPayload.trustMaterial.copyOf()).getOrElse {
-            return PendingPairingStartResult.Rejected.InvalidQr("trustMaterial")
+            return ChannelPairingStartResult(PendingPairingStartResult.Rejected.InvalidQr("trustMaterial"), null)
         }
-        if (qrPayload.expiresAtEpochSeconds <= now) return PendingPairingStartResult.Rejected.Expired("qr")
+        if (qrPayload.expiresAtEpochSeconds <= now) return ChannelPairingStartResult(PendingPairingStartResult.Rejected.Expired("qr"), null)
         val qrNonce = qrPayload.nonce.copyOf()
         val fingerprint = trustMaterial.fingerprint
         val nonceKey = nonceKey(qrNonce)
-        if (liveNonceExpiries.containsKey(nonceKey)) return PendingPairingStartResult.Rejected.NonceReplay
-        if (liveNonceExpiries.size >= maxLiveNonces) return PendingPairingStartResult.Rejected.NonceCacheFull
+        if (liveNonceExpiries.containsKey(nonceKey)) return ChannelPairingStartResult(PendingPairingStartResult.Rejected.NonceReplay, null)
+        if (liveNonceExpiries.size >= maxLiveNonces) return ChannelPairingStartResult(PendingPairingStartResult.Rejected.NonceCacheFull, null)
 
         val challengeMaterial = try {
             challengeNonceSource.nextChallenge()
         } catch (error: ChallengeNonceSourceException) {
-            return PendingPairingStartResult.Rejected.ChallengeSourceRejected(error.message ?: error::class.java.simpleName)
+            return ChannelPairingStartResult(
+                PendingPairingStartResult.Rejected.ChallengeSourceRejected(error.message ?: error::class.java.simpleName),
+                null,
+            )
         }
-        if (challengeMaterial.expiresAtEpochSeconds <= now) return PendingPairingStartResult.Rejected.Expired("challenge")
+        if (challengeMaterial.expiresAtEpochSeconds <= now) return ChannelPairingStartResult(PendingPairingStartResult.Rejected.Expired("challenge"), null)
         require(challengeMaterial.challengeNonce.isNotEmpty()) { "challenge nonce must not be empty" }
         require(challengeMaterial.sessionId.isNotBlank()) { "session id must not be blank" }
         liveNonceExpiries[nonceKey] = qrPayload.expiresAtEpochSeconds
@@ -162,19 +207,27 @@ class PendingPairingCoordinator(
             qrExpiresAtEpochSeconds = qrPayload.expiresAtEpochSeconds,
             challengeExpiresAtEpochSeconds = challengeMaterial.expiresAtEpochSeconds,
         )
-        val verification = proofVerifier.verify(challenge, proofBytes.copyOf())
-        val verified = when (verification) {
-            is PairingProofVerificationResult.Rejected -> return PendingPairingStartResult.Rejected.ProofRejected(verification.reason)
-            is PairingProofVerificationResult.Verified -> verification
+        val outcome = verify(challenge)
+        val (verified, channel) = when (outcome) {
+            is ProofOutcome.Rejected -> return ChannelPairingStartResult(PendingPairingStartResult.Rejected.ProofRejected(outcome.reason), null)
+            is ProofOutcome.Verified -> outcome.result to outcome.channel
         }
         val nowAfterVerify = epochSecondsSource.nowEpochSeconds()
-        if (qrPayload.expiresAtEpochSeconds <= nowAfterVerify) return PendingPairingStartResult.Rejected.Expired("qr")
-        if (challengeMaterial.expiresAtEpochSeconds <= nowAfterVerify) return PendingPairingStartResult.Rejected.Expired("challenge")
-        if (verified.expiresAtEpochSeconds <= nowAfterVerify) return PendingPairingStartResult.Rejected.Expired("proof")
-        if (verified.verifiedAtEpochSeconds < 0 || verified.verifiedAtEpochSeconds > nowAfterVerify || verified.verifiedAtEpochSeconds >= verified.expiresAtEpochSeconds) {
-            return PendingPairingStartResult.Rejected.InvalidProofTime("verifiedAt")
+        if (qrPayload.expiresAtEpochSeconds <= nowAfterVerify) {
+            return closingChannel(channel, ChannelPairingStartResult(PendingPairingStartResult.Rejected.Expired("qr"), null))
         }
-        bindingMismatch(qrPayload, fingerprint, qrNonce, challengeMaterial, verified)?.let { return it }
+        if (challengeMaterial.expiresAtEpochSeconds <= nowAfterVerify) {
+            return closingChannel(channel, ChannelPairingStartResult(PendingPairingStartResult.Rejected.Expired("challenge"), null))
+        }
+        if (verified.expiresAtEpochSeconds <= nowAfterVerify) {
+            return closingChannel(channel, ChannelPairingStartResult(PendingPairingStartResult.Rejected.Expired("proof"), null))
+        }
+        if (verified.verifiedAtEpochSeconds < 0 || verified.verifiedAtEpochSeconds > nowAfterVerify || verified.verifiedAtEpochSeconds >= verified.expiresAtEpochSeconds) {
+            return closingChannel(channel, ChannelPairingStartResult(PendingPairingStartResult.Rejected.InvalidProofTime("verifiedAt"), null))
+        }
+        bindingMismatch(qrPayload, fingerprint, qrNonce, challengeMaterial, verified)?.let {
+            return closingChannel(channel, ChannelPairingStartResult(it, null))
+        }
 
         val expiresAt = minOf(qrPayload.expiresAtEpochSeconds, challengeMaterial.expiresAtEpochSeconds, verified.expiresAtEpochSeconds)
         val summary = PendingPairingSummary(
@@ -188,7 +241,33 @@ class PendingPairingCoordinator(
             expiresAtEpochSeconds = expiresAt,
         )
         pending = summary
-        return PendingPairingStartResult.PendingConfirmation(summary)
+        return ChannelPairingStartResult(PendingPairingStartResult.PendingConfirmation(summary), channel)
+    }
+
+    private fun closingChannel(channel: SslEngineUsbTlsEstablishedChannel?, result: ChannelPairingStartResult): ChannelPairingStartResult {
+        if (channel != null) runCatching { channel.close() }
+        return result
+    }
+
+    private sealed class ProofOutcome {
+        data class Verified(
+            val result: PairingProofVerificationResult.Verified,
+            val channel: SslEngineUsbTlsEstablishedChannel?,
+        ) : ProofOutcome()
+
+        data class Rejected(val reason: String) : ProofOutcome()
+
+        companion object {
+            fun from(result: PairingProofVerificationResult): ProofOutcome = when (result) {
+                is PairingProofVerificationResult.Verified -> Verified(result, channel = null)
+                is PairingProofVerificationResult.Rejected -> Rejected(result.reason)
+            }
+
+            fun from(result: UsbTlsPairingProofVerificationResult): ProofOutcome = when (result) {
+                is UsbTlsPairingProofVerificationResult.Verified -> Verified(result.proof, result.channel)
+                is UsbTlsPairingProofVerificationResult.Rejected -> Rejected(result.reason)
+            }
+        }
     }
 
     @Synchronized

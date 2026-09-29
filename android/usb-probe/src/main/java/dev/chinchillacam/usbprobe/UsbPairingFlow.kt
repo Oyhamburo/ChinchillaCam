@@ -1,0 +1,112 @@
+package dev.chinchillacam.usbprobe
+
+/**
+ * Outcome of [UsbPairingFlow.confirm]: [channel] is the live TLS channel established during
+ * [UsbPairingFlow.start], handed back to the caller only when [result] is
+ * [PendingPairingConfirmResult.Activated] (contract `usb-authenticated-session` §4.2 and §4.5, for
+ * a later HELLO/ACCEPT over the same channel). Every other outcome — a rejection, or
+ * [PendingPairingConfirmResult.TrustedButInactive] (a second desktop cannot use this channel while
+ * another one is already active) — closes the channel before returning `null`.
+ */
+data class UsbPairingConfirmOutcome(
+    val result: PendingPairingConfirmResult,
+    val channel: SslEngineUsbTlsEstablishedChannel?,
+)
+
+/**
+ * Application-level USB pairing flow (task s1, `odd/tasks/usb-authenticated-session.md` §4):
+ * composes [PendingPairingCoordinator]'s existing rules (QR/trust-material validation, challenge
+ * generation, nonce bookkeeping, trust persistence, one-active-desktop activation) with
+ * [UsbTlsPairingProofVerifier] over an [AccessoryIoSession], and owns the lifecycle of the live
+ * [SslEngineUsbTlsEstablishedChannel] the proof is verified over:
+ *
+ * - [start] keeps the channel alive across a pending confirmation.
+ * - [confirm] persists trust and activates exactly as [PendingPairingCoordinator.confirm] does
+ *   today, and additionally hands the live channel to the caller once activated.
+ * - [reject] cancels the pending pairing and closes the channel.
+ * - An expired pending (per the coordinator's own clock/TTL rules) closes its channel on the next
+ *   call to [start], [confirm], [reject], or [state], or immediately via the explicit [expire].
+ *
+ * A pending pairing — and the channel that came with it — can be consumed at most once: [confirm]
+ * and [reject] both clear it, so a second call on the same pending finds nothing left.
+ *
+ * Does not duplicate any coordinator rule: every decision is delegated to [coordinator]; this
+ * class only tracks which live channel belongs to the coordinator's current pending pairing. It
+ * expects exclusive ownership of the [coordinator] instance it wraps — nothing else should call
+ * [PendingPairingCoordinator.cancel] or [PendingPairingCoordinator.confirm] directly on it.
+ */
+class UsbPairingFlow(
+    private val coordinator: PendingPairingCoordinator,
+    private val channelVerifier: ChannelPairingProofVerifier,
+) {
+    private data class HeldChannel(val pendingId: String, val channel: SslEngineUsbTlsEstablishedChannel)
+
+    private var held: HeldChannel? = null
+
+    @Synchronized
+    fun start(qrPayload: PairingQrPayload, session: AccessoryIoSession): ChannelPairingStartResult {
+        // Reconcile a previous, never-confirmed/rejected pending that has since expired: without
+        // this, the coordinator would still see it as pending and reject this new attempt with
+        // AlreadyPending even though its own state()/TTL rules already consider it gone.
+        expireIfNeeded()
+        val outcome = coordinator.start(qrPayload, session, channelVerifier)
+        val summary = (outcome.result as? PendingPairingStartResult.PendingConfirmation)?.summary
+        held = if (summary != null) {
+            val channel = requireNotNull(outcome.channel) { "a PendingConfirmation must carry a live channel" }
+            HeldChannel(summary.pendingId, channel)
+        } else {
+            null
+        }
+        return outcome
+    }
+
+    @Synchronized
+    fun confirm(
+        pendingId: String,
+        trustedDesktopStore: TrustedDesktopStore,
+        activeDesktopAuthority: ActiveDesktopAuthority,
+    ): UsbPairingConfirmOutcome {
+        // Deliberately does not pre-reconcile expiry here: PendingPairingCoordinator.confirm
+        // already re-checks the pending's own expiry and reports the precise Rejected.Expired
+        // reason; pre-clearing it first would only widen that to a less specific NoPendingPairing.
+        val ours = held?.takeIf { it.pendingId == pendingId }
+        val result = coordinator.confirm(pendingId, trustedDesktopStore, activeDesktopAuthority)
+        if (ours != null) held = null
+        if (result is PendingPairingConfirmResult.Activated) {
+            val channel = requireNotNull(ours) { "an activated pairing must have a retained live channel" }.channel
+            return UsbPairingConfirmOutcome(result, channel)
+        }
+        ours?.let { runCatching { it.channel.close() } }
+        return UsbPairingConfirmOutcome(result, null)
+    }
+
+    @Synchronized
+    fun reject(): PendingPairingCancelResult {
+        val result = coordinator.cancel()
+        held?.let { runCatching { it.channel.close() } }
+        held = null
+        return result
+    }
+
+    /**
+     * Forces the same expiry reconciliation [start]/[state] already perform on entry. Returns
+     * whether a stale channel was found and closed.
+     */
+    @Synchronized
+    fun expire(): Boolean = expireIfNeeded()
+
+    @Synchronized
+    fun state(): PendingPairingState {
+        expireIfNeeded()
+        return coordinator.state()
+    }
+
+    private fun expireIfNeeded(): Boolean {
+        val current = held ?: return false
+        val stillPending = (coordinator.state() as? PendingPairingState.PendingConfirmation)?.summary?.pendingId == current.pendingId
+        if (stillPending) return false
+        runCatching { current.channel.close() }
+        held = null
+        return true
+    }
+}
