@@ -9,6 +9,7 @@ mod pairing_proof_protocol;
 mod pairing_qr;
 mod pairing_qr_issuer;
 mod phone_client_cert_verifier;
+mod phone_connection;
 mod session_frame;
 mod tls_session_frame;
 mod trusted_phone_store;
@@ -51,6 +52,10 @@ pub use pairing_qr_issuer::{
 pub use phone_client_cert_verifier::{
     is_canonical_p256_spki, phone_id_for_spki, PhoneClientCertVerifier, TrustedPhoneLookup,
     TrustedPhoneLookupError, TrustedPhoneStatus,
+};
+pub use phone_connection::{
+    accept_phone_pairing_connection, accept_phone_reconnect_connection, AuthenticatedPhoneSession,
+    PendingPairedPhoneSession, PhoneConnectionError,
 };
 pub use session_frame::{
     SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,
