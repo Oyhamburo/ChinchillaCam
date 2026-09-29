@@ -9,6 +9,7 @@ import java.util.concurrent.TimeoutException
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLEngineResult
 import javax.net.ssl.SSLContext
+import javax.net.ssl.X509TrustManager
 
 sealed class SslEngineUsbTlsHandshakeResult {
     data class Authenticated(
@@ -221,9 +222,28 @@ class SslEngineUsbTlsChannel(
     fun handshake(
         session: AccessoryIoSession,
         pinnedDesktopSubjectPublicKeyInfoDer: ByteArray,
+    ): SslEngineUsbTlsHandshakeResult = handshakeCore(session) { newEngine(pinnedDesktopSubjectPublicKeyInfoDer) }
+
+    /**
+     * Reconnection counterpart of [handshake] (task s3, `usb-authenticated-session` §4.4):
+     * [TrustedDesktopStore] only ever persists a [PairingTrustFingerprint] from pairing time, never
+     * the raw SubjectPublicKeyInfo bytes [handshake] pins against -- a fingerprint cannot be
+     * reversed back into the original SPKI. This overload instead pins the server's certificate by
+     * the SHA-256 fingerprint of its presented SubjectPublicKeyInfo (see
+     * [PinnedDesktopFingerprintTrustManager]), so reconnection can authenticate a desktop using only
+     * what the store has. Shares every other handshake rule with [handshake] via [handshakeCore].
+     */
+    fun handshakeWithPinnedFingerprint(
+        session: AccessoryIoSession,
+        pinnedDesktopTrustMaterialFingerprint: ByteArray,
+    ): SslEngineUsbTlsHandshakeResult = handshakeCore(session) { newFingerprintPinnedEngine(pinnedDesktopTrustMaterialFingerprint) }
+
+    private fun handshakeCore(
+        session: AccessoryIoSession,
+        engineFactory: () -> SSLEngine,
     ): SslEngineUsbTlsHandshakeResult {
         val readExecutor = Executors.newSingleThreadExecutor(DaemonThreadFactory)
-        val engine = runCatching { newEngine(pinnedDesktopSubjectPublicKeyInfoDer) }
+        val engine = runCatching { engineFactory() }
             .getOrElse { return reject(session, null, readExecutor, it.reason()) }
         val pending = ByteBuffer.allocate(USB_TLS_CIPHERTEXT_WRITE_MAX_BYTES)
         val empty = ByteBuffer.allocate(0)
@@ -271,13 +291,19 @@ class SslEngineUsbTlsChannel(
 
     private fun newEngine(pinnedSpki: ByteArray): SSLEngine {
         val identity = DesktopTlsIdentityMaterial.validate(pinnedSpki).getOrThrow()
-        return SSLContext.getInstance("TLS").apply {
-            init(phoneTlsIdentity?.keyManagers(), arrayOf(PinnedDesktopTlsTrustManager(identity)), null)
+        return buildClientEngine(PinnedDesktopTlsTrustManager(identity))
+    }
+
+    private fun newFingerprintPinnedEngine(pinnedFingerprint: ByteArray): SSLEngine =
+        buildClientEngine(PinnedDesktopFingerprintTrustManager(pinnedFingerprint))
+
+    private fun buildClientEngine(trustManager: X509TrustManager): SSLEngine =
+        SSLContext.getInstance("TLS").apply {
+            init(phoneTlsIdentity?.keyManagers(), arrayOf(trustManager), null)
         }.createSSLEngine().apply {
             useClientMode = true
             enabledProtocols = supportedProtocols.filter { it == TLS_1_3 || it == TLS_1_2 }.toTypedArray()
         }
-    }
 
     private fun wrap(engine: SSLEngine, session: AccessoryIoSession, empty: ByteBuffer, deadlineNanos: Long): String? {
         var out = ByteBuffer.allocate(engine.session.packetBufferSize)
