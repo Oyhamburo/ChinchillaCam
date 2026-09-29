@@ -17,7 +17,7 @@ Continuación del plan maestro tras `phone-mtls-identity` (ver `odd/tasks/comple
 1. Modo por conexión: el teléfono inicia pairing (tras escanear un QR) o reconexión (desktop ya confiable en su store). El desktop elige la política por conexión según su propio estado: ventana de pairing abierta (QR visible) → `complete_handshake_and_pairing_proof`; si no → `complete_trusted_phone_handshake`. Un desacuerdo de modo falla cerrado (CCP1 inválido o certificado no confiable) sin persistir nada.
 2. Tras un pairing exitoso, el canal TLS vivo se conserva hasta la confirmación explícita de cada lado; rechazo, cancelación o vencimiento cierran el canal. La confirmación del teléfono persiste la confianza (store C6) y activa vía `ActiveDesktopAuthority`; la del desktop usa `PairedPhoneCandidate::confirm` (atómica, rechaza revocados).
 3. `SessionFrame` sobre TLS: cada frame de aplicación es un prefijo u32 big-endian con la longitud (1..=1048576) seguido de exactamente un `SessionFrame` CCSF v1 codificado; lecturas acotadas con deadline absoluto; longitud cero, excesiva o frame inválido cierran el canal (fail closed). El tráfico de sesión autenticado viaja sólo dentro de TLS (stream AOA `0x01020305`); `0x01020304` en claro queda como legacy/test.
-4. Reconexión: el teléfono abre TLS pinneando el SPKI del desktop desde su store y presentando su certificado de cliente. Como en TLS 1.3 el cliente no ve el rechazo del desktop hasta leer, la sesión sólo se considera activa cuando el teléfono envía `HANDSHAKE_HELLO` y recibe `HANDSHAKE_ACCEPT`; `HANDSHAKE_REJECT`, cierre o deadline → rechazo tipado y cierre. La activación pasa por `ActiveDesktopAuthority`. El `device_id` de `HANDSHAKE_HELLO` es el `phone_id` (SHA-256 hex en minúscula del SPKI del teléfono); el desktop rechaza con `HANDSHAKE_REJECT` un `device_id` distinto del `phone_id` autenticado por TLS.
+4. Reconexión: el teléfono abre TLS pinneando el fingerprint SHA-256 del SPKI del desktop guardado en su store (el store de Android guarda sólo el fingerprint, no el SPKI completo), verificado por `PinnedDesktopFingerprintTrustManager`, y presentando su certificado de cliente. Como en TLS 1.3 el cliente no ve el rechazo del desktop hasta leer, la sesión sólo se considera activa cuando el teléfono envía `HANDSHAKE_HELLO` y recibe `HANDSHAKE_ACCEPT`; `HANDSHAKE_REJECT`, cierre o deadline → rechazo tipado y cierre. La activación pasa por `ActiveDesktopAuthority`. El `device_id` de `HANDSHAKE_HELLO` es el `phone_id` (SHA-256 hex en minúscula del SPKI del teléfono); el desktop rechaza con `HANDSHAKE_REJECT` un `device_id` distinto del `phone_id` autenticado por TLS.
 5. Después de un pairing confirmado en ambos lados, el mismo canal vivo puede iniciar la sesión con `HANDSHAKE_HELLO`/`HANDSHAKE_ACCEPT`.
 6. Fuera de alcance: UI/Activity, LAN/listener, hardware, reemplazar el receptor de video de producción del desktop (el camino TLS se agrega en paralelo), one-active-phone en el desktop (pregunta de producto para T16/T17), marcador durable de regeneración y acción "restablecer identidad" (seguimientos de `phone-mtls-identity` para la etapa de wiring).
 
@@ -37,7 +37,7 @@ Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --chec
 
 1. [x] s1 — SessionFrame sobre TLS: lectura/escritura de `SessionFrame` sobre `StreamOwned<ServerConnection, _>` con el framing de §4.3. RED: `round_trips_session_frame_over_tls`, `rejects_oversized_length_before_allocating`, `rejects_zero_length`, `truncated_frame_fails_closed`. ~250 líneas.
 2. [x] s2 — Conexión de teléfono por modo: API con modo explícito (`Pairing { issuer }` → pendiente con canal vivo hasta `confirm(label, store)` o `reject()` que cierra; `Reconnect { lookup }` → handshake confiable, lee `HANDSHAKE_HELLO`, responde `HANDSHAKE_ACCEPT`, entrega sesión autenticada con `phone_id`; hello inválido → `HANDSHAKE_REJECT` y cierre). RED: `pairing_mode_holds_channel_until_confirm`, `pairing_reject_closes_channel`, `reconnect_mode_accepts_trusted_phone_hello`, `reconnect_mode_rejects_invalid_hello`. ~350 líneas.
-3. [ ] s3 — Helper para la prueba cruzada (con la s4 Android, requiere autorización fresca): modo del helper que ejecuta pairing, confirmación y reconexión con hello. ~150 líneas.
+3. [ ] s3 — Helper para la prueba cruzada (con la s4 Android, requiere autorización fresca): modo del helper que ejecuta pairing, confirmación y reconexión con hello. ~150 líneas. (pospuesta por decisión del usuario, 2026-09-29)
 
 Criterios: nada se persiste sin confirmación; reconexión sólo con teléfonos confiables; framing acotado y fail closed; `cargo fmt -- --check` y `cargo test` verdes.
 
@@ -101,6 +101,22 @@ Lineage `review-500bf63256c01962`, 1 lente (reliability/R3), **aprobada sin corr
 - Desvíos: (1) Sin prueba de comportamiento dedicada para el backoff (la tarea lo permite explícitamente): un `sleep` de pocos milisegundos no se puede aserear de forma determinística sin acoplar el test al reloj; las pruebas de límite existentes (`would_block_past_the_deadline_still_times_out`, `retries_would_block_before_the_deadline_instead_of_timing_out_immediately`) ya cubren el comportamiento de reintento/timeout en sí y siguen pasando (10/10, 0.04s en total), lo que descarta una regresión de tiempo grosera, pero no ejercitan el sleep en sí. (2) No se agregaron pruebas para `AcceptWriteFailed` ni para el cierre de canal por fallo de `confirm` (SUGGESTION R3-error-paths-uncovered, atendida sólo parcialmente): mismo motivo que en Evidencia s2, requieren infraestructura de prueba nueva no justificada todavía por el costo. (3) Ninguna prueba existente de `HandshakeHello` necesitó actualizarse para usar `phone_id`: la única prueba de `accept_phone_reconnect_connection` que construye un `HandshakeHello` (`reconnect_mode_accepts_trusted_phone_hello`) ya usaba `device_id: phone_id.clone()` desde s2.
 - Commit: `fix(desktop): bind reconnect hello to the TLS phone identity`.
 
+## Revisión nativa s2b
+
+Slice `040339e..4b92f5c` (s2b), lineage `review-347ed5029ebb26d7`, 1 lente (reliability/R3), **aprobada sin corrección**, autoridad `burned` (acknowledged). Sugerencias no bloqueantes: `R3-mismatch-reason-code-unasserted`, `R3-backoff-unproved`. Último límite revisado: `4b92f5c`.
+
+## Seguimientos prioritarios
+
+1. Semántica de lectura de sesión tolerante a inactividad + keepalive, simétrica con Android.
+2. Tests de `AcceptWriteFailed` y de cierre del canal cuando `confirm` falla.
+3. Aserción del `reason_code` `device_id_mismatch`.
+
+## Cierre del feature
+
+Tareas s1, s1b, s2 y s2b completadas y revisadas nativamente (ver "Revisión nativa s1", "Revisión nativa s1b+s2" y "Revisión nativa s2b"). La prueba cruzada de la sesión completa (Android s4 / desktop s3) quedó pospuesta por decisión del usuario el 2026-09-29 y no se ejecutó; la tarea sigue registrada como `[ ] s3` en la lista de tareas, con la nota correspondiente. Seguimientos pendientes en "Seguimientos prioritarios".
+
 ## Progreso
 
 Plan creado el 2026-09-28; s1 completada el 2026-09-28 (ver Evidencia s1); s2 completada el 2026-09-28 (ver Evidencia s2, incluye seguimientos de revisión s1b); s2b completada el 2026-09-29 (ver Evidencia s2b, seguimientos de la revisión nativa s1b+s2). s3 sin iniciar (requiere autorización fresca del usuario para la prueba cruzada con Android).
+
+Cierre del feature el 2026-09-29: s1, s1b, s2 y s2b completadas y aprobadas en revisión nativa (ver "Revisión nativa s2b"). s3 (helper de prueba cruzada) queda pospuesta por decisión del usuario y no se ejecutó. Seguimientos registrados en "Seguimientos prioritarios".
