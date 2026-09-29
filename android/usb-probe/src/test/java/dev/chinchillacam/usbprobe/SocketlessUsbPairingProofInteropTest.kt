@@ -2,13 +2,16 @@ package dev.chinchillacam.usbprobe
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
 import org.junit.Test
+import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.File
 import java.io.InputStream
+import java.security.KeyStore
 import java.security.MessageDigest
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutorService
@@ -23,10 +26,11 @@ class SocketlessUsbPairingProofInteropTest {
         val helperEnv = System.getenv(HELPER_ENV).orEmpty()
         assumeTrue("$HELPER_ENV not set; skipping opt-in socketless rustls interop", helperEnv.isNotBlank())
 
+        val phoneIdentity = createPhoneTlsIdentity()
         val processRef = AtomicReference<Process?>()
         val watchdog = Executors.newSingleThreadExecutor()
         try {
-            watchdog.submit(Callable { runInterop(helperEnv, processRef) })
+            watchdog.submit(Callable { runInterop(helperEnv, phoneIdentity, processRef) })
                 .get(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         } catch (error: TimeoutException) {
             processRef.get()?.destroyForcibly()
@@ -38,7 +42,7 @@ class SocketlessUsbPairingProofInteropTest {
         }
     }
 
-    private fun runInterop(helperEnv: String, processRef: AtomicReference<Process?>) {
+    private fun runInterop(helperEnv: String, phoneIdentity: PhoneTlsIdentity, processRef: AtomicReference<Process?>) {
         val helper = File(helperEnv)
         assertTrue("$HELPER_ENV must be an absolute path when set", helper.isAbsolute)
         assertTrue("$HELPER_ENV must point to a file", helper.isFile)
@@ -86,7 +90,11 @@ class SocketlessUsbPairingProofInteropTest {
                 closeable = Closeable { process.destroy() },
             )
 
-            val result = UsbTlsPairingProofVerifier(EpochSecondsSource { epochSeconds() }).verify(challenge, session)
+            val verifier = UsbTlsPairingProofVerifier(
+                epochSecondsSource = EpochSecondsSource { epochSeconds() },
+                tlsChannel = SslEngineUsbTlsChannel(phoneTlsIdentity = phoneIdentity),
+            )
+            val result = verifier.verify(challenge, session)
             assertTrue("expected status0 verified proof, got $result", result is UsbTlsPairingProofVerificationResult.Verified)
             val verified = result as UsbTlsPairingProofVerificationResult.Verified
             verifiedChannel = verified.channel
@@ -102,6 +110,26 @@ class SocketlessUsbPairingProofInteropTest {
             val exitCode = process.exitValue()
             if (exitCode != 0) fail(process.stderrDiagnostic())
             assertEquals(0, exitCode)
+
+            val stderrContent = readAllStderrBounded(lineExecutor, process)
+            val normalizedStderr = stderrContent.removeSuffix("\n")
+            assertFalse("helper stderr must not be empty after a successful proof", normalizedStderr.isEmpty())
+            assertFalse("helper stderr must be exactly one line, got: $stderrContent", normalizedStderr.contains("\n"))
+            val phoneIdMatch = PHONE_ID_LINE_REGEX.matchEntire(normalizedStderr)
+            assertTrue("expected exactly one \"phone_id=<hex>\" line, got: $stderrContent", phoneIdMatch != null)
+            val reportedPhoneId = phoneIdMatch!!.groupValues[1]
+            val expectedPhoneId = phoneIdentity.subjectPublicKeyInfoDer.sha256Hex()
+            assertEquals(
+                "helper-reported phone_id must equal SHA-256(SPKI) of the presented phone identity",
+                expectedPhoneId,
+                reportedPhoneId,
+            )
+            assertEquals(
+                "helper-reported phone_id must equal the phone's PairingTrustFingerprint",
+                PairingTrustFingerprint.fromTrustMaterial(phoneIdentity.subjectPublicKeyInfoDer).hex,
+                reportedPhoneId,
+            )
+
             verified.channel.close()
         } finally {
             runCatching { verifiedChannel?.close() }
@@ -145,6 +173,55 @@ class SocketlessUsbPairingProofInteropTest {
         return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
     }
 
+    private fun ByteArray.sha256Hex(): String =
+        MessageDigest.getInstance("SHA-256").digest(this).joinToString("") { byte -> "%02x".format(byte) }
+
+    /**
+     * Builds a JVM-testable phone TLS identity: an in-memory PKCS12 keystore holding an EC P-256
+     * key generated with the same `keytool` recipe as `KeyStorePhoneTlsIdentityTest`, wrapped by
+     * the production, alias-pinned [KeyStorePhoneTlsIdentity] so this interop test exercises the
+     * real key-manager seam end to end instead of a hand-rolled test double.
+     */
+    private fun createPhoneTlsIdentity(): PhoneTlsIdentity {
+        val keyStore = KeyStore.getInstance("PKCS12").apply { load(null, null) }
+        return KeyStorePhoneTlsIdentity(
+            keyStore = keyStore,
+            alias = PHONE_KEY_ALIAS,
+            generateKeyPair = {
+                keyStore.setEntry(
+                    PHONE_KEY_ALIAS,
+                    generatePhoneEcPrivateKeyEntry(),
+                    KeyStore.PasswordProtection(PHONE_KEYSTORE_PASSWORD.toCharArray()),
+                )
+            },
+            keyProtection = KeyStore.PasswordProtection(PHONE_KEYSTORE_PASSWORD.toCharArray()),
+        )
+    }
+
+    /** Same keytool recipe as `KeyStorePhoneTlsIdentityTest.generateEcPrivateKeyEntry`. */
+    private fun generatePhoneEcPrivateKeyEntry(): KeyStore.PrivateKeyEntry {
+        val temp = createTempDir(prefix = "cc-phone-tls-interop")
+        try {
+            val store = File(temp, "$PHONE_KEY_ALIAS.p12")
+            val keytool = File(
+                File(System.getProperty("java.home"), "bin"),
+                if (System.getProperty("os.name").orEmpty().startsWith("Windows")) "keytool.exe" else "keytool",
+            ).absolutePath
+            val command = listOf(
+                keytool, "-genkeypair", "-alias", PHONE_KEY_ALIAS, "-keyalg", "EC", "-groupname", "secp256r1",
+                "-dname", "CN=$PHONE_KEY_ALIAS", "-keystore", store.absolutePath, "-storepass", PHONE_KEYSTORE_PASSWORD,
+                "-keypass", PHONE_KEYSTORE_PASSWORD, "-storetype", "PKCS12", "-startdate", "2026/01/01 00:00:00", "-validity", "36500",
+            )
+            val exit = ProcessBuilder(command).redirectErrorStream(true).start().waitFor()
+            require(exit == 0) { "keytool failed to generate phone TLS identity" }
+            val loaded = KeyStore.getInstance("PKCS12")
+            store.inputStream().use { loaded.load(it, PHONE_KEYSTORE_PASSWORD.toCharArray()) }
+            return loaded.getEntry(PHONE_KEY_ALIAS, KeyStore.PasswordProtection(PHONE_KEYSTORE_PASSWORD.toCharArray())) as KeyStore.PrivateKeyEntry
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
     private fun Process.stderrDiagnostic(): String {
         val bytes = ByteArray(MAX_STDERR_DIAGNOSTIC_BYTES)
         val count = runCatching { errorStream.read(bytes) }.getOrDefault(-1)
@@ -154,6 +231,24 @@ class SocketlessUsbPairingProofInteropTest {
             "helper stderr: " + bytes.copyOf(count).toString(Charsets.UTF_8)
         }
     }
+
+    /** Reads the helper's complete stderr after it has exited, bounded in both size and time. */
+    private fun readAllStderrBounded(executor: ExecutorService, process: Process): String =
+        executor.submit(Callable<String> {
+            val out = ByteArrayOutputStream()
+            val buffer = ByteArray(1024)
+            process.errorStream.use { input ->
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read == -1) break
+                    out.write(buffer, 0, read)
+                    require(out.size() <= MAX_STDERR_DIAGNOSTIC_BYTES) {
+                        "helper stderr exceeded $MAX_STDERR_DIAGNOSTIC_BYTES bytes"
+                    }
+                }
+            }
+            out.toString(Charsets.UTF_8.name())
+        }).get(STDERR_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
 
     private fun epochSeconds(): Long = System.currentTimeMillis() / 1_000L
 
@@ -168,5 +263,9 @@ class SocketlessUsbPairingProofInteropTest {
         const val DESTROY_WAIT_SECONDS = 1L
         const val MAX_METADATA_LINE_BYTES = 2_048
         const val MAX_STDERR_DIAGNOSTIC_BYTES = 4_096
+        const val STDERR_READ_TIMEOUT_SECONDS = 5L
+        const val PHONE_KEY_ALIAS = "chinchillacam-phone-tls-interop"
+        const val PHONE_KEYSTORE_PASSWORD = "changeit"
+        val PHONE_ID_LINE_REGEX = Regex("^phone_id=([0-9a-f]{64})$")
     }
 }
