@@ -10,6 +10,7 @@ mod pairing_qr;
 mod pairing_qr_issuer;
 mod phone_client_cert_verifier;
 mod session_frame;
+mod tls_session_frame;
 mod trusted_phone_store;
 mod usb_tls_ciphertext_stream;
 mod usb_tls_pairing_proof;
@@ -55,6 +56,7 @@ pub use session_frame::{
     SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,
     SessionFramePayload, VideoFrameKind,
 };
+pub use tls_session_frame::{read_session_frame, write_session_frame, TlsSessionFrameError};
 pub use trusted_phone_store::{
     FileTrustedPhoneStore, TrustUnlessRevoked, TrustedPhoneIdentity, TrustedPhoneStoreError,
     TrustedPhoneStoreWriteCoordinator,

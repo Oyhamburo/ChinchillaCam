@@ -35,12 +35,21 @@ TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecuci�
 
 Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test --offline`. Último límite revisado: `9c0d94a`.
 
-1. [ ] s1 — SessionFrame sobre TLS: lectura/escritura de `SessionFrame` sobre `StreamOwned<ServerConnection, _>` con el framing de §4.3. RED: `round_trips_session_frame_over_tls`, `rejects_oversized_length_before_allocating`, `rejects_zero_length`, `truncated_frame_fails_closed`. ~250 líneas.
+1. [x] s1 — SessionFrame sobre TLS: lectura/escritura de `SessionFrame` sobre `StreamOwned<ServerConnection, _>` con el framing de §4.3. RED: `round_trips_session_frame_over_tls`, `rejects_oversized_length_before_allocating`, `rejects_zero_length`, `truncated_frame_fails_closed`. ~250 líneas.
 2. [ ] s2 — Conexión de teléfono por modo: API con modo explícito (`Pairing { issuer }` → pendiente con canal vivo hasta `confirm(label, store)` o `reject()` que cierra; `Reconnect { lookup }` → handshake confiable, lee `HANDSHAKE_HELLO`, responde `HANDSHAKE_ACCEPT`, entrega sesión autenticada con `phone_id`; hello inválido → `HANDSHAKE_REJECT` y cierre). RED: `pairing_mode_holds_channel_until_confirm`, `pairing_reject_closes_channel`, `reconnect_mode_accepts_trusted_phone_hello`, `reconnect_mode_rejects_invalid_hello`. ~350 líneas.
 3. [ ] s3 — Helper para la prueba cruzada (con la s4 Android, requiere autorización fresca): modo del helper que ejecuta pairing, confirmación y reconexión con hello. ~150 líneas.
 
 Criterios: nada se persiste sin confirmación; reconexión sólo con teléfonos confiables; framing acotado y fail closed; `cargo fmt -- --check` y `cargo test` verdes.
 
+## Evidencia s1
+
+- RED observado (`cargo test --offline --test tls_session_frame_test` contra `write_session_frame`/`read_session_frame` reemplazados por `todo!()`): 5 tests fallaron por panic, no por error de compilación -- `round_trips_session_frame_over_tls` panicó en `write_session_frame` (`not yet implemented: RED: task s1 write_session_frame not yet implemented`, `src/tls_session_frame.rs:78`); las otras 4 (`rejects_oversized_length_before_allocating`, `rejects_zero_length`, `truncated_frame_fails_closed`, `read_times_out_when_deadline_already_passed`) panicaron en `read_session_frame` (`not yet implemented: RED: task s1 read_session_frame not yet implemented`, `src/tls_session_frame.rs:92`); `test result: FAILED. 0 passed; 5 failed`.
+- GREEN: `cargo test --offline --test tls_session_frame_test` PASS, 5/5.
+- Full: `cargo fmt -- --check && cargo test --offline` PASS; 206 tests pasando (baseline 201 + 5 nuevos), 0 fallidos.
+- Alcance: sólo framing (prefijo u32 BE `1..=1_048_576` + `SessionFrameCodec` v1 vía `decode_with_limit`/`encode`); deadline absoluto sólo en lectura, reutilizando el patrón de `read_exact_before`/`ensure_before_deadline` de `usb_tls_pairing_proof.rs`; longitud cero o excesiva rechazada ANTES de asignar el buffer del payload; error tipado `TlsSessionFrameError`, fail-closed (el módulo documenta que el llamador no debe reusar el stream tras un error). No incluye selección de modo por conexión ni `HANDSHAKE_*` (queda para s2).
+- Desvíos: (1) tamaño ~433 líneas de autoría (170 en `tls_session_frame.rs` + 261 en `tls_session_frame_test.rs` + 2 en `lib.rs`) por encima de la heurística de ~250 líneas de la tarea; la mayor parte es infraestructura de prueba TLS/`CrossedBulkIo` duplicada a propósito, siguiendo la convención ya existente en `usb_tls_pairing_proof_test.rs`/`usb_tls_trusted_session_test.rs` (cada archivo de test mantiene su propia copia en vez de una compartida); no se recortó cobertura para encajar en la heurística. (2) No se tocó `src/usb_tls_pairing_proof.rs`: su helper de deadline devuelve `UsbTlsPairingProofError`, un dominio de error distinto, y la tarea sólo autorizaba un cambio de visibilidad, no de firma; se reimplementó el mismo patrón (~15 líneas) localmente en `tls_session_frame.rs`. (3) No se agregó una prueba dedicada para "encoding debe rechazar frames que exceden el límite": ya queda garantizado transitivamente por `SessionFrameCodec::encode` (cubierto en `session_frame_test.rs`) y no figuraba en la lista RED obligatoria de la tarea.
+- Commit: `feat(desktop): frame session frames over TLS`.
+
 ## Progreso
 
-Plan creado el 2026-09-28; ninguna tarea iniciada.
+Plan creado el 2026-09-28; s1 completada el 2026-09-28 (ver Evidencia s1). s2 y s3 sin iniciar.
