@@ -94,6 +94,12 @@ pub enum SessionFramePayload {
         command: String,
         arguments: BTreeMap<String, String>,
     },
+    /// Task l2 (`odd/tasks/session-liveness.md`, contract section 4.3): type id 10, always an
+    /// EMPTY payload, uses the envelope's normal sequence/session id like every other frame.
+    /// Sent by either side once it has gone `interval` without sending anything else
+    /// (`SessionLivenessTracker::should_send_keepalive`); any received frame -- not only this
+    /// one -- counts as a liveness signal (contract section 4.4).
+    Keepalive,
 }
 
 impl SessionFramePayload {
@@ -238,6 +244,7 @@ impl SessionFramePayload {
             Self::CameraControlCommand { .. } => 7,
             Self::VideoChunkV2 { .. } => 8,
             Self::VideoChunkFragmentV1 { .. } => 9,
+            Self::Keepalive => 10,
         }
     }
 }
@@ -538,6 +545,7 @@ fn encoded_payload_size(payload: &SessionFramePayload) -> Result<usize, SessionF
             }
             Ok(size)
         }
+        SessionFramePayload::Keepalive => Ok(0),
     }
 }
 
@@ -665,6 +673,7 @@ fn encode_payload(payload: &SessionFramePayload) -> Result<Vec<u8>, SessionFrame
                 writer.write_string(value)?;
             }
         }
+        SessionFramePayload::Keepalive => {}
     }
     Ok(writer.finish())
 }
@@ -797,6 +806,7 @@ fn decode_payload(
                 fragment_h264_bytes,
             }
         }
+        10 => SessionFramePayload::Keepalive,
         other => return Err(SessionFrameDecodeError::UnknownType(other)),
     };
 

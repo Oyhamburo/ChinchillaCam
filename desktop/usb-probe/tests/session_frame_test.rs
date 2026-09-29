@@ -62,6 +62,14 @@ const VIDEO_CHUNK_FRAGMENT_V1_GOLDEN: &[u8] = &[
     0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 0x11, 0x70, 0, 1, 0x65,
 ];
 
+// Task l2 (`odd/tasks/session-liveness.md`, contract section 4.3): SessionFrame(1, 7, "s",
+// SessionPayload.Keepalive) -- type id 10, EMPTY payload (so the trailing payload-length
+// field is 0 and no payload bytes follow). Android implements the same golden vector; the
+// two are compared out of band (cross-worktree testing postponed, see contract section 4.6).
+const KEEPALIVE_GOLDEN: &[u8] = &[
+    b'C', b'C', b'S', b'F', 1, 10, 0, 0, 0, 7, 0, 1, b's', 0, 0, 0, 0,
+];
+
 #[test]
 fn session_frame_encodes_android_golden_handshake_hello_big_endian() {
     let frame = SessionFrame::new(
@@ -229,6 +237,14 @@ fn session_frame_encodes_android_golden_video_chunk_fragment_v1() {
         SessionFrameCodec::decode(VIDEO_CHUNK_FRAGMENT_V1_GOLDEN).unwrap(),
         frame
     );
+}
+
+#[test]
+fn keepalive_frame_round_trips() {
+    let frame = SessionFrame::new(7, "s", SessionFramePayload::Keepalive);
+
+    assert_eq!(SessionFrameCodec::encode(&frame).unwrap(), KEEPALIVE_GOLDEN);
+    assert_eq!(SessionFrameCodec::decode(KEEPALIVE_GOLDEN).unwrap(), frame);
 }
 
 #[test]

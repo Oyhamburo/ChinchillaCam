@@ -402,5 +402,6 @@ fn session_payload_type_id(payload: &SessionFramePayload) -> u8 {
         SessionFramePayload::CameraControlCommand { .. } => 7,
         SessionFramePayload::VideoChunkV2 { .. } => 8,
         SessionFramePayload::VideoChunkFragmentV1 { .. } => 9,
+        SessionFramePayload::Keepalive => 10,
     }
 }
