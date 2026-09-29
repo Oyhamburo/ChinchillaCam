@@ -23,6 +23,24 @@
 //! bound on wall-clock time must impose a read timeout on the underlying transport itself
 //! (as `FramedUsbStream`/`UsbTlsCiphertextStream` already do via `FrameTransferBudget`);
 //! `deadline` here only bounds the number of retries once a read call actually returns.
+//!
+//! # Two-phase idle/frame budgets (task l1, contract `odd/tasks/session-liveness.md`
+//! section 4.1)
+//!
+//! [`read_session_frame_with_budgets`] splits the wait for a frame into two phases with
+//! independent bounds: it first waits for only the FIRST byte of the next frame's length
+//! prefix, bounded by `idle_budget` (a session with no traffic at all for that long reports
+//! [`TlsSessionFrameError::PeerIdle`] instead of [`TlsSessionFrameError::Timeout`], so a
+//! caller can tell "no next frame yet" apart from "a frame stalled mid-transfer"); once that
+//! first byte arrives, the rest of the frame (the remaining length-prefix bytes and the
+//! payload) is read under a FRESH `frame_budget`-length deadline timed from that moment, not
+//! from whatever remained of `idle_budget`. [`read_session_frame`] itself is unchanged: its
+//! single `deadline` still covers both waiting and reading, which remains correct for a
+//! caller with no "idle between frames" concept, such as
+//! `accept_phone_reconnect_connection`'s one-shot HELLO read immediately after a fresh
+//! handshake completes. Wiring the two-phase read into an actual steady-state session loop
+//! (reading across many frames while also sending keepalives) is out of scope here -- see
+//! contract section 4.6.
 
 use std::{
     fmt,
@@ -52,6 +70,11 @@ const WOULD_BLOCK_RETRY_BACKOFF: Duration = Duration::from_millis(2);
 pub enum TlsSessionFrameError {
     Io(String),
     Timeout,
+    /// Contract `odd/tasks/session-liveness.md` section 4.1: `read_session_frame_with_budgets`'s
+    /// idle-wait phase did not observe even the first byte of the next frame within
+    /// `idle_budget`. Distinct from `Timeout`, which is reserved for a stall once a frame has
+    /// already started (bounded by `frame_budget` instead).
+    PeerIdle,
     /// The 4-byte big-endian length prefix was zero or exceeded
     /// `MAX_TLS_SESSION_FRAME_LEN`. Carries the declared (rejected) length.
     InvalidLength(u32),
@@ -67,6 +90,10 @@ impl fmt::Display for TlsSessionFrameError {
         match self {
             Self::Io(error) => write!(formatter, "TLS session frame transport error: {error}"),
             Self::Timeout => write!(formatter, "TLS session frame read timed out"),
+            Self::PeerIdle => write!(
+                formatter,
+                "TLS session frame peer went idle waiting for the next frame"
+            ),
             Self::InvalidLength(length) => write!(
                 formatter,
                 "TLS session frame length prefix {length} is out of the allowed 1..={MAX_TLS_SESSION_FRAME_LEN} range"
@@ -126,14 +153,88 @@ pub fn read_session_frame<S: Read>(
     deadline: Instant,
 ) -> Result<SessionFrame, TlsSessionFrameError> {
     let mut length_prefix = [0u8; LENGTH_PREFIX_BYTES];
-    read_exact_before_deadline(stream, &mut length_prefix, deadline, "length prefix")?;
+    read_exact_before_deadline(
+        stream,
+        &mut length_prefix,
+        deadline,
+        "length prefix",
+        TlsSessionFrameError::Timeout,
+    )?;
     let declared_len = u32::from_be_bytes(length_prefix);
     if declared_len == 0 || declared_len as usize > MAX_TLS_SESSION_FRAME_LEN {
         return Err(TlsSessionFrameError::InvalidLength(declared_len));
     }
 
     let mut payload = vec![0u8; declared_len as usize];
-    read_exact_before_deadline(stream, &mut payload, deadline, "payload")?;
+    read_exact_before_deadline(
+        stream,
+        &mut payload,
+        deadline,
+        "payload",
+        TlsSessionFrameError::Timeout,
+    )?;
+
+    SessionFrameCodec::decode_with_limit(&payload, MAX_TLS_SESSION_FRAME_LEN)
+        .map_err(TlsSessionFrameError::Decode)
+}
+
+/// Two-phase read (see the module-level "Two-phase idle/frame budgets" doc): waits for the
+/// first byte of the next frame bounded by `idle_budget`, failing closed with
+/// [`TlsSessionFrameError::PeerIdle`] if it never arrives; then completes the rest of the
+/// frame (remaining length-prefix bytes and payload) within a fresh `frame_budget`-length
+/// deadline timed from that moment, failing closed with [`TlsSessionFrameError::Timeout`] if
+/// that stalls.
+///
+/// On `Err`, `stream` MUST NOT be reused for further `SessionFrame`s: see the module docs.
+pub fn read_session_frame_with_budgets<S: Read>(
+    stream: &mut S,
+    idle_budget: Duration,
+    frame_budget: Duration,
+) -> Result<SessionFrame, TlsSessionFrameError> {
+    let mut length_prefix = [0u8; LENGTH_PREFIX_BYTES];
+
+    // Phase (a): bounded by `idle_budget`, waiting only for the first byte of the next
+    // frame's length prefix. A `checked_add` overflow here (an absurdly large `idle_budget`)
+    // is treated the same as the idle wait itself failing, since there is no meaningful
+    // deadline left to wait against.
+    let idle_deadline = Instant::now()
+        .checked_add(idle_budget)
+        .ok_or(TlsSessionFrameError::PeerIdle)?;
+    read_exact_before_deadline(
+        stream,
+        &mut length_prefix[..1],
+        idle_deadline,
+        "length prefix",
+        TlsSessionFrameError::PeerIdle,
+    )?;
+
+    // Phase (b): a frame has started, so re-time a FRESH `frame_budget`-length deadline from
+    // now (never reusing or subtracting from `idle_budget`) to complete the rest of it. Same
+    // overflow reasoning as above, mapped to this phase's own timeout-style error.
+    let frame_deadline = Instant::now()
+        .checked_add(frame_budget)
+        .ok_or(TlsSessionFrameError::Timeout)?;
+    read_exact_before_deadline(
+        stream,
+        &mut length_prefix[1..],
+        frame_deadline,
+        "length prefix",
+        TlsSessionFrameError::Timeout,
+    )?;
+
+    let declared_len = u32::from_be_bytes(length_prefix);
+    if declared_len == 0 || declared_len as usize > MAX_TLS_SESSION_FRAME_LEN {
+        return Err(TlsSessionFrameError::InvalidLength(declared_len));
+    }
+
+    let mut payload = vec![0u8; declared_len as usize];
+    read_exact_before_deadline(
+        stream,
+        &mut payload,
+        frame_deadline,
+        "payload",
+        TlsSessionFrameError::Timeout,
+    )?;
 
     SessionFrameCodec::decode_with_limit(&payload, MAX_TLS_SESSION_FRAME_LEN)
         .map_err(TlsSessionFrameError::Decode)
@@ -168,18 +269,25 @@ pub fn read_session_frame<S: Read>(
 /// otherwise busy-spin a full CPU core until `deadline`. `Interrupted` keeps retrying with
 /// no backoff, matching `std::io::Read::read_exact`'s own semantics: a signal is rare
 /// enough that the busy-spin risk does not apply the same way.
+///
+/// `timeout_error` is the value returned once `deadline` passes (task l1,
+/// `odd/tasks/session-liveness.md` section 4.1): `read_session_frame` always passes
+/// `TlsSessionFrameError::Timeout`, while `read_session_frame_with_budgets`'s idle-wait phase
+/// passes `TlsSessionFrameError::PeerIdle` instead, so the two phases of that two-phase read
+/// can share this one retry loop instead of duplicating it.
 fn read_exact_before_deadline<S: Read>(
     stream: &mut S,
     mut buf: &mut [u8],
     deadline: Instant,
     field: &'static str,
+    timeout_error: TlsSessionFrameError,
 ) -> Result<(), TlsSessionFrameError> {
     while !buf.is_empty() {
-        ensure_before_deadline(deadline)?;
+        ensure_before_deadline(deadline, &timeout_error)?;
         match stream.read(buf) {
             Ok(0) => return Err(TlsSessionFrameError::TruncatedFrame(field)),
             Ok(read) => {
-                ensure_before_deadline(deadline)?;
+                ensure_before_deadline(deadline, &timeout_error)?;
                 buf = &mut buf[read..];
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
@@ -210,9 +318,12 @@ fn read_exact_before_deadline<S: Read>(
     Ok(())
 }
 
-fn ensure_before_deadline(deadline: Instant) -> Result<(), TlsSessionFrameError> {
+fn ensure_before_deadline(
+    deadline: Instant,
+    timeout_error: &TlsSessionFrameError,
+) -> Result<(), TlsSessionFrameError> {
     if Instant::now() >= deadline {
-        Err(TlsSessionFrameError::Timeout)
+        Err(timeout_error.clone())
     } else {
         Ok(())
     }

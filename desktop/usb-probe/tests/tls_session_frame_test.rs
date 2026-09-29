@@ -18,9 +18,9 @@ use rustls::{
     ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
 };
 use usb_probe::{
-    read_session_frame, write_session_frame, DesktopTlsIdentity, FrameTransferBudget,
-    FramedUsbStream, PhoneClientCertVerifier, SessionFrame, SessionFrameCodec, SessionFramePayload,
-    TlsSessionFrameError, UsbBulkIo, UsbProbeError, UsbTlsCiphertextStream,
+    read_session_frame, read_session_frame_with_budgets, write_session_frame, DesktopTlsIdentity,
+    FrameTransferBudget, FramedUsbStream, PhoneClientCertVerifier, SessionFrame, SessionFrameCodec,
+    SessionFramePayload, TlsSessionFrameError, UsbBulkIo, UsbProbeError, UsbTlsCiphertextStream,
 };
 
 #[test]
@@ -193,6 +193,58 @@ fn would_block_past_the_deadline_still_times_out() {
     assert_eq!(result, Err(TlsSessionFrameError::Timeout));
 }
 
+/// Task l1 (`odd/tasks/session-liveness.md`, contract section 4.1): the wait for the FIRST
+/// byte of the next frame must be bounded by `idle_budget`, not `frame_budget`. A peer that
+/// starts its next frame well after a short `frame_budget` but still within a generous
+/// `idle_budget` must still succeed.
+#[test]
+fn idle_session_does_not_time_out_waiting_for_next_frame() {
+    let bytes = encoded_frame_with_length_prefix(&sample_session_frame());
+    let mut source = DelayedRead {
+        release_at: Instant::now() + Duration::from_millis(150),
+        inner: Cursor::new(bytes),
+    };
+    let idle_budget = Duration::from_millis(600);
+    let frame_budget = Duration::from_millis(50);
+
+    let result = read_session_frame_with_budgets(&mut source, idle_budget, frame_budget);
+
+    assert_eq!(
+        result,
+        Ok(sample_session_frame()),
+        "the wait for the first byte must be bounded by idle_budget, not frame_budget"
+    );
+}
+
+/// Task l1: no byte of the next frame ever arrives, so the idle-wait phase must fail closed
+/// with `PeerIdle` (not `Timeout`) once `idle_budget` passes.
+#[test]
+fn idle_beyond_threshold_fails_as_peer_idle() {
+    let mut source = AlwaysWouldBlockRead;
+    let idle_budget = Duration::from_millis(30);
+    let frame_budget = Duration::from_millis(500);
+
+    let result = read_session_frame_with_budgets(&mut source, idle_budget, frame_budget);
+
+    assert_eq!(result, Err(TlsSessionFrameError::PeerIdle));
+}
+
+/// Task l1: the peer sends the first byte of a frame immediately (satisfying the idle
+/// wait), then stalls indefinitely. The remainder of the frame must still fail closed with
+/// `Timeout` once `frame_budget` passes, exactly like `read_session_frame`.
+#[test]
+fn stalled_frame_after_first_byte_times_out() {
+    let mut source = StallsAfterFirstByte {
+        first_byte: Some(0),
+    };
+    let idle_budget = Duration::from_millis(500);
+    let frame_budget = Duration::from_millis(30);
+
+    let result = read_session_frame_with_budgets(&mut source, idle_budget, frame_budget);
+
+    assert_eq!(result, Err(TlsSessionFrameError::Timeout));
+}
+
 fn test_deadline() -> Instant {
     Instant::now() + Duration::from_millis(1500)
 }
@@ -292,6 +344,47 @@ impl Read for AlwaysWouldBlockRead {
             io::ErrorKind::WouldBlock,
             "simulated would-block",
         ))
+    }
+}
+
+/// Reports `WouldBlock` until `release_at`, then delegates every call to `inner`. Simulates
+/// a peer that starts sending its next frame only after a delay.
+struct DelayedRead<R> {
+    release_at: Instant,
+    inner: R,
+}
+
+impl<R: Read> Read for DelayedRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if Instant::now() < self.release_at {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "simulated pre-release delay",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// Delivers exactly one byte on the first `read` call (regardless of how many bytes were
+/// requested), then reports `WouldBlock` forever afterward -- simulating a peer that starts
+/// a frame (satisfying an idle wait) but then stalls indefinitely partway through it.
+struct StallsAfterFirstByte {
+    first_byte: Option<u8>,
+}
+
+impl Read for StallsAfterFirstByte {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self.first_byte.take() {
+            Some(byte) => {
+                buf[0] = byte;
+                Ok(1)
+            }
+            None => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "simulated stall after first byte",
+            )),
+        }
     }
 }
 

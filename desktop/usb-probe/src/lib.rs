@@ -61,7 +61,9 @@ pub use session_frame::{
     SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,
     SessionFramePayload, VideoFrameKind,
 };
-pub use tls_session_frame::{read_session_frame, write_session_frame, TlsSessionFrameError};
+pub use tls_session_frame::{
+    read_session_frame, read_session_frame_with_budgets, write_session_frame, TlsSessionFrameError,
+};
 pub use trusted_phone_store::{
     FileTrustedPhoneStore, TrustUnlessRevoked, TrustedPhoneIdentity, TrustedPhoneStoreError,
     TrustedPhoneStoreWriteCoordinator,
