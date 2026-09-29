@@ -12,9 +12,10 @@ use rustls::{
 
 use crate::{
     phone_client_cert_verifier::accepted_client_spki, phone_id_for_spki, DesktopTlsIdentity,
-    PairingProofFrame, PairingProofRequest, PairingProofResponse, PairingQrIssuer,
-    PairingQrIssuerError, PairingQrNonceGenerator, PhoneClientCertVerifier, TrustedPhoneLookup,
-    UsbBulkIo, UsbTlsCiphertextStream,
+    FileTrustedPhoneStore, PairingProofFrame, PairingProofRequest, PairingProofResponse,
+    PairingQrIssuer, PairingQrIssuerError, PairingQrNonceGenerator, PhoneClientCertVerifier,
+    TrustedPhoneIdentity, TrustedPhoneLookup, TrustedPhoneStoreError, UsbBulkIo,
+    UsbTlsCiphertextStream,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +55,58 @@ pub struct UsbTlsPairingProofServer {
 pub struct PairedPhoneCandidate {
     pub phone_id: String,
     pub spki: Vec<u8>,
+}
+
+/// Task m4: confirming a candidate failed for a reason other than the store's own
+/// validation (`TrustedPhoneStoreError`, e.g. an oversized label or an I/O failure).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairedPhoneCandidateConfirmError {
+    /// This candidate's `phone_id` is currently revoked. Confirming it must fail closed
+    /// instead of silently un-revoking it: un-revocation is a separate, explicit action
+    /// (out of scope for this contract; see `odd/tasks/phone-mtls-identity.md` section 4.6).
+    PhoneRevoked,
+    /// The store itself rejected the confirmation (validation or I/O failure).
+    Store(TrustedPhoneStoreError),
+}
+
+impl fmt::Display for PairedPhoneCandidateConfirmError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PhoneRevoked => write!(
+                formatter,
+                "cannot confirm a paired phone candidate whose phone_id is currently revoked"
+            ),
+            Self::Store(error) => write!(formatter, "trusted phone store error: {error:?}"),
+        }
+    }
+}
+
+impl std::error::Error for PairedPhoneCandidateConfirmError {}
+
+impl From<TrustedPhoneStoreError> for PairedPhoneCandidateConfirmError {
+    fn from(value: TrustedPhoneStoreError) -> Self {
+        Self::Store(value)
+    }
+}
+
+impl PairedPhoneCandidate {
+    /// Persists this candidate as a `TrustedPhoneIdentity` in `store`, under `label`. This
+    /// is the ONLY way a paired phone becomes trusted: neither the pairing handshake nor
+    /// the reconnection handshake ever calls `store.trust` on their own (task m4, contract
+    /// section 4.6). Confirming a phone_id that is currently revoked fails closed rather
+    /// than silently un-revoking it.
+    pub fn confirm(
+        &self,
+        label: &str,
+        store: &FileTrustedPhoneStore,
+    ) -> Result<TrustedPhoneIdentity, PairedPhoneCandidateConfirmError> {
+        if store.is_revoked(&self.phone_id)? {
+            return Err(PairedPhoneCandidateConfirmError::PhoneRevoked);
+        }
+        let identity = TrustedPhoneIdentity::new(self.phone_id.clone(), label, self.spki.clone())?;
+        store.trust(identity.clone())?;
+        Ok(identity)
+    }
 }
 
 /// The outcome of a completed pairing handshake and proof: the still-live TLS stream (so

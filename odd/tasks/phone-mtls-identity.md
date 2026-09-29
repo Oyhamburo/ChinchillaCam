@@ -175,10 +175,33 @@ Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --chec
    - **Full**: `cargo test --offline` → 193 tests en total (189 + 4 nuevos), 0 fallos.
    - **Líneas cambiadas**: 391 -- `lib.rs` +2/-1, `usb_tls_pairing_proof.rs` +56/-3, `usb_tls_trusted_session_test.rs` +329 (nuevo). Dentro de la heurística de ~400.
    - Commit: `feat(desktop): accept trusted phones on USB reconnection`.
-4. [ ] m4 — Confirmación explícita: el candidato de pairing no se persiste solo; `confirm(label, store)` persiste `TrustedPhoneIdentity`. RED: `pairing_candidate_is_not_persisted_without_confirmation`, `confirm_persists_trusted_phone_identity`. Estimado ~150 líneas.
+4. [x] m4 — Confirmación explícita: el candidato de pairing no se persiste solo; `confirm(label, store)` persiste `TrustedPhoneIdentity`. RED: `pairing_candidate_is_not_persisted_without_confirmation`, `confirm_persists_trusted_phone_identity`. Estimado ~150 líneas.
+
+   ### Evidencia m4
+
+   - **API elegida**: método `PairedPhoneCandidate::confirm(&self, label: &str, store: &FileTrustedPhoneStore) -> Result<TrustedPhoneIdentity, PairedPhoneCandidateConfirmError>` en `usb_tls_pairing_proof.rs`. Construye `TrustedPhoneIdentity::new(phone_id, label, spki)` (validación del store) y llama `store.trust(...)`. Ningún paso de la ruta de pairing (m1-m2) ni de reconexión (m3) llama `store.trust` por su cuenta -- `confirm` es la ÚNICA vía de persistencia.
+   - **Regla de revocación (conservadora, según el contrato §4.6 y el store de Android)**: `confirm` primero llama `store.is_revoked(phone_id)`; si es `true`, devuelve `Err(PairedPhoneCandidateConfirmError::PhoneRevoked)` SIN llamar `store.trust`, así que un `phone_id` revocado nunca se "des-revoca" con sólo confirmar de nuevo. Des-revocar queda fuera de alcance como acción explícita separada (documentado en el doc del tipo de error y aquí).
+   - `PairedPhoneCandidateConfirmError` tiene dos variantes: `PhoneRevoked` y `Store(TrustedPhoneStoreError)` (con `From<TrustedPhoneStoreError>` para poder usar `?` limpio contra `is_revoked`/`TrustedPhoneIdentity::new`/`trust`, los tres ya devuelven `TrustedPhoneStoreError`).
+   - **RED observado** (error de compilación, API aún no existía):
+
+     ```
+     error[E0432]: unresolved import `usb_probe::PairedPhoneCandidateConfirmError`
+       --> tests/paired_phone_candidate_confirm_test.rs:21:65
+     error[E0599]: no method named `confirm` found for struct `PairedPhoneCandidate` in the current scope
+       --> tests/paired_phone_candidate_confirm_test.rs:52:31
+     ```
+
+     (3 apariciones de E0599 -- una por cada test que ya llamaba `candidate.confirm(...)`.)
+
+   - **GREEN**: los 4 tests pasaron en el primer intento tras implementar (sin bugs de test esta vez, a diferencia de m3). `pairing_candidate_is_not_persisted_without_confirmation` hace pairing real (m1-m2) y verifica que un `FileTrustedPhoneStore` nuevo, jamás mencionado durante el pairing, ni tiene el `phone_id` ni su archivo llegó a crearse -- confirma por la negativa que ningún paso previo persiste nada. `confirm_persists_trusted_phone_identity` compara el resultado y el estado persistido contra un `TrustedPhoneIdentity` construido independientemente (mismo patrón de igualdad que usa el resto de la suite, ya que el tipo no expone getters). `confirm_refuses_revoked_phone` confía+revoca antes de confirmar y verifica que sigue revocado y sin registro confiable después del intento fallido. `confirmed_phone_reconnects_and_revoked_phone_is_rejected` encadena las tres tareas: pairing (m1-m2) → `confirm` (m4) → `complete_trusted_phone_handshake` (m3) acepta → `store.revoke` → `complete_trusted_phone_handshake` vuelve a intentarse y rechaza en el handshake (mismo patrón `Err(Tls(_))` de m3).
+   - **GREEN focused**: `cargo test --offline --test paired_phone_candidate_confirm_test` → `test result: ok. 4 passed; 0 failed`. `cargo test --offline --test usb_tls_trusted_session_test` → sigue en `4 passed; 0 failed` (sin regresión). `cargo test --offline --test usb_tls_pairing_proof_test` → sigue en `8 passed; 0 failed` (sin regresión).
+   - `cargo fmt -- --check`: sin diffs (tras `cargo fmt`).
+   - **Full**: `cargo test --offline` → 197 tests en total (193 + 4 nuevos), 0 fallos.
+   - **Líneas cambiadas**: 437 -- `lib.rs` +2/-1, `usb_tls_pairing_proof.rs` +56/-3, `paired_phone_candidate_confirm_test.rs` +375 (nuevo). Supera la heurística de ~400 por 37 líneas: no se recortó nada para entrar en el límite. El archivo de test es nuevo y, como cada test de integración es una unidad de compilación independiente, no puede reutilizar los helpers ya escritos en `usb_tls_pairing_proof_test.rs`/`usb_tls_trusted_session_test.rs` (transporte en memoria `CrossedBulkIo`/`BulkPipe`, cliente TLS de teléfono, handshake de pairing completo) -- duplicarlos ahí es el patrón ya establecido en esta crate, y los 4 tests pedidos (incluido el end-to-end que encadena m1-m2-m3-m4) exigen tenerlos completos.
+   - Commit: `feat(desktop): persist phones only after explicit confirmation`.
 
 Criterios: ningún camino USB real acepta clientes sin certificado; pairing liga el SPKI a la sesión que consumió el nonce; reconexión rechaza desconocidos y revocados en el handshake; nada se persiste sin confirmación explícita; `cargo fmt -- --check` y `cargo test` verdes.
 
 ## Progreso
 
-Plan creado el 2026-09-28; m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada y sus 5 hallazgos atendidos en m1b el 2026-09-28 (ver Revisión nativa m1 y Evidencia m1b); m2 completada el 2026-09-28 (ver Evidencia m2); revisión nativa m1b+m2 aprobada y sus 4 hallazgos atendidos en m2b el 2026-09-28 (ver Revisión nativa m1b+m2 y Evidencia m2b); m3 completada el 2026-09-28 (ver Evidencia m3); m4 sin iniciar.
+Plan creado el 2026-09-28; m1 completada el 2026-09-28 (ver Evidencia m1); revisión nativa m1 aprobada y sus 5 hallazgos atendidos en m1b el 2026-09-28 (ver Revisión nativa m1 y Evidencia m1b); m2 completada el 2026-09-28 (ver Evidencia m2); revisión nativa m1b+m2 aprobada y sus 4 hallazgos atendidos en m2b el 2026-09-28 (ver Revisión nativa m1b+m2 y Evidencia m2b); m3 completada el 2026-09-28 (ver Evidencia m3); m4 completada el 2026-09-28 (ver Evidencia m4). Las 4 tareas del plan (m1-m4) están completas; queda pendiente la revisión nativa de m3+m4 (aún no ejecutada en esta sesión).

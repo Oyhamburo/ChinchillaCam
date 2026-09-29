@@ -65,7 +65,8 @@ pub use usb_tls_ciphertext_stream::{
 };
 pub use usb_tls_pairing_proof::{
     complete_trusted_phone_handshake, CompletedPairingProof, CompletedTrustedHandshake,
-    PairedPhoneCandidate, UsbTlsPairingProofError, UsbTlsPairingProofServer,
+    PairedPhoneCandidate, PairedPhoneCandidateConfirmError, UsbTlsPairingProofError,
+    UsbTlsPairingProofServer,
 };
 pub use video_decoder::{DecodingEncodedVideoSink, VideoDecoder, VideoDecoderError};
 pub use video_fragment_reassembler::{
