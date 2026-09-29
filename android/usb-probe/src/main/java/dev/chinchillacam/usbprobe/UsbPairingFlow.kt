@@ -2,11 +2,15 @@ package dev.chinchillacam.usbprobe
 
 /**
  * Outcome of [UsbPairingFlow.confirm]: [channel] is the live TLS channel established during
- * [UsbPairingFlow.start], handed back to the caller only when [result] is
+ * [UsbPairingFlow.start], handed back to the caller when [result] is
  * [PendingPairingConfirmResult.Activated] (contract `usb-authenticated-session` §4.2 and §4.5, for
- * a later HELLO/ACCEPT over the same channel). Every other outcome — a rejection, or
- * [PendingPairingConfirmResult.TrustedButInactive] (a second desktop cannot use this channel while
- * another one is already active) — closes the channel before returning `null`.
+ * a later HELLO/ACCEPT over the same channel) and a live channel is still held for that pending.
+ * Every other outcome — a rejection, or [PendingPairingConfirmResult.TrustedButInactive] (a second
+ * desktop cannot use this channel while another one is already active) — closes the channel before
+ * returning `null`. Under exclusive ownership of the wrapped [PendingPairingCoordinator] (see
+ * [UsbPairingFlow]'s class doc), [result] is never [PendingPairingConfirmResult.Activated] without a
+ * held channel, so [channel] is `null` there only as a non-throwing fallback if that invariant were
+ * ever violated — not a case normal callers need to handle.
  */
 data class UsbPairingConfirmOutcome(
     val result: PendingPairingConfirmResult,
@@ -20,7 +24,10 @@ data class UsbPairingConfirmOutcome(
  * [UsbTlsPairingProofVerifier] over an [AccessoryIoSession], and owns the lifecycle of the live
  * [SslEngineUsbTlsEstablishedChannel] the proof is verified over:
  *
- * - [start] keeps the channel alive across a pending confirmation.
+ * - [start] keeps the channel alive across a pending confirmation. A rejected attempt — including
+ *   [PendingPairingStartResult.Rejected.AlreadyPending] while another pairing is still pending —
+ *   never disturbs that held channel; only a new [PendingPairingStartResult.PendingConfirmation]
+ *   replaces it.
  * - [confirm] persists trust and activates exactly as [PendingPairingCoordinator.confirm] does
  *   today, and additionally hands the live channel to the caller once activated.
  * - [reject] cancels the pending pairing and closes the channel.
@@ -43,6 +50,14 @@ class UsbPairingFlow(
 
     private var held: HeldChannel? = null
 
+    /**
+     * [session] is only ever read from or written to on the path that leads to a
+     * [PendingPairingStartResult.PendingConfirmation] (via [channelVerifier], from
+     * [PendingPairingCoordinator.startCore]). Every rejection path — including
+     * [PendingPairingStartResult.Rejected.AlreadyPending], which returns before [channelVerifier] is
+     * ever invoked — leaves [session] completely untouched; its ownership and lifecycle stay with
+     * the caller in that case.
+     */
     @Synchronized
     fun start(qrPayload: PairingQrPayload, session: AccessoryIoSession): ChannelPairingStartResult {
         // Reconcile a previous, never-confirmed/rejected pending that has since expired: without
@@ -51,11 +66,16 @@ class UsbPairingFlow(
         expireIfNeeded()
         val outcome = coordinator.start(qrPayload, session, channelVerifier)
         val summary = (outcome.result as? PendingPairingStartResult.PendingConfirmation)?.summary
-        held = if (summary != null) {
+        // Only a new PendingConfirmation replaces `held`. A rejection — including AlreadyPending,
+        // the coordinator's answer while a different pending is still live — must not disturb that
+        // still-valid pending's held channel (defect s1b: this used to unconditionally null it out
+        // here, leaking the channel and later making confirm() throw after the coordinator had
+        // already persisted trust and activated). By construction there cannot be another live
+        // pending at this point unless `held` is already stale, and `expireIfNeeded` above already
+        // closed and cleared a stale one on entry.
+        if (summary != null) {
             val channel = requireNotNull(outcome.channel) { "a PendingConfirmation must carry a live channel" }
-            HeldChannel(summary.pendingId, channel)
-        } else {
-            null
+            held = HeldChannel(summary.pendingId, channel)
         }
         return outcome
     }
@@ -73,8 +93,14 @@ class UsbPairingFlow(
         val result = coordinator.confirm(pendingId, trustedDesktopStore, activeDesktopAuthority)
         if (ours != null) held = null
         if (result is PendingPairingConfirmResult.Activated) {
-            val channel = requireNotNull(ours) { "an activated pairing must have a retained live channel" }.channel
-            return UsbPairingConfirmOutcome(result, channel)
+            // `ours` is guaranteed non-null here under exclusive ownership (see start()'s doc and
+            // UsbPairingConfirmOutcome's): the coordinator only activates a pending that start()
+            // itself created together with this held channel, and a rejected start no longer clears
+            // it (defect s1b). The coordinator has already persisted trust and activated by this
+            // point, so if that invariant were ever violated regardless, degrade to a null channel
+            // instead of throwing — those side effects cannot be undone from here, and a crash would
+            // only hide a successful activation from the caller.
+            return UsbPairingConfirmOutcome(result, ours?.channel)
         }
         ours?.let { runCatching { it.channel.close() } }
         return UsbPairingConfirmOutcome(result, null)

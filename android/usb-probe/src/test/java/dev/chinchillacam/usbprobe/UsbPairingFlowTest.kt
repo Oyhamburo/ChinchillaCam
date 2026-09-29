@@ -199,6 +199,60 @@ class UsbPairingFlowTest {
         }
     }
 
+    @Test
+    fun secondStartWhilePendingKeepsFirstChannelForConfirm() {
+        val desktop = desktopFixture("s1b-second-start-desktop")
+        val phone = phoneFixture("s1b-second-start-phone")
+        val pair = sessionPair()
+        val serverError = AtomicReference<Throwable?>(null)
+        val serverCompleted = AtomicBoolean(false)
+        val server = thread {
+            try {
+                val tls = handshakeAsServer(desktop.context, pair.server)
+                val request = PairingProofProtocol.parseRequest(tls.readApplicationFrame())
+                tls.writeApplicationFrame(statusZeroResponse(request))
+                assertArrayEquals(POST_CONFIRM_PONG, tls.readApplicationFrame())
+                tls.close()
+                serverCompleted.set(true)
+            } catch (error: Throwable) {
+                serverError.set(error)
+            }
+        }
+
+        val clock = MutableEpochSecondsSource(1_000)
+        val flow = UsbPairingFlow(newCoordinator(clock), tlsVerifier(phone, clock))
+        val store = InMemoryTrustedDesktopStore()
+        val authority = ActiveDesktopAuthority()
+        var channel: SslEngineUsbTlsEstablishedChannel? = null
+
+        try {
+            val started = flow.start(qr(desktop.spki), pair.client)
+            val pendingSummary = (started.result as PendingPairingStartResult.PendingConfirmation).summary
+            val channelA = requireNotNull(started.channel) { "a PendingConfirmation must retain a live channel" }
+
+            // A second start attempt while the first pairing is still pending must be rejected
+            // without disturbing the first pending's held channel (defect s1b: it used to be
+            // dropped here, unclosed, causing the confirm below to throw after the coordinator had
+            // already persisted trust and activated). The new session is never touched by the
+            // coordinator on this path, so it needs no fake-desktop partner of its own.
+            val rejected = flow.start(qr(desktop.spki), sessionPair().client)
+            assertEquals(PendingPairingStartResult.Rejected.AlreadyPending, rejected.result)
+            assertNull(rejected.channel)
+
+            val outcome = flow.confirm(pendingSummary.pendingId, store, authority)
+            val activated = outcome.result as PendingPairingConfirmResult.Activated
+            assertEquals("pc-1", activated.desktopId)
+            channel = requireNotNull(outcome.channel) { "an activated pairing must hand back its live channel" }
+            assertTrue(channel === channelA)
+            channel.writeApplicationData(POST_CONFIRM_PONG)
+        } finally {
+            channel?.let { runCatching { it.close() } }
+            server.join(2000)
+            serverError.get()?.let { throw it }
+        }
+        assertTrue(serverCompleted.get())
+    }
+
     private fun newCoordinator(clock: EpochSecondsSource): PendingPairingCoordinator = PendingPairingCoordinator(
         epochSecondsSource = clock,
         challengeNonceSource = QueueChallengeSource(PairingChallengeMaterial(CHALLENGE_NONCE, "session-1", expiresAtEpochSeconds = 1_200)),
