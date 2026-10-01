@@ -38,7 +38,13 @@ TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecuci�
 
 Runner: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug`. Baseline: 398 tests, 2 omitidos, 0 fallos (HEAD `05a4279`, 2026-09-30). Último límite revisado: `05a4279`.
 
-1. [ ] w1 — Seam `TlsCiphertextTransport`: interfaz + `UsbAccessoryTlsCiphertextTransport` (envuelve `AccessoryIoSession` + `UsbTlsCiphertextIoAdapter`, mismo comportamiento); los canales `SslEngine*` dependen de la interfaz; se conservan los overloads con `AccessoryIoSession`. RED: `handshakeRunsOverInjectedCiphertextTransport`. ~300 líneas.
+1. [x] w1 — Seam `TlsCiphertextTransport`: interfaz + `UsbAccessoryTlsCiphertextTransport` (envuelve `AccessoryIoSession` + `UsbTlsCiphertextIoAdapter`, mismo comportamiento); los canales `SslEngine*` dependen de la interfaz; se conservan los overloads con `AccessoryIoSession`. RED: `handshakeRunsOverInjectedCiphertextTransport`. ~300 líneas.
+
+   Evidencia w1:
+   - RED observado (compilación de tests contra el `src/main` sin cambios): `Unresolved reference: TlsCiphertextTransport`, `Unresolved reference: UsbAccessoryTlsCiphertextTransport`, `Unresolved reference: TlsCiphertextWriteResult`, `Unresolved reference: TlsCiphertextReadResult`, `Type mismatch: inferred type is ... RecordingCiphertextTransport but AccessoryIoSession was expected` (overload `handshake(transport, ...)` inexistente) y `'maxWriteBytes'/'writeCiphertext'/'readCiphertext'/'close' overrides nothing`.
+   - GREEN: `handshakeRunsOverInjectedCiphertextTransport` pasa; el handshake pineado y un ida-y-vuelta de datos de aplicación corren sobre un `TlsCiphertextTransport` inyectado (grabador) que registra writes y reads.
+   - Diseño: nueva interfaz `TlsCiphertextTransport` (write/read/close + `maxWriteBytes`, sin tipos USB/AccessoryFrame en la firma) con resultados neutrales `TlsCiphertextWriteResult`/`TlsCiphertextReadResult` (Received/Eof/Failed). `UsbAccessoryTlsCiphertextTransport` traduce los resultados `Usb*` sin cambiar chunking, stream id, tope de 64 KiB ni el fail-closed. `SslEngineUsbTlsChannel` y `SslEngineUsbTlsEstablishedChannel` dependen de la interfaz; los overloads `handshake(session, ...)`/`handshakeWithPinnedFingerprint(session, ...)` envuelven la sesión en `UsbAccessoryTlsCiphertextTransport` y los llamadores no cambian. El constructor `internal` del canal establecido pasó de `(session, adapter)` a `transport` (única adaptación mecánica en el helper de test `establishedChannel`).
+   - Suite completa: 399 tests, 2 omitidos, 0 fallos (antes 398/2/0: +1 por el test nuevo). `assembleDebug` y `lintDebug` OK. Foco (clase nueva + `SslEngineUsbTlsChannelTest`, `UsbTrustedReconnectTest`, `UsbPairingFlowTest`, `TlsSessionFrameIoAdapterTest`, `UsbTlsPairingProofVerifierTest`) verde 3×.
 2. [ ] w2 — `StreamTlsCiphertextTransport` sobre `InputStream`/`OutputStream` sin `AccessoryFrame`; entradas de pairing y reconexión que aceptan un `TlsCiphertextTransport`; helper de test compartido. RED: `pinnedHandshakeOverRawStreamTransport`, `sessionFramesRoundTripOverRawStreamTransport`, `trustedReconnectOverRawStreamTransport`, `rawStreamTransportFailsClosedOnPeerEof`. ~350 líneas.
 3. [ ] w3 — Guard sin listener: test que falla si el manifest declara `INTERNET` o si `src/main` usa `ServerSocket`; evidencia y cierre. ~120 líneas.
 
@@ -47,3 +53,4 @@ Criterios: suite completa sin regresiones; el mismo stack TLS/sesión pasa sobre
 ## Progreso
 
 Plan creado el 2026-09-30.
+w1 completada (green) el 2026-09-30: seam `TlsCiphertextTransport` introducido sin cambio de comportamiento; suite 399/2/0, assemble+lint OK. Sin commit (pendiente de decisión del usuario).

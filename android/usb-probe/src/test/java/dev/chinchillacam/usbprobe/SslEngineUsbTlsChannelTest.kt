@@ -49,6 +49,42 @@ class SslEngineUsbTlsChannelTest {
     }
 
     @Test
+    fun handshakeRunsOverInjectedCiphertextTransport() {
+        val fixture = TlsFixture.create("transport-seam")
+        val pair = sessionPair()
+        val serverError = AtomicReference<Throwable?>(null)
+        val server = thread {
+            try {
+                val serverChannel = serverHandshake(fixture.context, pair.server)
+                val request = serverChannel.readApplicationFrame()
+                assertTrue(request.contentEquals("ping".toByteArray()))
+                serverChannel.writeApplicationFrame("pong".toByteArray())
+            } catch (error: Throwable) {
+                serverError.set(error)
+            }
+        }
+
+        val transport = RecordingCiphertextTransport(UsbAccessoryTlsCiphertextTransport(pair.client))
+        val result = SslEngineUsbTlsChannel().handshake(transport, fixture.certificate.publicKey.encoded)
+
+        try {
+            assertTrue(result is SslEngineUsbTlsHandshakeResult.Authenticated)
+            result as SslEngineUsbTlsHandshakeResult.Authenticated
+            result.channel.writeApplicationData("ping".toByteArray())
+            val echoed = result.channel.readApplicationData(16, System.nanoTime() + TimeUnit.SECONDS.toNanos(2))
+            assertTrue(echoed.contentEquals("pong".toByteArray()))
+            server.join(2000)
+            serverError.get()?.let { throw it }
+            // The handshake and the round trip both went through the injected transport.
+            assertTrue("expected the injected transport to record ciphertext writes", transport.writes > 0)
+            assertTrue("expected the injected transport to record ciphertext reads", transport.reads > 0)
+            result.close()
+        } finally {
+            pair.close()
+        }
+    }
+
+    @Test
     fun rejectsPinnedSpkiMismatchAndClosesUsbSession() {
         val fixture = TlsFixture.create("valid")
         val mismatch = TlsFixture.create("mismatch")
@@ -424,7 +460,7 @@ class SslEngineUsbTlsChannelTest {
         }
     }
 
-    private fun serverHandshake(context: SSLContext, session: AccessoryIoSession, needClientAuth: Boolean = false, forceProtocol: String? = null) {
+    private fun serverHandshake(context: SSLContext, session: AccessoryIoSession, needClientAuth: Boolean = false, forceProtocol: String? = null): ServerTlsChannel {
         val engine = context.createSSLEngine().apply {
             useClientMode = false
             this.needClientAuth = needClientAuth
@@ -436,31 +472,57 @@ class SslEngineUsbTlsChannelTest {
         val peer = java.nio.ByteBuffer.allocate(USB_TLS_CIPHERTEXT_WRITE_MAX_BYTES)
         while (engine.handshakeStatus != SSLEngineResult.HandshakeStatus.FINISHED && engine.handshakeStatus != SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
             when (engine.handshakeStatus) {
-                SSLEngineResult.HandshakeStatus.NEED_WRAP -> {
-                    val out = java.nio.ByteBuffer.allocate(engine.session.packetBufferSize)
-                    engine.wrap(empty, out)
-                    out.flip()
-                    if (out.hasRemaining()) adapter.write(session, ByteArray(out.remaining()).also { out.get(it) })
-                }
+                SSLEngineResult.HandshakeStatus.NEED_WRAP -> wrapServer(engine, session, adapter, empty)
                 SSLEngineResult.HandshakeStatus.NEED_UNWRAP -> {
-                    if (peer.position() == 0) {
-                        val read = adapter.read(session) as UsbTlsCiphertextReadResult.Received
-                        require(read.ciphertext.size <= peer.remaining())
-                        peer.put(read.ciphertext)
-                    }
-                    peer.flip()
                     val app = java.nio.ByteBuffer.allocate(engine.session.applicationBufferSize)
-                    val result = engine.unwrap(peer, app)
-                    peer.compact()
-                    if (result.status == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
-                        val read = adapter.read(session) as UsbTlsCiphertextReadResult.Received
-                        require(read.ciphertext.size <= peer.remaining())
-                        peer.put(read.ciphertext)
-                    }
+                    unwrapServer(engine, session, adapter, peer, app)
                 }
                 SSLEngineResult.HandshakeStatus.NEED_TASK -> generateSequence { engine.delegatedTask }.forEach { it.run() }
                 else -> Unit
             }
+        }
+        return ServerTlsChannel(engine, session, adapter, peer)
+    }
+
+    private fun wrapServer(engine: SSLEngine, session: AccessoryIoSession, adapter: UsbTlsCiphertextIoAdapter, src: java.nio.ByteBuffer) {
+        val out = java.nio.ByteBuffer.allocate(engine.session.packetBufferSize)
+        engine.wrap(src, out)
+        out.flip()
+        if (out.hasRemaining()) adapter.write(session, ByteArray(out.remaining()).also { out.get(it) })
+    }
+
+    private fun unwrapServer(engine: SSLEngine, session: AccessoryIoSession, adapter: UsbTlsCiphertextIoAdapter, peer: java.nio.ByteBuffer, app: java.nio.ByteBuffer) {
+        if (peer.position() == 0) {
+            val read = adapter.read(session) as UsbTlsCiphertextReadResult.Received
+            require(read.ciphertext.size <= peer.remaining())
+            peer.put(read.ciphertext)
+        }
+        peer.flip()
+        val result = engine.unwrap(peer, app)
+        peer.compact()
+        if (result.status == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
+            val read = adapter.read(session) as UsbTlsCiphertextReadResult.Received
+            require(read.ciphertext.size <= peer.remaining())
+            peer.put(read.ciphertext)
+        }
+    }
+
+    /** Server-side counterpart used by tests to exchange application data after [serverHandshake]. */
+    private inner class ServerTlsChannel(
+        private val engine: SSLEngine,
+        private val session: AccessoryIoSession,
+        private val adapter: UsbTlsCiphertextIoAdapter,
+        private val peer: java.nio.ByteBuffer,
+    ) {
+        fun readApplicationFrame(): ByteArray {
+            val app = java.nio.ByteBuffer.allocate(engine.session.applicationBufferSize)
+            while (app.position() == 0) unwrapServer(engine, session, adapter, peer, app)
+            app.flip()
+            return ByteArray(app.remaining()).also { app.get(it) }
+        }
+
+        fun writeApplicationFrame(bytes: ByteArray) {
+            wrapServer(engine, session, adapter, java.nio.ByteBuffer.wrap(bytes))
         }
     }
 
@@ -486,9 +548,8 @@ class SslEngineUsbTlsChannelTest {
         pendingPlaintext: ByteArray = ByteArray(0),
     ): SslEngineUsbTlsEstablishedChannel = SslEngineUsbTlsEstablishedChannel(
         engine = engine,
-        session = session,
+        transport = UsbAccessoryTlsCiphertextTransport(session),
         pendingCiphertext = ByteBuffer.allocate(USB_TLS_CIPHERTEXT_WRITE_MAX_BYTES),
-        adapter = UsbTlsCiphertextIoAdapter(),
         readExecutor = executor,
     ).also { channel ->
         pendingPlaintext.forEach { byte ->
@@ -575,6 +636,30 @@ class SslEngineUsbTlsChannelTest {
         var closed = false
             private set
         override fun close() { closed = true }
+    }
+
+    /** [TlsCiphertextTransport] decorator that counts ciphertext writes/reads while delegating. */
+    private class RecordingCiphertextTransport(
+        private val delegate: TlsCiphertextTransport,
+    ) : TlsCiphertextTransport {
+        var writes = 0
+            private set
+        var reads = 0
+            private set
+
+        override val maxWriteBytes: Int = delegate.maxWriteBytes
+
+        override fun writeCiphertext(ciphertext: ByteArray): TlsCiphertextWriteResult {
+            writes += 1
+            return delegate.writeCiphertext(ciphertext)
+        }
+
+        override fun readCiphertext(): TlsCiphertextReadResult {
+            reads += 1
+            return delegate.readCiphertext()
+        }
+
+        override fun close() = delegate.close()
     }
 
     private class ThrowingOutputStream : OutputStream() {

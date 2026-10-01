@@ -25,9 +25,8 @@ sealed class SslEngineUsbTlsHandshakeResult {
 
 class SslEngineUsbTlsEstablishedChannel internal constructor(
     internal val engine: SSLEngine,
-    internal val session: AccessoryIoSession,
+    internal val transport: TlsCiphertextTransport,
     internal val pendingCiphertext: ByteBuffer,
-    internal val adapter: UsbTlsCiphertextIoAdapter,
     private val readExecutor: ExecutorService,
 ) : AutoCloseable {
     val protocol: String = engine.session.protocol
@@ -138,8 +137,8 @@ class SslEngineUsbTlsEstablishedChannel internal constructor(
         out.flip()
         if (out.hasRemaining()) {
             val bytes = ByteArray(out.remaining()).also { out.get(it) }
-            val write = adapter.write(session, bytes)
-            if (write != UsbTlsCiphertextWriteResult.Sent) throw IllegalStateException("USB TLS ciphertext write failed: $write")
+            val write = transport.writeCiphertext(bytes)
+            if (write is TlsCiphertextWriteResult.Failed) throw IllegalStateException("USB TLS ciphertext write failed: ${write.detail}")
         }
         out.clear()
     }
@@ -148,13 +147,14 @@ class SslEngineUsbTlsEstablishedChannel internal constructor(
         val remainingMillis = (deadlineNanos - System.nanoTime()).let { if (it <= 0) 0 else TimeUnit.NANOSECONDS.toMillis(it).coerceAtLeast(1) }
         if (remainingMillis <= 0) throw IllegalStateException("TLS application read timed out")
         val read = try {
-            readExecutor.submit<UsbTlsCiphertextReadResult> { adapter.read(session) }.get(remainingMillis, TimeUnit.MILLISECONDS)
+            readExecutor.submit<TlsCiphertextReadResult> { transport.readCiphertext() }.get(remainingMillis, TimeUnit.MILLISECONDS)
         } catch (_: TimeoutException) {
             throw IllegalStateException("TLS application read timed out")
         }
         val bytes = when (read) {
-            is UsbTlsCiphertextReadResult.Received -> read.ciphertext
-            else -> throw IllegalStateException("USB TLS ciphertext read failed: $read")
+            is TlsCiphertextReadResult.Received -> read.ciphertext
+            is TlsCiphertextReadResult.Eof -> throw IllegalStateException("USB TLS ciphertext read failed: ${read.detail}")
+            is TlsCiphertextReadResult.Failed -> throw IllegalStateException("USB TLS ciphertext read failed: ${read.detail}")
         }
         if (bytes.size > pendingCiphertext.remaining()) throw IllegalStateException("USB TLS ciphertext overflow")
         pendingCiphertext.put(bytes)
@@ -185,7 +185,7 @@ class SslEngineUsbTlsEstablishedChannel internal constructor(
         return result
     }
 
-    private fun ByteBuffer.growForWrite(limit: Int = USB_TLS_CIPHERTEXT_WRITE_MAX_BYTES): ByteBuffer? {
+    private fun ByteBuffer.growForWrite(limit: Int = transport.maxWriteBytes): ByteBuffer? {
         if (capacity() >= limit) return null
         return ByteBuffer.allocate(minOf(capacity() * 2, limit)).also {
             flip()
@@ -196,7 +196,7 @@ class SslEngineUsbTlsEstablishedChannel internal constructor(
     override fun close() {
         try {
             runCatching { engine.closeOutbound() }
-            session.close()
+            transport.close()
         } finally {
             readExecutor.shutdownNow()
         }
@@ -222,7 +222,13 @@ class SslEngineUsbTlsChannel(
     fun handshake(
         session: AccessoryIoSession,
         pinnedDesktopSubjectPublicKeyInfoDer: ByteArray,
-    ): SslEngineUsbTlsHandshakeResult = handshakeCore(session) { newEngine(pinnedDesktopSubjectPublicKeyInfoDer) }
+    ): SslEngineUsbTlsHandshakeResult = handshake(UsbAccessoryTlsCiphertextTransport(session, adapter), pinnedDesktopSubjectPublicKeyInfoDer)
+
+    /** Transport-neutral counterpart of [handshake]: runs the same pinned mTLS handshake over any [TlsCiphertextTransport]. */
+    fun handshake(
+        transport: TlsCiphertextTransport,
+        pinnedDesktopSubjectPublicKeyInfoDer: ByteArray,
+    ): SslEngineUsbTlsHandshakeResult = handshakeCore(transport) { newEngine(pinnedDesktopSubjectPublicKeyInfoDer) }
 
     /**
      * Reconnection counterpart of [handshake] (task s3, `usb-authenticated-session` §4.4):
@@ -236,16 +242,25 @@ class SslEngineUsbTlsChannel(
     fun handshakeWithPinnedFingerprint(
         session: AccessoryIoSession,
         pinnedDesktopTrustMaterialFingerprint: ByteArray,
-    ): SslEngineUsbTlsHandshakeResult = handshakeCore(session) { newFingerprintPinnedEngine(pinnedDesktopTrustMaterialFingerprint) }
+    ): SslEngineUsbTlsHandshakeResult = handshakeWithPinnedFingerprint(
+        UsbAccessoryTlsCiphertextTransport(session, adapter),
+        pinnedDesktopTrustMaterialFingerprint,
+    )
+
+    /** Transport-neutral counterpart of [handshakeWithPinnedFingerprint]. */
+    fun handshakeWithPinnedFingerprint(
+        transport: TlsCiphertextTransport,
+        pinnedDesktopTrustMaterialFingerprint: ByteArray,
+    ): SslEngineUsbTlsHandshakeResult = handshakeCore(transport) { newFingerprintPinnedEngine(pinnedDesktopTrustMaterialFingerprint) }
 
     private fun handshakeCore(
-        session: AccessoryIoSession,
+        transport: TlsCiphertextTransport,
         engineFactory: () -> SSLEngine,
     ): SslEngineUsbTlsHandshakeResult {
         val readExecutor = Executors.newSingleThreadExecutor(DaemonThreadFactory)
         val engine = runCatching { engineFactory() }
-            .getOrElse { return reject(session, null, readExecutor, it.reason()) }
-        val pending = ByteBuffer.allocate(USB_TLS_CIPHERTEXT_WRITE_MAX_BYTES)
+            .getOrElse { return reject(transport, null, readExecutor, it.reason()) }
+        val pending = ByteBuffer.allocate(transport.maxWriteBytes)
         val empty = ByteBuffer.allocate(0)
         var app = ByteBuffer.allocate(engine.session.applicationBufferSize)
         val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(readTimeoutMillis)
@@ -253,39 +268,39 @@ class SslEngineUsbTlsChannel(
         return try {
             engine.beginHandshake()
             repeat(maxHandshakeSteps) {
-                deadlineExceeded(deadlineNanos)?.let { return reject(session, engine, readExecutor, it) }
+                deadlineExceeded(deadlineNanos)?.let { return reject(transport, engine, readExecutor, it) }
                 when (engine.handshakeStatus) {
                     SSLEngineResult.HandshakeStatus.NEED_TASK -> {
                         var task = engine.delegatedTask
                         while (task != null) {
-                            deadlineExceeded(deadlineNanos)?.let { return reject(session, engine, readExecutor, it) }
+                            deadlineExceeded(deadlineNanos)?.let { return reject(transport, engine, readExecutor, it) }
                             task.run()
                             task = engine.delegatedTask
                         }
                     }
-                    SSLEngineResult.HandshakeStatus.NEED_WRAP -> wrap(engine, session, empty, deadlineNanos)?.let {
-                        return reject(session, engine, readExecutor, it)
+                    SSLEngineResult.HandshakeStatus.NEED_WRAP -> wrap(engine, transport, empty, deadlineNanos)?.let {
+                        return reject(transport, engine, readExecutor, it)
                     }
-                    SSLEngineResult.HandshakeStatus.NEED_UNWRAP -> when (val unwrapped = unwrap(engine, session, readExecutor, pending, app, deadlineNanos)) {
+                    SSLEngineResult.HandshakeStatus.NEED_UNWRAP -> when (val unwrapped = unwrap(engine, transport, readExecutor, pending, app, deadlineNanos)) {
                         is UnwrapResult.Ok -> app = unwrapped.app
-                        is UnwrapResult.Reject -> return reject(session, engine, readExecutor, unwrapped.reason)
+                        is UnwrapResult.Reject -> return reject(transport, engine, readExecutor, unwrapped.reason)
                     }
                     SSLEngineResult.HandshakeStatus.FINISHED,
                     SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING -> return SslEngineUsbTlsHandshakeResult.Authenticated(
-                        SslEngineUsbTlsEstablishedChannel(engine, session, pending, adapter, readExecutor),
+                        SslEngineUsbTlsEstablishedChannel(engine, transport, pending, readExecutor),
                     )
-                    null -> return reject(session, engine, readExecutor, "TLS engine returned null handshake status")
+                    null -> return reject(transport, engine, readExecutor, "TLS engine returned null handshake status")
                 }
             }
             if (engine.handshakeStatus == SSLEngineResult.HandshakeStatus.FINISHED || engine.handshakeStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
                 SslEngineUsbTlsHandshakeResult.Authenticated(
-                    SslEngineUsbTlsEstablishedChannel(engine, session, pending, adapter, readExecutor),
+                    SslEngineUsbTlsEstablishedChannel(engine, transport, pending, readExecutor),
                 )
             } else {
-                reject(session, engine, readExecutor, "TLS handshake exceeded $maxHandshakeSteps steps")
+                reject(transport, engine, readExecutor, "TLS handshake exceeded $maxHandshakeSteps steps")
             }
         } catch (error: Exception) {
-            reject(session, engine, readExecutor, error.reason())
+            reject(transport, engine, readExecutor, error.reason())
         }
     }
 
@@ -305,7 +320,7 @@ class SslEngineUsbTlsChannel(
             enabledProtocols = supportedProtocols.filter { it == TLS_1_3 || it == TLS_1_2 }.toTypedArray()
         }
 
-    private fun wrap(engine: SSLEngine, session: AccessoryIoSession, empty: ByteBuffer, deadlineNanos: Long): String? {
+    private fun wrap(engine: SSLEngine, transport: TlsCiphertextTransport, empty: ByteBuffer, deadlineNanos: Long): String? {
         var out = ByteBuffer.allocate(engine.session.packetBufferSize)
         while (true) {
             deadlineExceeded(deadlineNanos)?.let { return it }
@@ -314,14 +329,14 @@ class SslEngineUsbTlsChannel(
                     out.flip()
                     if (out.hasRemaining()) {
                         val bytes = ByteArray(out.remaining()).also { out.get(it) }
-                        val write = adapter.write(session, bytes)
-                        if (write != UsbTlsCiphertextWriteResult.Sent) return "USB TLS ciphertext write failed: $write"
+                        val write = transport.writeCiphertext(bytes)
+                        if (write is TlsCiphertextWriteResult.Failed) return "USB TLS ciphertext write failed: ${write.detail}"
                     }
                     return null
                 }
                 SSLEngineResult.Status.BUFFER_OVERFLOW -> {
-                    if (out.capacity() >= USB_TLS_CIPHERTEXT_WRITE_MAX_BYTES) return "TLS wrap overflowed ${out.capacity()} bytes"
-                    out = out.growForWrite() ?: return "TLS wrap overflowed ${out.capacity()} bytes"
+                    if (out.capacity() >= transport.maxWriteBytes) return "TLS wrap overflowed ${out.capacity()} bytes"
+                    out = out.growForWrite(transport.maxWriteBytes) ?: return "TLS wrap overflowed ${out.capacity()} bytes"
                 }
                 SSLEngineResult.Status.BUFFER_UNDERFLOW -> return "TLS wrap requested underflow"
                 SSLEngineResult.Status.CLOSED -> return "TLS engine closed during wrap"
@@ -332,14 +347,14 @@ class SslEngineUsbTlsChannel(
 
     private fun unwrap(
         engine: SSLEngine,
-        session: AccessoryIoSession,
+        transport: TlsCiphertextTransport,
         readExecutor: ExecutorService,
         pending: ByteBuffer,
         initialApp: ByteBuffer,
         deadlineNanos: Long,
     ): UnwrapResult {
         var app = initialApp
-        if (pending.position() == 0) read(session, readExecutor, pending, deadlineNanos)?.let { return UnwrapResult.Reject(it) }
+        if (pending.position() == 0) read(transport, readExecutor, pending, deadlineNanos)?.let { return UnwrapResult.Reject(it) }
         while (true) {
             deadlineExceeded(deadlineNanos)?.let { return UnwrapResult.Reject(it) }
             pending.flip()
@@ -347,7 +362,7 @@ class SslEngineUsbTlsChannel(
             pending.compact()
             when (result.status) {
                 SSLEngineResult.Status.OK -> return UnwrapResult.Ok(app)
-                SSLEngineResult.Status.BUFFER_UNDERFLOW -> read(session, readExecutor, pending, deadlineNanos)?.let { return UnwrapResult.Reject(it) }
+                SSLEngineResult.Status.BUFFER_UNDERFLOW -> read(transport, readExecutor, pending, deadlineNanos)?.let { return UnwrapResult.Reject(it) }
                 SSLEngineResult.Status.BUFFER_OVERFLOW -> app = app.growForWrite(MAX_HANDSHAKE_APPLICATION_BUFFER_BYTES)
                     ?: return UnwrapResult.Reject("TLS unwrap application buffer overflow")
                 SSLEngineResult.Status.CLOSED -> return UnwrapResult.Reject("TLS engine closed during unwrap")
@@ -357,7 +372,7 @@ class SslEngineUsbTlsChannel(
     }
 
     private fun read(
-        session: AccessoryIoSession,
+        transport: TlsCiphertextTransport,
         readExecutor: ExecutorService,
         pending: ByteBuffer,
         deadlineNanos: Long,
@@ -366,15 +381,16 @@ class SslEngineUsbTlsChannel(
         val remainingMillis = (deadlineNanos - System.nanoTime()).let { if (it <= 0) 0 else TimeUnit.NANOSECONDS.toMillis(it).coerceAtLeast(1) }
         if (remainingMillis <= 0) return timeoutReason()
         val read = try {
-            readExecutor.submit<UsbTlsCiphertextReadResult> { adapter.read(session) }.get(remainingMillis, TimeUnit.MILLISECONDS)
+            readExecutor.submit<TlsCiphertextReadResult> { transport.readCiphertext() }.get(remainingMillis, TimeUnit.MILLISECONDS)
         } catch (_: TimeoutException) {
             return timeoutReason()
         }
         val bytes = when (read) {
-            is UsbTlsCiphertextReadResult.Received -> read.ciphertext
-            else -> return "USB TLS ciphertext read failed: $read"
+            is TlsCiphertextReadResult.Received -> read.ciphertext
+            is TlsCiphertextReadResult.Eof -> return "USB TLS ciphertext read failed: ${read.detail}"
+            is TlsCiphertextReadResult.Failed -> return "USB TLS ciphertext read failed: ${read.detail}"
         }
-        if (bytes.size > pending.remaining()) return "USB TLS ciphertext overflow: pending=${pending.position()} incoming=${bytes.size} max=$USB_TLS_CIPHERTEXT_WRITE_MAX_BYTES"
+        if (bytes.size > pending.remaining()) return "USB TLS ciphertext overflow: pending=${pending.position()} incoming=${bytes.size} max=${transport.maxWriteBytes}"
         pending.put(bytes)
         return null
     }
@@ -385,21 +401,21 @@ class SslEngineUsbTlsChannel(
     private fun timeoutReason(): String = "TLS handshake timed out after ${readTimeoutMillis}ms"
 
     private fun reject(
-        session: AccessoryIoSession,
+        transport: TlsCiphertextTransport,
         engine: SSLEngine?,
         readExecutor: ExecutorService,
         reason: String,
     ): SslEngineUsbTlsHandshakeResult.Rejected {
         try {
             runCatching { engine?.closeOutbound() }
-            session.close()
+            transport.close()
         } finally {
             readExecutor.shutdownNow()
         }
         return SslEngineUsbTlsHandshakeResult.Rejected(reason)
     }
 
-    private fun ByteBuffer.growForWrite(limit: Int = USB_TLS_CIPHERTEXT_WRITE_MAX_BYTES): ByteBuffer? {
+    private fun ByteBuffer.growForWrite(limit: Int): ByteBuffer? {
         if (capacity() >= limit) return null
         return ByteBuffer.allocate(minOf(capacity() * 2, limit)).also {
             flip()
