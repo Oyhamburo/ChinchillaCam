@@ -118,6 +118,8 @@ Actualización del gate (2026-09-28, feature phone-mtls-identity): la identidad 
 
 14. **T15 — USB video transport sobre AOA bulk.** Reusar claim/framing existente para stream sostenido con backpressure/timeouts; sin prueba física todavía. T15a inicia con seam fake `UsbSessionFrameTransport` que anida `SessionFrame` como payload opaco dentro de `AccessoryFrame`.
 15. **T16 — Wi‑Fi LAN transport fake/loopback.** Modelar transporte Wi‑Fi sin listener externo no autenticado; fakes o loopback local hasta tener pairing/trust.
+
+    Estado (2026-09-30): T16 hecho a nivel de dominio/test en ambos lados, sin listener externo, revisión nativa pendiente. Android (rama `feat/t15c-fake-usb-sustained`): seam `TlsCiphertextTransport` + `StreamTlsCiphertextTransport` en memoria (TLS crudo sobre stream, fail-closed, sólo `java.io`), sin permiso de red y con guardia `NoNetworkListenerContractTest` que prohíbe permisos de red y sockets de servidor en `src/main`. Desktop (rama `feat/desktop-video-sink`): stack TLS genérico `S: Read + Write` + `LoopbackLanListener` que sólo enlaza `127.0.0.1`, commits `02206e1`, `4108428`. La interop cruzada entre worktrees sigue pospuesta.
 16. **T17 — Wi‑Fi LAN transport autenticado.** Habilitar listener/red local solo después de QR pairing + confianza local + one-active-computer; rechazar tráfico no autenticado.
 17. **T18 — Transport switch model.** Cambiar USB/Wi‑Fi sin reemparejar; interrupción explícita y estado recuperable.
 18. **T19 — Reconnection and session resume.** Reconectar cable/red sin nuevo QR cuando confianza local siga válida.
@@ -156,6 +158,8 @@ Actualización del gate (2026-09-28, feature phone-mtls-identity): la identidad 
 36. **T37 — Support declaration pass.** Solo aquí mover hipótesis a soporte real o limitaciones por plataforma/dispositivo, basado en evidencia de T33–T36.
 
 ## Próxima unidad autorizada
+
+Actualización 2026-09-30 (tras wifi-loopback-transport / T16): T16 queda cerrado a nivel de dominio/test en ambos lados (ver la nota de estado en M4/T16), sin listener externo y con revisión nativa pendiente. Las próximas candidatas autorizables son: (a) el loop de runtime de sesión (lectura dúplex + envío de keepalive, diferido desde session-liveness) y (b) T17 — Wi‑Fi LAN transport autenticado, que todavía exige los ítems del gate M3 (wiring de producción, UI de confirmación con código corto, one-active-computer sobre LAN) y una decisión humana explícita antes de abrir cualquier listener no loopback. Recomendación: hacer (a) primero; (b) no empieza sin esa decisión humana.
 
 Actualización 2026-09-29 (tras usb-authenticated-session): M3 queda compuesto de punta a punta a nivel de dominio por USB (pairing con canal vivo, confirmación explícita en ambos lados, reconexión confiable con `HANDSHAKE_HELLO`/`HANDSHAKE_ACCEPT`, `SessionFrame` sobre TLS); la prueba cruzada de la sesión completa quedó pospuesta por decisión del usuario. Próxima unidad: vitalidad de la sesión (lecturas tolerantes a inactividad y keepalive en ambos lados) junto con los tests de seguridad pendientes de la reconexión; después, T16.
 
