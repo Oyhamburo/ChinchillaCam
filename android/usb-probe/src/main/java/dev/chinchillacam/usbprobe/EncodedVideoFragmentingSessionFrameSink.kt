@@ -15,7 +15,7 @@ data class EncodedVideoFragmentingSessionFrameSinkStats(
 )
 
 class EncodedVideoFragmentingSessionFrameSink(
-    private val transport: EncodedVideoSustainedFakeTransportAdapter,
+    private val transport: FragmentingSessionFrameTransport,
     initialChunkIndex: Int = 0,
 ) {
     private var nextChunkIndex: Int = initialChunkIndex

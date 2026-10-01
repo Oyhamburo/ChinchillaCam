@@ -94,7 +94,8 @@ sealed class SendResult {
 class SessionRuntime private constructor(
     private val channel: SslEngineUsbTlsEstablishedChannel,
     private val frameAdapter: TlsSessionFrameIoAdapter,
-    private val sessionId: String,
+    /** The session identity stamped on every outbound frame. */
+    val sessionId: String,
     nextOutboundSequence: Int,
     nextInboundSequence: Int,
     private val config: SessionRuntimeConfig,

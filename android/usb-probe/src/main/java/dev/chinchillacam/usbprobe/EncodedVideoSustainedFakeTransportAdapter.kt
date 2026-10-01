@@ -1,10 +1,10 @@
 package dev.chinchillacam.usbprobe
 
 class EncodedVideoSustainedFakeTransportAdapter(
-    val sessionId: String,
+    override val sessionId: String,
     private val transport: UsbSessionFrameSustainedFakeTransport,
     initialSequence: Int = 0,
-) : EncodedVideoSessionFrameTransport {
+) : FragmentingSessionFrameTransport {
     private var nextSequence: Int = initialSequence
     private var closed: Boolean = false
 
@@ -18,9 +18,9 @@ class EncodedVideoSustainedFakeTransportAdapter(
     override fun write(payload: SessionPayload.VideoChunkV2): EncodedVideoSessionFrameWriteResult = writePayload(payload)
 
     @Synchronized
-    fun writeFragment(payload: SessionPayload.VideoChunkFragmentV1): EncodedVideoSessionFrameWriteResult = writePayload(payload)
+    override fun writeFragment(payload: SessionPayload.VideoChunkFragmentV1): EncodedVideoSessionFrameWriteResult = writePayload(payload)
 
-    fun maxType8H264Bytes(): Int = MAX_SESSION_PAYLOAD_BYTES - SESSION_FRAME_BASE_BYTES - sessionId.toByteArray(Charsets.UTF_8).size - VIDEO_CHUNK_V2_FIXED_PAYLOAD_BYTES
+    override fun maxType8H264Bytes(): Int = MAX_SESSION_PAYLOAD_BYTES - SESSION_FRAME_BASE_BYTES - sessionId.toByteArray(Charsets.UTF_8).size - VIDEO_CHUNK_V2_FIXED_PAYLOAD_BYTES
 
     private fun writePayload(payload: SessionPayload): EncodedVideoSessionFrameWriteResult {
         if (closed) return EncodedVideoSessionFrameWriteResult.Closed
