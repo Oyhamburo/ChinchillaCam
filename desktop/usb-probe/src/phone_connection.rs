@@ -319,8 +319,10 @@ where
 }
 
 /// Best-effort graceful close: send a TLS `close_notify` and try to flush it, ignoring any
-/// write failure (the stream is being abandoned either way), then drop.
-fn close_best_effort<S: Read + Write>(mut tls: StreamOwned<ServerConnection, S>) {
+/// write failure (the stream is being abandoned either way), then drop. Shared with
+/// `session_runtime` (task s2), which closes the same `StreamOwned` on every typed session
+/// end, so the close logic lives in one place.
+pub(crate) fn close_best_effort<S: Read + Write>(mut tls: StreamOwned<ServerConnection, S>) {
     tls.conn.send_close_notify();
     let _ = tls.conn.write_tls(&mut tls.sock);
 }

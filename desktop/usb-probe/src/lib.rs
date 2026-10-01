@@ -13,6 +13,7 @@ mod phone_client_cert_verifier;
 mod phone_connection;
 mod session_frame;
 mod session_liveness;
+mod session_runtime;
 mod tls_session_frame;
 mod trusted_phone_store;
 mod usb_tls_ciphertext_stream;
@@ -70,6 +71,10 @@ pub use session_frame::{
 pub use session_liveness::{
     SessionLivenessError, SessionLivenessTracker, DEFAULT_DEAD_THRESHOLD,
     DEFAULT_KEEPALIVE_INTERVAL,
+};
+pub use session_runtime::{
+    SessionEnd, SessionRuntime, SessionRuntimeConfig, SessionRuntimeError, StepOutcome,
+    DEFAULT_FRAME_BUDGET, DEFAULT_POLL_SLICE,
 };
 pub use tls_session_frame::{
     read_session_frame, read_session_frame_with_budgets, write_session_frame, TlsSessionFrameError,

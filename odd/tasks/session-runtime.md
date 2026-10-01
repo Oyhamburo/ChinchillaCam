@@ -44,14 +44,17 @@ TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecuci�
 Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test --offline`. Baseline: 231 tests, 0 fallos (HEAD `cbd1c70`).
 
 1. [x] s1 — Prerrequisitos: corregir la carrera de la fase de espera (un byte recibido nunca se descarta como `PeerIdle`), `DesktopVideoSessionReceiver::receive_session_frame` (el camino `BulkFrame` delega sin cambio), regla de secuencia estrictamente creciente en el receptor, y `AuthenticatedPhoneSession` conserva `session_id` y las próximas secuencias. RED: `first_byte_after_idle_deadline_is_not_lost`, `receiver_accepts_session_frames_directly`, `receiver_accepts_sequence_gaps_from_interleaved_keepalives`, `reconnect_session_keeps_session_identity`. ~300 líneas.
-2. [ ] s2 — `SessionRuntime::step(now)`: lectura con slice corto, validación de secuencia/`session_id`, despacho a receptor/métricas, keepalive y par muerto por tracker, `send_command`, `shutdown` con close_notify, causas de fin tipadas. RED: `video_frames_reach_sink_through_runtime`, `sends_keepalive_after_silence`, `detects_dead_peer`, `rejects_out_of_order_sequence`, `handshake_frame_after_start_is_protocol_violation`. ~400 líneas.
+2. [x] s2 — `SessionRuntime::step(now)`: lectura con slice corto, validación de secuencia/`session_id`, despacho a receptor/métricas, keepalive y par muerto por tracker, `send_command`, `shutdown` con close_notify, causas de fin tipadas. RED: `video_frames_reach_sink_through_runtime`, `sends_keepalive_after_silence`, `detects_dead_peer`, `rejects_out_of_order_sequence`, `handshake_frame_after_start_is_protocol_violation`. ~400 líneas.
 3. [ ] s3 — Runtime de punta a punta sobre `LoopbackLanListener`: reconexión y luego sesión viva con keepalives y video sobre TCP loopback real. RED: `runtime_keeps_loopback_session_alive_with_keepalives`. ~200 líneas.
 
 Criterios: `cargo fmt -- --check` y `cargo test --offline` verdes sin regresiones; ningún bind fuera de loopback.
 
 ## Progreso
 
-Plan creado el 2026-10-01.
+Plan creado el 2026-10-01. s1 verde (236 tests). s2 verde el 2026-10-01: `SessionRuntime::step`
+con lectura por slice, validación de secuencia/`session_id`, despacho §4.4, keepalive y par
+muerto por tracker, `send_command`, `shutdown` y causas de fin tipadas; `cargo test --offline`
+241 pasados, 0 fallos. Siguiente: s3 (runtime de punta a punta sobre `LoopbackLanListener`).
 
 ### Evidencia s1 (2026-10-01)
 
@@ -107,3 +110,61 @@ sensible al tiempo (`tls_session_frame_test`) corrió 3 veces, verde las tres.
 **Nota de tamaño:** el diff quedó en ~426 inserciones / 39 borrados (~465 líneas, por encima
 de la cota blanda de ~450); el excedente es sobre todo documentación y tests nuevos, no
 lógica. s1 quedó cohesivo y verde.
+
+### Evidencia s2 (2026-10-01)
+
+TDD estricto, RED observado antes de implementar.
+
+Nuevo módulo `src/session_runtime.rs` (exportado desde `lib.rs`):
+`SessionRuntime<S: Read + Write, C: VideoFrameKindClassifier, K: EncodedVideoSink>`,
+construido desde un `AuthenticatedPhoneSession<S>` cuya identidad de sesión es `Some`
+(`None` → `SessionRuntimeError::MissingSessionIdentity`), un
+`DesktopVideoSessionReceiver`, un sink y un `SessionRuntimeConfig { poll_slice,
+frame_budget, keepalive_interval, dead_threshold }` con defaults (`DEFAULT_POLL_SLICE`
+200 ms, `DEFAULT_FRAME_BUDGET` 2 s, más los defaults de `session-liveness`). Se valida
+`poll_slice < keepalive_interval` y el par intervalo/umbral lo valida el tracker.
+
+- `step(now)`: lee un frame con `read_session_frame_with_budgets(poll_slice,
+  frame_budget)`; `PeerIdle` = sin frame este slice; otro error de lectura →
+  `SessionEnd::ReadFailed`. Sobre un frame válido: valida `session_id` y +1 estricto
+  contra `next_inbound_sequence` (discrepancia → `SessionEnd::ProtocolViolation`),
+  `record_received`, y despacha por §4.4: `Keepalive` → sólo vitalidad; video
+  (`VideoChunk`/`VideoChunkV2`/`VideoChunkFragmentV1`) → `receive_session_frame`
+  (error del receptor → `ProtocolViolation` con detalle); `MetricsSnapshot`/
+  `StreamMetadata` → último snapshot con getters; `HANDSHAKE_*` o
+  `CameraControlCommand` entrantes u otro → `ProtocolViolation`. Luego par muerto
+  (`is_peer_dead` → `PeerDead`) y keepalive debido (`should_send_keepalive` → escribe
+  `KEEPALIVE` con `next_outbound_sequence`, `record_sent`; error de escritura →
+  `WriteFailed`). Contadores con incremento chequeado; agotar un contador cierra.
+- `send_command(command, arguments, now)` escribe un `CameraControlCommand` sobre el
+  contador saliente compartido y lo registra como enviado.
+- `shutdown(self)` → `close_best_effort` (lógica compartida de `phone_connection`,
+  ahora `pub(crate)`), devuelve `SessionEnd::LocalClose`.
+- Tras cualquier `SessionEnd` el runtime queda inservible (bandera `ended` + `tls` en
+  `Option` tomado al cerrar); `step`/`send_command` devuelven la misma causa y el stream
+  queda cerrado best-effort.
+- `SessionEnd`: `PeerDead`, `ProtocolViolation(String)`, `ReadFailed(String)`,
+  `WriteFailed(String)`, `Backpressure` (incluido por paridad con el contrato §4.6; el
+  desktop escribe síncrono sin cola, así que hoy no lo produce) y `LocalClose`.
+- Observabilidad: `frames_received`, `keepalives_received`, `keepalives_sent`,
+  `video_frames_delivered`, más `latest_metrics`/`latest_stream_metadata`.
+
+RED/GREEN (nuevo `tests/session_runtime_test.rs`, sobre `InMemoryDuplex` con un par
+teléfono rustls en un hilo; decisiones de tiempo con `now` inyectado, cotas de lectura
+holgadas):
+
+- RED: `cargo test --test session_runtime_test` no compilaba (importes sin resolver:
+  `SessionRuntime`, `SessionRuntimeConfig`, `SessionEnd`, `StepOutcome`).
+- GREEN: pasan los 5: `video_frames_reach_sink_through_runtime`,
+  `sends_keepalive_after_silence` (el teléfono ve `KEEPALIVE` con secuencia HELLO+2 y el
+  `session_id`), `detects_dead_peer` (silencio pasado el umbral; config 100/300/20 ms),
+  `rejects_out_of_order_sequence`, `handshake_frame_after_start_is_protocol_violation`.
+  El archivo corrió 3 veces, verde las tres.
+
+**Verificación:** `cargo fmt -- --check` verde; `cargo test --offline` 241 pasados, 0
+fallos (baseline 236 + 5 nuevos).
+
+**Nota de tamaño:** el diff quedó en ~846 inserciones / 2 borrados, por encima de la cota
+blanda (~400) y del umbral de corte (~500). El excedente es casi todo documentación del
+módulo y tests nuevos (módulo 438 líneas, test 399), no lógica de dominio; s2 quedó
+cohesivo y verde. Se marca como desvío declarado para decisión del orquestador.
