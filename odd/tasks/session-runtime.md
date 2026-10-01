@@ -43,7 +43,15 @@ TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecuci�
 
 Runner: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug`. Baseline: 405 tests, 2 omitidos, 0 fallos (HEAD `2952e65`).
 
-1. [ ] r1 — Prerrequisitos: escritura serializada en `SslEngineUsbTlsEstablishedChannel` (write de aplicación y `wrap` del camino de lectura bajo el mismo lock), `close` idempotente, y `Reconnected` expone `sessionId` y la próxima secuencia saliente/entrante. RED: `concurrentReadAndWritePreserveFrameIntegrity`, `closeIsIdempotent`, `reconnectedCarriesSessionIdentity`. ~250 líneas.
+1. [x] r1 — Prerrequisitos: escritura serializada en `SslEngineUsbTlsEstablishedChannel` (write de aplicación y `wrap` del camino de lectura bajo el mismo lock), `close` idempotente, y `Reconnected` expone `sessionId` y la próxima secuencia saliente/entrante. RED: `concurrentReadAndWritePreserveFrameIntegrity`, `closeIsIdempotent`, `reconnectedCarriesSessionIdentity`. ~250 líneas.
+
+   Evidencia r1:
+   - Lock único (`ReentrantLock`) en `SslEngineUsbTlsEstablishedChannel`: `writeApplicationData` y el `wrapEmptyHandshakeData` del camino de lectura envuelven `engine.wrap` + `transport.writeCiphertext` bajo ese lock; la lectura nunca lo retiene mientras bloquea en el transporte.
+   - `close()` idempotente con guarda `AtomicBoolean`; `StreamTlsCiphertextTransport.closed` pasa a `AtomicBoolean` (cierre exactamente una vez, seguro ante concurrencia).
+   - `Reconnected` ahora expone `sessionId` (el del HELLO), `nextOutboundSequence` (= hello.seq + 1 = 1) y `nextInboundSequence` (= accept.seq + 1 = hello.seq + 2 = 2). La reconexión valida que el ACCEPT traiga `sequence == hello.seq + 1` y el mismo `sessionId`; discrepancia → rechazo tipado `InvalidHandshakeAccept` con el canal cerrado.
+   - RED observado: `closeIsIdempotent` (AssertionError, `closeCount` 2 sin guarda) y `concurrentApplicationWritesAreSerialized` (AssertionError, `maxConcurrent` > 1 sin lock) al revertir las guardas del canal; `reconnectWithMismatchedAcceptSessionIdFailsClosed` (AssertionError, reconectaba en lugar de rechazar) al desactivar la validación. GREEN tras aplicar la corrección.
+   - `concurrentReadAndWritePreserveFrameIntegrity` queda declarado como caracterización del lock (cubre lectura+escritura concurrentes): JSSE no expone API para forzar un `wrap` post-handshake (KeyUpdate TLS 1.3) en el camino de lectura, así que el lock se fija aparte con `concurrentApplicationWritesAreSerialized`.
+   - Verificación completa: suite `:android:usb-probe:testDebugUnitTest` 410 tests, 2 omitidos, 0 fallos (+5 respecto a la baseline de 405); `assembleDebug` y `lintDebug` OK; `NoNetworkListenerContractTest` en verde (sin red).
 2. [ ] r2 — `SessionRuntime`: hilo escritor con cola acotada y keepalive por tracker, hilo lector con validación de secuencia/`sessionId` y despacho, causas de fin tipadas, reloj inyectado. RED: `sendsKeepaliveWhenIdle`, `deliversCameraControlCommand`, `endsWithPeerDeadWhenPeerSilent`, `rejectsOutOfOrderSequence`, `backpressureEndsSession`. ~400 líneas.
 3. [ ] r3 — Egress de video por el runtime: interfaz extraída para el sink fragmentador y transporte de video que sólo encola. RED: `fragmentedVideoFlowsThroughRuntimeWithSharedSequence`. ~300 líneas.
 
@@ -52,3 +60,5 @@ Criterios: suite completa sin regresiones; ninguna E/S TLS en el hilo del llamad
 ## Progreso
 
 Plan creado el 2026-10-01.
+
+r1 implementado el 2026-10-01 (RED→GREEN, TDD estricto): lock de escritura único y camino de lectura serializado en `SslEngineUsbTlsEstablishedChannel`, `close` idempotente, `StreamTlsCiphertextTransport.closed` atómico, e identidad de sesión (`sessionId`/`nextOutboundSequence`/`nextInboundSequence`) con validación del ACCEPT en `Reconnected`. Suite: 410 tests, 2 omitidos, 0 fallos. Commit de r1 en la rama de la feature.

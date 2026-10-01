@@ -28,6 +28,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
@@ -82,6 +83,141 @@ class SslEngineUsbTlsChannelTest {
         } finally {
             pair.close()
         }
+    }
+
+    @Test
+    fun concurrentReadAndWritePreserveFrameIntegrity() {
+        // Characterization pin (task r1): a phone reader and a phone writer run concurrently over
+        // the serialized channel and every frame must arrive intact in both directions. A
+        // post-handshake wrap on the read path (TLS 1.3 KeyUpdate) is NOT forced, because JSSE's
+        // SSLEngine exposes no API to trigger one, so this covers concurrent read+write only; the
+        // write lock itself is pinned by concurrentApplicationWritesAreSerialized below.
+        val desktop = RawStreamTlsTestSupport.desktopFixture("r1-duplex-desktop")
+        val phone = RawStreamTlsTestSupport.phoneFixture("r1-duplex-phone")
+        val endpoints = RawStreamTlsTestSupport.rawStreamPair()
+        val frames = 40
+        val serverError = AtomicReference<Throwable?>(null)
+        val fromPhone = java.util.concurrent.ConcurrentLinkedQueue<SessionFrame>()
+        fun phoneFrame(i: Int) = SessionFrame(sequence = i, sessionId = "r1-phone", payload = SessionPayload.CameraControlCommand("p", mapOf("i" to i.toString())))
+        fun peerFrame(i: Int) = SessionFrame(sequence = i, sessionId = "r1-peer", payload = SessionPayload.CameraControlCommand("d", mapOf("i" to i.toString())))
+
+        val server = thread {
+            try {
+                val peer = RawStreamTlsTestSupport.serverPeer(endpoints, desktop)
+                peer.handshake()
+                val peerWriter = thread {
+                    for (i in 0 until frames) peer.writeApplicationFrame(RawStreamTlsTestSupport.encodeFramed(peerFrame(i)))
+                }
+                for (i in 0 until frames) fromPhone.add(RawStreamTlsTestSupport.decodeFramed(peer.readApplicationFrame()))
+                peerWriter.join(4_000)
+                Thread.sleep(200)
+                peer.close()
+            } catch (error: Throwable) {
+                serverError.set(error)
+            }
+        }
+
+        val transport = RawStreamTlsTestSupport.clientTransport(endpoints)
+        val channel = (SslEngineUsbTlsChannel(phoneTlsIdentity = phone).handshake(transport, desktop.spki)
+            as SslEngineUsbTlsHandshakeResult.Authenticated).channel
+        val adapter = TlsSessionFrameIoAdapter()
+        val received = ArrayList<SessionFrame>(frames)
+
+        try {
+            val phoneWriter = thread {
+                for (i in 0 until frames) adapter.write(channel, phoneFrame(i))
+            }
+            for (i in 0 until frames) received.add(adapter.read(channel))
+            phoneWriter.join(4_000)
+        } finally {
+            runCatching { channel.close() }
+            server.join(4_000)
+        }
+
+        serverError.get()?.let { throw it }
+        assertEquals((0 until frames).map { peerFrame(it) }, received)
+        assertEquals((0 until frames).map { phoneFrame(it) }, fromPhone.toList())
+    }
+
+    @Test
+    fun concurrentApplicationWritesAreSerialized() {
+        // Lock pin (task r1): two phone threads write frames concurrently. The single write lock
+        // must serialize engine.wrap + transport.writeCiphertext so ciphertext production never
+        // overlaps; without it, concurrent SSLEngine.wrap corrupts the stream or the overlap is
+        // observed directly. Ciphertext piles in the 256 KiB pipe buffer (no peer reader is needed
+        // for a serialization pin), so writers never block on a slow consumer.
+        val desktop = RawStreamTlsTestSupport.desktopFixture("r1-serial-desktop")
+        val phone = RawStreamTlsTestSupport.phoneFixture("r1-serial-phone")
+        val endpoints = RawStreamTlsTestSupport.rawStreamPair()
+        val perThread = 20
+        val serverError = AtomicReference<Throwable?>(null)
+        val handshakeDone = java.util.concurrent.CountDownLatch(1)
+        val releasePeer = java.util.concurrent.CountDownLatch(1)
+
+        val server = thread {
+            try {
+                val peer = RawStreamTlsTestSupport.serverPeer(endpoints, desktop)
+                peer.handshake()
+                handshakeDone.countDown()
+                // Stay alive (streams open) until the writers finish; never read, so the ciphertext
+                // simply buffers in the pipe.
+                releasePeer.await(8, TimeUnit.SECONDS)
+                peer.close()
+            } catch (error: Throwable) {
+                serverError.set(error)
+            }
+        }
+
+        val detector = ConcurrencyDetectingTransport(RawStreamTlsTestSupport.clientTransport(endpoints))
+        val channel = (SslEngineUsbTlsChannel(phoneTlsIdentity = phone).handshake(detector, desktop.spki)
+            as SslEngineUsbTlsHandshakeResult.Authenticated).channel
+        val adapter = TlsSessionFrameIoAdapter()
+        handshakeDone.await(4, TimeUnit.SECONDS)
+        val writerError = AtomicReference<Throwable?>(null)
+
+        try {
+            val writers = (0 until 2).map { t ->
+                thread {
+                    try {
+                        for (i in 0 until perThread) {
+                            adapter.write(
+                                channel,
+                                SessionFrame(sequence = t * 1_000 + i, sessionId = "r1-serial", payload = SessionPayload.CameraControlCommand("w$t", mapOf("i" to i.toString()))),
+                            )
+                        }
+                    } catch (error: Throwable) {
+                        writerError.set(error)
+                    }
+                }
+            }
+            writers.forEach { it.join(6_000) }
+        } finally {
+            releasePeer.countDown()
+            runCatching { channel.close() }
+            server.join(4_000)
+        }
+
+        serverError.get()?.let { throw it }
+        writerError.get()?.let { throw it }
+        assertEquals("ciphertext production must never overlap", 1, detector.maxConcurrent)
+    }
+
+    @Test
+    fun closeIsIdempotent() {
+        val executor = Executors.newSingleThreadExecutor()
+        val transport = CountingCloseTransport()
+        val channel = SslEngineUsbTlsEstablishedChannel(
+            engine = FakeEngine(emptyList()),
+            transport = transport,
+            pendingCiphertext = ByteBuffer.allocate(1024),
+            readExecutor = executor,
+        )
+
+        channel.close()
+        channel.close()
+
+        assertEquals(1, transport.closeCount)
+        assertTrue(executor.isShutdown)
     }
 
     @Test
@@ -658,6 +794,51 @@ class SslEngineUsbTlsChannelTest {
             reads += 1
             return delegate.readCiphertext()
         }
+
+        override fun close() = delegate.close()
+    }
+
+    /** [TlsCiphertextTransport] that counts how many times [close] actually runs, to pin close idempotence. */
+    private class CountingCloseTransport : TlsCiphertextTransport {
+        var closeCount = 0
+            private set
+
+        override val maxWriteBytes: Int = USB_TLS_CIPHERTEXT_WRITE_MAX_BYTES
+
+        override fun writeCiphertext(ciphertext: ByteArray): TlsCiphertextWriteResult = TlsCiphertextWriteResult.Sent
+
+        override fun readCiphertext(): TlsCiphertextReadResult = TlsCiphertextReadResult.Eof("counting close transport does not read")
+
+        override fun close() {
+            closeCount += 1
+        }
+    }
+
+    /** [TlsCiphertextTransport] decorator that records the peak number of overlapping [writeCiphertext] calls. */
+    private class ConcurrencyDetectingTransport(
+        private val delegate: TlsCiphertextTransport,
+    ) : TlsCiphertextTransport {
+        private val inFlight = AtomicInteger(0)
+
+        @Volatile
+        var maxConcurrent = 0
+            private set
+
+        override val maxWriteBytes: Int = delegate.maxWriteBytes
+
+        override fun writeCiphertext(ciphertext: ByteArray): TlsCiphertextWriteResult {
+            val now = inFlight.incrementAndGet()
+            synchronized(this) { if (now > maxConcurrent) maxConcurrent = now }
+            return try {
+                // Widen the overlap window so an unserialized second writer is observed deterministically.
+                Thread.sleep(2)
+                delegate.writeCiphertext(ciphertext)
+            } finally {
+                inFlight.decrementAndGet()
+            }
+        }
+
+        override fun readCiphertext(): TlsCiphertextReadResult = delegate.readCiphertext()
 
         override fun close() = delegate.close()
     }

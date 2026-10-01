@@ -6,6 +6,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLEngineResult
 import javax.net.ssl.SSLContext
@@ -33,8 +36,15 @@ class SslEngineUsbTlsEstablishedChannel internal constructor(
     val cipherSuite: String = engine.session.cipherSuite
     private var pendingPlaintext = ByteArray(0)
 
-    fun writeApplicationData(bytes: ByteArray) {
-        if (bytes.isEmpty()) return
+    // Serializes every ciphertext-producing path: the application write below and the read
+    // path's wrapEmptyHandshakeData both wrap + write under this one lock, so a concurrent writer and
+    // reader never hand SSLEngine.wrap/transport.writeCiphertext overlapping work. Reads never hold
+    // this lock while blocking on a transport read.
+    private val ciphertextWriteLock = ReentrantLock()
+    private val closed = AtomicBoolean(false)
+
+    fun writeApplicationData(bytes: ByteArray) = ciphertextWriteLock.withLock {
+        if (bytes.isEmpty()) return@withLock
         val source = ByteBuffer.wrap(bytes)
         var out = ByteBuffer.allocate(engine.session.packetBufferSize)
         try {
@@ -104,7 +114,7 @@ class SslEngineUsbTlsEstablishedChannel internal constructor(
         }
     }
 
-    private fun wrapEmptyHandshakeData(deadlineNanos: Long) {
+    private fun wrapEmptyHandshakeData(deadlineNanos: Long) = ciphertextWriteLock.withLock {
         val empty = ByteBuffer.allocate(0)
         var out = ByteBuffer.allocate(engine.session.packetBufferSize)
         var steps = 0
@@ -194,6 +204,7 @@ class SslEngineUsbTlsEstablishedChannel internal constructor(
     }
 
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
         try {
             runCatching { engine.closeOutbound() }
             transport.close()

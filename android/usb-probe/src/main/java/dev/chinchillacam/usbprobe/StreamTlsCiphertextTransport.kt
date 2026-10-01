@@ -4,6 +4,7 @@ import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * [TlsCiphertextTransport] that carries TLS records directly over a byte stream, with NO
@@ -26,7 +27,9 @@ class StreamTlsCiphertextTransport(
 ) : TlsCiphertextTransport {
     override val maxWriteBytes: Int = STREAM_TLS_CIPHERTEXT_MAX_BYTES
 
-    private var closed = false
+    // Atomic so a concurrent reader and writer failing closed at once still close the underlying
+    // streams exactly once.
+    private val closed = AtomicBoolean(false)
 
     override fun writeCiphertext(ciphertext: ByteArray): TlsCiphertextWriteResult = try {
         output.write(ciphertext)
@@ -58,8 +61,7 @@ class StreamTlsCiphertextTransport(
     }
 
     override fun close() {
-        if (closed) return
-        closed = true
+        if (!closed.compareAndSet(false, true)) return
         runCatching { input.close() }
         runCatching { output.close() }
         runCatching { closeable.close() }

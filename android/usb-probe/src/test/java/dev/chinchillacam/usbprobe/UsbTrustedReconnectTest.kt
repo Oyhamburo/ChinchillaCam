@@ -95,6 +95,91 @@ class UsbTrustedReconnectTest {
     }
 
     @Test
+    fun reconnectedCarriesSessionIdentity() {
+        // Task r1 / contract §4.1: Reconnected must expose the HELLO's sessionId and the next
+        // sequence per direction -- next outbound = hello.seq + 1 (= 1), next inbound =
+        // accept.seq + 1 (= hello.seq + 2 = 2).
+        val desktop = desktopFixture("r1-identity-desktop")
+        val phone = phoneFixture("r1-identity-phone")
+        val pair = sessionPair()
+        val serverError = AtomicReference<Throwable?>(null)
+        val serverCompleted = AtomicBoolean(false)
+        val helloSessionId = AtomicReference<String?>(null)
+        val helloSequence = java.util.concurrent.atomic.AtomicInteger(-1)
+
+        val server = thread {
+            try {
+                val tls = handshakeAsServer(desktop.context, pair.server)
+                val helloFrame = decodeFrame(tls.readApplicationFrame())
+                helloSessionId.set(helloFrame.sessionId)
+                helloSequence.set(helloFrame.sequence)
+                val accept = SessionFrame(sequence = helloFrame.sequence + 1, sessionId = helloFrame.sessionId, payload = SessionPayload.HandshakeAccept("pc-1", "welcome back"))
+                tls.writeApplicationFrame(encodeFrame(accept))
+                tls.close()
+                serverCompleted.set(true)
+            } catch (error: Throwable) {
+                serverError.set(error)
+            }
+        }
+
+        val store = trustedStoreFor("pc-1", "Studio", desktop.spki)
+        val authority = ActiveDesktopAuthority()
+        val reconnect = UsbTrustedReconnect(epochSecondsSource = { 2_000 }, phoneTlsIdentity = phone)
+        var channel: SslEngineUsbTlsEstablishedChannel? = null
+
+        try {
+            val reconnected = reconnect.reconnect("pc-1", pair.client, store, authority) as UsbTrustedReconnectResult.Reconnected
+            channel = reconnected.channel
+            server.join(2_000)
+            serverError.get()?.let { throw it }
+            assertEquals(helloSessionId.get(), reconnected.sessionId)
+            assertEquals(helloSequence.get() + 1, reconnected.nextOutboundSequence)
+            assertEquals(1, reconnected.nextOutboundSequence)
+            assertEquals(helloSequence.get() + 2, reconnected.nextInboundSequence)
+            assertEquals(2, reconnected.nextInboundSequence)
+            assertTrue(serverCompleted.get())
+        } finally {
+            channel?.let { runCatching { it.close() } }
+            server.join(2_000)
+        }
+    }
+
+    @Test
+    fun reconnectWithMismatchedAcceptSessionIdFailsClosed() {
+        // Task r1 / contract §4.1: an ACCEPT whose sessionId does not match the HELLO's is a typed
+        // rejection with the channel closed.
+        val desktop = desktopFixture("r1-mismatch-desktop")
+        val phone = phoneFixture("r1-mismatch-phone")
+        val pair = sessionPair()
+        val serverError = AtomicReference<Throwable?>(null)
+
+        val server = thread {
+            try {
+                val tls = handshakeAsServer(desktop.context, pair.server)
+                val helloFrame = decodeFrame(tls.readApplicationFrame())
+                val accept = SessionFrame(sequence = helloFrame.sequence + 1, sessionId = "not-the-hello-session", payload = SessionPayload.HandshakeAccept("pc-1", "welcome back"))
+                tls.writeApplicationFrame(encodeFrame(accept))
+                runCatching { tls.close() }
+            } catch (error: Throwable) {
+                serverError.set(error)
+            }
+        }
+
+        val store = trustedStoreFor("pc-1", "Studio", desktop.spki)
+        val authority = ActiveDesktopAuthority()
+        val reconnect = UsbTrustedReconnect(epochSecondsSource = { 2_000 }, phoneTlsIdentity = phone)
+
+        try {
+            val result = reconnect.reconnect("pc-1", pair.client, store, authority)
+            assertTrue("expected a typed InvalidHandshakeAccept rejection, got $result", result is UsbTrustedReconnectResult.Rejected.InvalidHandshakeAccept)
+            assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
+        } finally {
+            server.join(2_000)
+            serverError.get()?.let { throw it }
+        }
+    }
+
+    @Test
     fun reconnectRejectedByDesktopFailsClosed() {
         val desktop = desktopFixture("s3-reject-desktop")
         val phone = phoneFixture("s3-reject-phone")
