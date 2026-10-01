@@ -39,7 +39,7 @@ TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecuci�
 Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test --offline`. Baseline: 225 tests, 0 fallos (HEAD `7c15ffd`, 2026-09-30). Último límite revisado: `7c15ffd`.
 
 1. [x] d1 — Seam genérico: `complete_handshake`, `complete_handshake_and_pairing_proof`, `complete_trusted_phone_handshake`, `Completed*`, `PendingPairedPhoneSession`, `AuthenticatedPhoneSession`, `accept_phone_pairing_connection`, `accept_phone_reconnect_connection` y `close_best_effort` pasan de `UsbTlsCiphertextStream<I: UsbBulkIo>` a `S: Read + Write`; ajustar las 3 anotaciones `CompletedTrustedHandshake<CrossedBulkIo>` de tests; duplex en memoria `Read + Write` sin framing USB como doble de test compartido. RED: `trusted_reconnect_over_in_memory_duplex`, `pairing_over_in_memory_duplex`. ~350 líneas.
-2. [ ] d2 — Transporte loopback TCP: listener que sólo enlaza `127.0.0.1:0` (constante), acepta con deadline y fija read/write timeouts; pairing y reconexión mTLS de punta a punta sobre `TcpStream` real; no se reutiliza el `LoopbackPairingProofServer` sin client auth. RED: `loopback_lan_listener_binds_only_loopback`, `pairing_then_reconnect_over_loopback_tcp`, `silent_loopback_peer_fails_bounded`. ~350 líneas.
+2. [x] d2 — Transporte loopback TCP: listener que sólo enlaza `127.0.0.1:0` (constante), acepta con deadline y fija read/write timeouts; pairing y reconexión mTLS de punta a punta sobre `TcpStream` real; no se reutiliza el `LoopbackPairingProofServer` sin client auth. RED: `loopback_lan_listener_binds_only_loopback`, `pairing_then_reconnect_over_loopback_tcp`, `silent_loopback_peer_fails_bounded`. ~350 líneas.
 
 Criterios: `cargo fmt -- --check` y `cargo test --offline` verdes sin regresiones; el mismo stack TLS/sesión pasa sobre USB fake, duplex en memoria y TCP loopback; ningún bind fuera de loopback.
 
@@ -47,6 +47,7 @@ Criterios: `cargo fmt -- --check` y `cargo test --offline` verdes sin regresione
 
 Plan creado el 2026-09-30.
 d1 completada el 2026-09-30 (commit `02206e1`; 227 tests, 0 fallos). Revisión nativa pendiente: el START del facade ignoró `baseRef` y resolvió como candidato toda la rama desde `32d0401`; no se creó lineage. Incidente de tooling a diagnosticar antes de revisar.
+d2 completada el 2026-09-30 (231 tests, 0 fallos; baseline 227 + 4 nuevos). Sin commit todavía: el usuario decide push/commit. Revisión nativa pendiente.
 
 ### Evidencia d1 (2026-09-30)
 
@@ -79,3 +80,50 @@ Riesgo anotado: cambio de API pública en el parámetro genérico (de `I: UsbBul
 `S: Read + Write`). No rompe a los callers USB observados; cualquier consumidor externo que
 nombrara `Completed*`/`*PhoneSession` con el parámetro de IO concreto debe pasar ahora el tipo
 de stream (p. ej. `UsbTlsCiphertextStream<I>`).
+
+### Evidencia d2 (2026-09-30)
+
+Nuevo módulo `src/loopback_lan_listener.rs` (exportado desde `src/lib.rs`): `LoopbackLanListener`
+modela el transporte Wi‑Fi fake. Enlaza SÓLO `Ipv4Addr::LOCALHOST` con puerto efímero mediante
+constantes internas (`LOOPBACK_BIND_IP`/`LOOPBACK_BIND_PORT`), sin parámetro de dirección ni
+configuración. `bind()`/`bind_with_options(LoopbackLanOptions)` construyen el listener;
+`local_addr()` devuelve la dirección efectiva; `accept(deadline)` acepta una conexión con el
+enfoque nonblocking-con-deadline (espejo del `accept_with_deadline` del
+`LoopbackPairingProofServer`, sin modificar ese servidor), vuelve a bloqueante
+(`set_nonblocking(false)`), fija read/write timeouts acotados (por defecto 1500 ms, configurables
+vía `LoopbackLanOptions`) y rechaza defensivamente (cierra y devuelve `NonLoopbackPeer`) cualquier
+par cuya dirección no sea loopback. No se reutiliza ni se cambia `LoopbackPairingProofServer`
+(ese usa `with_no_client_auth`). Ningún bind fuera de loopback: `grep -rn "0.0.0.0\|UNSPECIFIED"
+desktop/usb-probe/src` no muestra nada.
+
+El mismo stack mTLS de pairing/reconexión corre sin cambios de lógica sobre `TcpStream` real: el
+listener sólo aporta el socket y los timeouts; `accept_phone_pairing_connection` y
+`accept_phone_reconnect_connection` reciben el `TcpStream` directamente.
+
+TDD estricto:
+- RED (fallo de compilación esperado) — `cargo test --offline --test loopback_lan_transport_test`:
+  `error[E0432]: unresolved imports usb_probe::LoopbackLanError, usb_probe::LoopbackLanListener,
+  usb_probe::LoopbackLanOptions ... no LoopbackLanListener in the root` (módulo/tipos ausentes).
+- GREEN — tras crear el módulo y exportarlo, los 4 tests pasan:
+  `loopback_lan_listener_binds_only_loopback` (is_loopback y puerto != 0),
+  `pairing_then_reconnect_over_loopback_tcp` (CCP1 de pairing -> confirm al store temporal ->
+  segunda conexión TCP -> HELLO/ACCEPT de reconexión para el mismo teléfono),
+  `silent_loopback_peer_fails_bounded` (par silencioso: el handshake falla por el read timeout
+  del stream, cota `< 10x` el read timeout configurado, sin colgarse) y
+  `accept_times_out_without_peer` (`accept` sin cliente devuelve `LoopbackLanError::Timeout`).
+  El test enfocado corrió 3 veces: 4 passed/0 failed cada vez.
+
+Suite completa: `cargo fmt -- --check` verde; `cargo test --offline` = 231 passed, 0 failed
+(baseline 227 + 4 tests nuevos), sin regresiones.
+
+Desvío de tamaño declarado: diff total ≈ 471 líneas (146 módulo + 320 test + 5 `lib.rs`), por
+encima de la heurística de ~450. El exceso es íntegramente boilerplate de helpers de test
+duplicado por conexión según la convención por-archivo del proyecto (`proof_fixture`,
+`tls_client`, `client_config`, `read_ccp1_frame`, `unique_store_path`, `TestRng`); el módulo de
+producción es compacto y no se hizo code-golf para esconder tamaño.
+
+Riesgo anotado: loopback es alcanzable por otros procesos locales; aceptable sólo como
+fake/test (la protección real es mTLS + trust store, llega con T17). El guard `NonLoopbackPeer`
+es defensivo y, sobre un bind loopback-only, inalcanzable en la práctica; se mantiene por
+defensa en profundidad. Los timeouts dependen de la granularidad del temporizador del SO, por lo
+que las cotas de los tests son holgadas (`< 10x` read timeout, `< 5 s`).
