@@ -46,6 +46,7 @@ Criterios: `cargo fmt -- --check` y `cargo test --offline` verdes sin regresione
 ## Progreso
 
 Plan creado el 2026-09-30.
+d1 completada el 2026-09-30 (commit `02206e1`; 227 tests, 0 fallos). Revisión nativa pendiente: el START del facade ignoró `baseRef` y resolvió como candidato toda la rama desde `32d0401`; no se creó lineage. Incidente de tooling a diagnosticar antes de revisar.
 
 ### Evidencia d1 (2026-09-30)
 
