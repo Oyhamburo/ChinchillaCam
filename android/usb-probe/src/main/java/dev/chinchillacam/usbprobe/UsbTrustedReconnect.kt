@@ -88,16 +88,39 @@ class UsbTrustedReconnect(
      */
     private val helloFrameAdapter = TlsSessionFrameIoAdapter(readTimeoutMillis = helloTimeoutMillis, idleBudgetMillis = helloTimeoutMillis)
 
+    /**
+     * Reconnects over an [AccessoryIoSession] (USB). Wraps it in a [UsbAccessoryTlsCiphertextTransport]
+     * and delegates to the transport-neutral overload, so behaviour is identical to running directly
+     * over the USB transport.
+     */
     fun reconnect(
         desktopId: String,
         session: AccessoryIoSession,
+        trustedDesktopStore: TrustedDesktopStore,
+        activeDesktopAuthority: ActiveDesktopAuthority,
+    ): UsbTrustedReconnectResult = reconnect(
+        desktopId,
+        tlsChannel.usbTransport(session),
+        trustedDesktopStore,
+        activeDesktopAuthority,
+    )
+
+    /**
+     * Transport-neutral counterpart (contract `wifi-loopback-transport` §4.3): runs the same
+     * trust-gate, pinned-fingerprint handshake, `HANDSHAKE_HELLO`/`HANDSHAKE_ACCEPT` exchange, and
+     * activation over any [TlsCiphertextTransport]. An untrusted/revoked desktop still gets no TLS
+     * I/O -- [transport] is closed immediately -- matching the USB behaviour before the seam.
+     */
+    fun reconnect(
+        desktopId: String,
+        transport: TlsCiphertextTransport,
         trustedDesktopStore: TrustedDesktopStore,
         activeDesktopAuthority: ActiveDesktopAuthority,
     ): UsbTrustedReconnectResult {
         val now = epochSecondsSource.nowEpochSeconds()
         val record = trustedDesktopStore.lookup(desktopId)
         if (record == null) {
-            runCatching { session.close() }
+            runCatching { transport.close() }
             return UsbTrustedReconnectResult.Rejected.NotTrusted(desktopId, TrustedDesktopAuthResult.Unknown)
         }
         // Re-evaluating against the record's own stored fingerprint reuses the store's existing
@@ -106,11 +129,11 @@ class UsbTrustedReconnect(
         // mismatch, so Trusted is the only remaining non-rejection outcome.
         val trustResult = trustedDesktopStore.evaluate(desktopId, record.trustMaterialFingerprint, now)
         if (trustResult != TrustedDesktopAuthResult.Trusted) {
-            runCatching { session.close() }
+            runCatching { transport.close() }
             return UsbTrustedReconnectResult.Rejected.NotTrusted(desktopId, trustResult)
         }
 
-        val handshake = tlsChannel.handshakeWithPinnedFingerprint(session, record.trustMaterialFingerprint)
+        val handshake = tlsChannel.handshakeWithPinnedFingerprint(transport, record.trustMaterialFingerprint)
         val channel = when (handshake) {
             is SslEngineUsbTlsHandshakeResult.Rejected ->
                 return UsbTrustedReconnectResult.Rejected.TlsRejected(desktopId, handshake.reason)

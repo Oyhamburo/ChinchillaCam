@@ -7,20 +7,36 @@ class UsbTlsPairingProofVerifier(
     private val epochSecondsSource: EpochSecondsSource,
     private val tlsChannel: SslEngineUsbTlsChannel = SslEngineUsbTlsChannel(),
 ) {
+    /**
+     * Verifies the pairing proof over an [AccessoryIoSession] (USB). Wraps it in a
+     * [UsbAccessoryTlsCiphertextTransport] and delegates to the transport-neutral overload, so
+     * behaviour is identical to running directly over the USB transport. Matches
+     * [ChannelPairingProofVerifier] and can still be passed as a bound method reference.
+     */
     fun verify(
         challenge: PairingProofChallenge,
         session: AccessoryIoSession,
+    ): UsbTlsPairingProofVerificationResult = verify(challenge, tlsChannel.usbTransport(session))
+
+    /**
+     * Transport-neutral counterpart (contract `wifi-loopback-transport` §4.3): runs the same
+     * challenge validation, pinned mTLS handshake, and CCP1 proof exchange over any
+     * [TlsCiphertextTransport]. An invalid challenge still closes [transport] before any TLS I/O.
+     */
+    fun verify(
+        challenge: PairingProofChallenge,
+        transport: TlsCiphertextTransport,
     ): UsbTlsPairingProofVerificationResult {
         validateChallenge(challenge)?.let {
             try {
-                session.close()
+                transport.close()
             } catch (_: Exception) {
                 // Best-effort close: preserve the typed rejection reason.
             }
             return UsbTlsPairingProofVerificationResult.Rejected(it)
         }
 
-        val handshake = tlsChannel.handshake(session, challenge.desktopSubjectPublicKeyInfoDer)
+        val handshake = tlsChannel.handshake(transport, challenge.desktopSubjectPublicKeyInfoDer)
         val channel = when (handshake) {
             is SslEngineUsbTlsHandshakeResult.Authenticated -> handshake.channel
             is SslEngineUsbTlsHandshakeResult.Rejected -> return UsbTlsPairingProofVerificationResult.Rejected(handshake.reason)

@@ -222,7 +222,11 @@ class SslEngineUsbTlsChannel(
     fun handshake(
         session: AccessoryIoSession,
         pinnedDesktopSubjectPublicKeyInfoDer: ByteArray,
-    ): SslEngineUsbTlsHandshakeResult = handshake(UsbAccessoryTlsCiphertextTransport(session, adapter), pinnedDesktopSubjectPublicKeyInfoDer)
+    ): SslEngineUsbTlsHandshakeResult = handshake(usbTransport(session), pinnedDesktopSubjectPublicKeyInfoDer)
+
+    /** Wraps [session] with this channel's configured USB ciphertext adapter. */
+    internal fun usbTransport(session: AccessoryIoSession): TlsCiphertextTransport =
+        UsbAccessoryTlsCiphertextTransport(session, adapter)
 
     /** Transport-neutral counterpart of [handshake]: runs the same pinned mTLS handshake over any [TlsCiphertextTransport]. */
     fun handshake(
@@ -243,7 +247,7 @@ class SslEngineUsbTlsChannel(
         session: AccessoryIoSession,
         pinnedDesktopTrustMaterialFingerprint: ByteArray,
     ): SslEngineUsbTlsHandshakeResult = handshakeWithPinnedFingerprint(
-        UsbAccessoryTlsCiphertextTransport(session, adapter),
+        usbTransport(session),
         pinnedDesktopTrustMaterialFingerprint,
     )
 
