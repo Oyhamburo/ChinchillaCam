@@ -204,8 +204,11 @@ class UsbTrustedReconnect(
             // helloFrameAdapter already closed the channel on this failure (see
             // TlsSessionFrameIoAdapter); classify by wall clock rather than by message text so a
             // genuine deadline (TimedOut) is distinguishable from an early close/EOF/invalid frame.
+            // The adapter's bounded read can return a few milliseconds before this deadline because
+            // its remaining time is truncated to whole milliseconds, so a small tolerance keeps a
+            // genuine timeout from being reported as a TLS rejection.
             return HelloExchange.Rejected(
-                if (System.nanoTime() >= deadlineNanos) {
+                if (System.nanoTime() >= deadlineNanos - HELLO_DEADLINE_TOLERANCE_NANOS) {
                     UsbTrustedReconnectResult.Rejected.TimedOut(desktopId)
                 } else {
                     UsbTrustedReconnectResult.Rejected.TlsRejected(desktopId, error.message ?: "hello exchange failed")
@@ -260,5 +263,8 @@ class UsbTrustedReconnect(
     private companion object {
         const val DEFAULT_HELLO_TIMEOUT_MILLIS: Long = 5_000
         const val APP_NAME: String = "ChinchillaCam"
+
+        /** Granularity margin for classifying a hello read failure as a deadline timeout. */
+        val HELLO_DEADLINE_TOLERANCE_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(25)
     }
 }
