@@ -15,7 +15,6 @@ use crate::{
     FileTrustedPhoneStore, PairingProofFrame, PairingProofRequest, PairingProofResponse,
     PairingQrIssuer, PairingQrIssuerError, PairingQrNonceGenerator, PhoneClientCertVerifier,
     TrustUnlessRevoked, TrustedPhoneIdentity, TrustedPhoneLookup, TrustedPhoneStoreError,
-    UsbBulkIo, UsbTlsCiphertextStream,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,8 +116,8 @@ impl PairedPhoneCandidate {
 /// The outcome of a completed pairing handshake and proof: the still-live TLS stream (so
 /// the caller can keep exchanging application data over the same session) and the phone
 /// candidate the same connection's peer certificate carried.
-pub struct CompletedPairingProof<I: UsbBulkIo> {
-    pub tls: StreamOwned<ServerConnection, UsbTlsCiphertextStream<I>>,
+pub struct CompletedPairingProof<S: Read + Write> {
+    pub tls: StreamOwned<ServerConnection, S>,
     pub candidate: PairedPhoneCandidate,
 }
 
@@ -130,12 +129,9 @@ impl UsbTlsPairingProofServer {
         })
     }
 
-    pub fn complete_handshake<I>(
-        &mut self,
-        stream: &mut UsbTlsCiphertextStream<I>,
-    ) -> Result<(), UsbTlsPairingProofError>
+    pub fn complete_handshake<S>(&mut self, stream: &mut S) -> Result<(), UsbTlsPairingProofError>
     where
-        I: UsbBulkIo,
+        S: Read + Write,
     {
         while self.connection.is_handshaking() {
             self.connection
@@ -145,14 +141,14 @@ impl UsbTlsPairingProofServer {
         Ok(())
     }
 
-    pub fn complete_handshake_and_pairing_proof<I, R>(
+    pub fn complete_handshake_and_pairing_proof<S, R>(
         self,
-        stream: UsbTlsCiphertextStream<I>,
+        stream: S,
         issuer: &mut PairingQrIssuer<R>,
         timeout: Duration,
-    ) -> Result<CompletedPairingProof<I>, UsbTlsPairingProofError>
+    ) -> Result<CompletedPairingProof<S>, UsbTlsPairingProofError>
     where
-        I: UsbBulkIo,
+        S: Read + Write,
         R: PairingQrNonceGenerator,
     {
         let deadline = Instant::now()
@@ -231,14 +227,14 @@ fn build_server_config(
 /// `complete_handshake_and_pairing_proof`. The returned `phone_id` is re-derived from the
 /// peer certificate of this same completed connection (`paired_phone_candidate`, shared
 /// with the pairing flow above), never trusted from a caller-supplied value.
-pub fn complete_trusted_phone_handshake<I>(
+pub fn complete_trusted_phone_handshake<S>(
     identity: &DesktopTlsIdentity,
     lookup: Arc<dyn TrustedPhoneLookup + Send + Sync>,
-    stream: UsbTlsCiphertextStream<I>,
+    stream: S,
     timeout: Duration,
-) -> Result<CompletedTrustedHandshake<I>, UsbTlsPairingProofError>
+) -> Result<CompletedTrustedHandshake<S>, UsbTlsPairingProofError>
 where
-    I: UsbBulkIo,
+    S: Read + Write,
 {
     let deadline = Instant::now()
         .checked_add(timeout)
@@ -266,8 +262,8 @@ where
 /// The outcome of a completed trusted-reconnection handshake (task m3): the still-live TLS
 /// stream and the `phone_id` its peer certificate authenticated, re-derived from the same
 /// connection rather than trusted from a caller-supplied value.
-pub struct CompletedTrustedHandshake<I: UsbBulkIo> {
-    pub tls: StreamOwned<ServerConnection, UsbTlsCiphertextStream<I>>,
+pub struct CompletedTrustedHandshake<S: Read + Write> {
+    pub tls: StreamOwned<ServerConnection, S>,
     pub phone_id: String,
 }
 

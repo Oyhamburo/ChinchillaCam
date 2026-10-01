@@ -38,7 +38,7 @@ TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecuci�
 
 Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test --offline`. Baseline: 225 tests, 0 fallos (HEAD `7c15ffd`, 2026-09-30). Último límite revisado: `7c15ffd`.
 
-1. [ ] d1 — Seam genérico: `complete_handshake`, `complete_handshake_and_pairing_proof`, `complete_trusted_phone_handshake`, `Completed*`, `PendingPairedPhoneSession`, `AuthenticatedPhoneSession`, `accept_phone_pairing_connection`, `accept_phone_reconnect_connection` y `close_best_effort` pasan de `UsbTlsCiphertextStream<I: UsbBulkIo>` a `S: Read + Write`; ajustar las 3 anotaciones `CompletedTrustedHandshake<CrossedBulkIo>` de tests; duplex en memoria `Read + Write` sin framing USB como doble de test compartido. RED: `trusted_reconnect_over_in_memory_duplex`, `pairing_over_in_memory_duplex`. ~350 líneas.
+1. [x] d1 — Seam genérico: `complete_handshake`, `complete_handshake_and_pairing_proof`, `complete_trusted_phone_handshake`, `Completed*`, `PendingPairedPhoneSession`, `AuthenticatedPhoneSession`, `accept_phone_pairing_connection`, `accept_phone_reconnect_connection` y `close_best_effort` pasan de `UsbTlsCiphertextStream<I: UsbBulkIo>` a `S: Read + Write`; ajustar las 3 anotaciones `CompletedTrustedHandshake<CrossedBulkIo>` de tests; duplex en memoria `Read + Write` sin framing USB como doble de test compartido. RED: `trusted_reconnect_over_in_memory_duplex`, `pairing_over_in_memory_duplex`. ~350 líneas.
 2. [ ] d2 — Transporte loopback TCP: listener que sólo enlaza `127.0.0.1:0` (constante), acepta con deadline y fija read/write timeouts; pairing y reconexión mTLS de punta a punta sobre `TcpStream` real; no se reutiliza el `LoopbackPairingProofServer` sin client auth. RED: `loopback_lan_listener_binds_only_loopback`, `pairing_then_reconnect_over_loopback_tcp`, `silent_loopback_peer_fails_bounded`. ~350 líneas.
 
 Criterios: `cargo fmt -- --check` y `cargo test --offline` verdes sin regresiones; el mismo stack TLS/sesión pasa sobre USB fake, duplex en memoria y TCP loopback; ningún bind fuera de loopback.
@@ -46,3 +46,35 @@ Criterios: `cargo fmt -- --check` y `cargo test --offline` verdes sin regresione
 ## Progreso
 
 Plan creado el 2026-09-30.
+
+### Evidencia d1 (2026-09-30)
+
+Seam genérico aplicado sin cambio de lógica: las funciones y tipos TLS de pairing/reconexión
+pasaron de `UsbTlsCiphertextStream<I: UsbBulkIo>` a `S: Read + Write`. Se parametrizaron
+`CompletedPairingProof<S>`, `CompletedTrustedHandshake<S>`, `PendingPairedPhoneSession<S>`,
+`AuthenticatedPhoneSession<S>` (cada struct lleva la cota `S: Read + Write` que exige
+`rustls::StreamOwned`), `complete_handshake`, `complete_handshake_and_pairing_proof`,
+`complete_trusted_phone_handshake`, `accept_phone_pairing_connection`,
+`accept_phone_reconnect_connection` y `close_best_effort`. Los nombres públicos se conservan.
+Los callers USB siguen compilando por inferencia; sólo se reajustaron las 3 anotaciones
+explícitas a `CompletedTrustedHandshake<UsbTlsCiphertextStream<CrossedBulkIo>>`
+(tests/usb_tls_trusted_session_test.rs y tests/paired_phone_candidate_confirm_test.rs).
+
+Doble de test compartido `tests/common/duplex.rs` (`InMemoryDuplex`): par de pipes cruzados
+`Read + Write` sin framing USB, con timeout de lectura (`TimedOut`) y EOF (`Ok(0)`) al cerrar
+el par; tolerancias holgadas.
+
+TDD estricto:
+- RED (fallo de compilación esperado) — `cargo test --offline --test in_memory_duplex_session_test`:
+  `error[E0308]: mismatched types ... expected 'UsbTlsCiphertextStream<_>', found 'InMemoryDuplex'`
+  en `accept_phone_reconnect_connection` y `accept_phone_pairing_connection`.
+- GREEN — tras el seam genérico, `trusted_reconnect_over_in_memory_duplex` y
+  `pairing_over_in_memory_duplex` pasan; el test enfocado corrió 3 veces, 2 passed/0 failed cada vez.
+
+Suite completa: `cargo fmt -- --check` verde; `cargo test --offline` = 227 passed, 0 failed
+(baseline 225 + 2 tests nuevos), sin regresiones.
+
+Riesgo anotado: cambio de API pública en el parámetro genérico (de `I: UsbBulkIo` a
+`S: Read + Write`). No rompe a los callers USB observados; cualquier consumidor externo que
+nombrara `Completed*`/`*PhoneSession` con el parámetro de IO concreto debe pasar ahora el tipo
+de stream (p. ej. `UsbTlsCiphertextStream<I>`).

@@ -233,7 +233,10 @@ fn attempt_trusted_handshake(
     identity: &DesktopTlsIdentity,
     store: Arc<FileTrustedPhoneStore>,
     phone_identity: &DesktopTlsIdentity,
-) -> Result<usb_probe::CompletedTrustedHandshake<CrossedBulkIo>, UsbTlsPairingProofError> {
+) -> Result<
+    usb_probe::CompletedTrustedHandshake<UsbTlsCiphertextStream<CrossedBulkIo>>,
+    UsbTlsPairingProofError,
+> {
     let cert = identity.certificate_der().to_vec();
     let (desktop_io, phone_io) = crossed_bulk_pair();
 

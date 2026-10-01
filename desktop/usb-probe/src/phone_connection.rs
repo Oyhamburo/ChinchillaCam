@@ -23,6 +23,7 @@
 
 use std::{
     fmt,
+    io::{Read, Write},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -33,8 +34,8 @@ use crate::{
     complete_trusted_phone_handshake, phone_id_for_spki, read_session_frame, write_session_frame,
     DesktopTlsIdentity, FileTrustedPhoneStore, PairedPhoneCandidate,
     PairedPhoneCandidateConfirmError, PairingQrIssuer, PairingQrNonceGenerator, SessionFrame,
-    SessionFramePayload, TlsSessionFrameError, TrustedPhoneLookup, UsbBulkIo,
-    UsbTlsCiphertextStream, UsbTlsPairingProofError, UsbTlsPairingProofServer,
+    SessionFramePayload, TlsSessionFrameError, TrustedPhoneLookup, UsbTlsPairingProofError,
+    UsbTlsPairingProofServer,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,12 +93,12 @@ impl std::error::Error for PhoneConnectionError {}
 
 /// A pairing candidate whose TLS channel is retained live (contract section 4.2) until the
 /// caller explicitly [`confirm`](Self::confirm)s or [`reject`](Self::reject)s it.
-pub struct PendingPairedPhoneSession<I: UsbBulkIo> {
-    pub tls: StreamOwned<ServerConnection, UsbTlsCiphertextStream<I>>,
+pub struct PendingPairedPhoneSession<S: Read + Write> {
+    pub tls: StreamOwned<ServerConnection, S>,
     pub candidate: PairedPhoneCandidate,
 }
 
-impl<I: UsbBulkIo> PendingPairedPhoneSession<I> {
+impl<S: Read + Write> PendingPairedPhoneSession<S> {
     /// Persists `self.candidate` via `PairedPhoneCandidate::confirm` (atomic, refuses
     /// revoked). On success, returns an authenticated session that RETAINS the same live
     /// TLS stream (contract section 4.5: it can now carry `HandshakeHello`/`HandshakeAccept`
@@ -107,7 +108,7 @@ impl<I: UsbBulkIo> PendingPairedPhoneSession<I> {
         self,
         label: &str,
         store: &FileTrustedPhoneStore,
-    ) -> Result<AuthenticatedPhoneSession<I>, PairedPhoneCandidateConfirmError> {
+    ) -> Result<AuthenticatedPhoneSession<S>, PairedPhoneCandidateConfirmError> {
         match self.candidate.confirm(label, store) {
             Ok(_identity) => Ok(AuthenticatedPhoneSession {
                 tls: self.tls,
@@ -130,8 +131,8 @@ impl<I: UsbBulkIo> PendingPairedPhoneSession<I> {
 /// A connection that has passed authentication (either a confirmed pairing candidate, or a
 /// trusted phone's successful reconnection handshake + `HandshakeHello`/`HandshakeAccept`
 /// exchange) and still holds its live TLS stream, ready for `SessionFrame` traffic.
-pub struct AuthenticatedPhoneSession<I: UsbBulkIo> {
-    pub tls: StreamOwned<ServerConnection, UsbTlsCiphertextStream<I>>,
+pub struct AuthenticatedPhoneSession<S: Read + Write> {
+    pub tls: StreamOwned<ServerConnection, S>,
     pub phone_id: String,
 }
 
@@ -139,14 +140,14 @@ pub struct AuthenticatedPhoneSession<I: UsbBulkIo> {
 /// (`UsbTlsPairingProofServer::complete_handshake_and_pairing_proof`) and returns a pending
 /// value that retains the live TLS stream and the candidate until the caller confirms or
 /// rejects it.
-pub fn accept_phone_pairing_connection<I, R>(
-    stream: UsbTlsCiphertextStream<I>,
+pub fn accept_phone_pairing_connection<S, R>(
+    stream: S,
     identity: &DesktopTlsIdentity,
     issuer: &mut PairingQrIssuer<R>,
     timeout: Duration,
-) -> Result<PendingPairedPhoneSession<I>, PhoneConnectionError>
+) -> Result<PendingPairedPhoneSession<S>, PhoneConnectionError>
 where
-    I: UsbBulkIo,
+    S: Read + Write,
     R: PairingQrNonceGenerator,
 {
     let outcome = UsbTlsPairingProofServer::new(identity)
@@ -165,14 +166,14 @@ where
 /// slow handshake never eats into this budget). A `HandshakeHello` gets a
 /// `HandshakeAccept` reply and an authenticated session; anything else fails closed (see
 /// `PhoneConnectionError`).
-pub fn accept_phone_reconnect_connection<I>(
-    stream: UsbTlsCiphertextStream<I>,
+pub fn accept_phone_reconnect_connection<S>(
+    stream: S,
     identity: &DesktopTlsIdentity,
     lookup: Arc<dyn TrustedPhoneLookup + Send + Sync>,
     timeout: Duration,
-) -> Result<AuthenticatedPhoneSession<I>, PhoneConnectionError>
+) -> Result<AuthenticatedPhoneSession<S>, PhoneConnectionError>
 where
-    I: UsbBulkIo,
+    S: Read + Write,
 {
     let handshake = complete_trusted_phone_handshake(identity, lookup, stream, timeout)
         .map_err(PhoneConnectionError::Reconnect)?;
@@ -269,9 +270,7 @@ where
 
 /// Best-effort graceful close: send a TLS `close_notify` and try to flush it, ignoring any
 /// write failure (the stream is being abandoned either way), then drop.
-fn close_best_effort<I: UsbBulkIo>(
-    mut tls: StreamOwned<ServerConnection, UsbTlsCiphertextStream<I>>,
-) {
+fn close_best_effort<S: Read + Write>(mut tls: StreamOwned<ServerConnection, S>) {
     tls.conn.send_close_notify();
     let _ = tls.conn.write_tls(&mut tls.sock);
 }

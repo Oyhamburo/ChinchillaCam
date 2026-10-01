@@ -155,7 +155,10 @@ fn trusted_handshake_rejects_trusted_phone_id_with_different_key() {
 /// same as `CompletedPairingProof`), so this matches on the `Err` arm directly instead of
 /// formatting the whole `Result` with `{:?}`.
 fn assert_rejected_at_handshake(
-    result: Result<usb_probe::CompletedTrustedHandshake<CrossedBulkIo>, UsbTlsPairingProofError>,
+    result: Result<
+        usb_probe::CompletedTrustedHandshake<UsbTlsCiphertextStream<CrossedBulkIo>>,
+        UsbTlsPairingProofError,
+    >,
     context: &str,
 ) {
     match result {
@@ -169,7 +172,10 @@ fn attempt_trusted_handshake(
     identity: &DesktopTlsIdentity,
     store: Arc<FileTrustedPhoneStore>,
     phone_identity: &DesktopTlsIdentity,
-) -> Result<usb_probe::CompletedTrustedHandshake<CrossedBulkIo>, UsbTlsPairingProofError> {
+) -> Result<
+    usb_probe::CompletedTrustedHandshake<UsbTlsCiphertextStream<CrossedBulkIo>>,
+    UsbTlsPairingProofError,
+> {
     let cert = identity.certificate_der().to_vec();
     let (desktop_io, phone_io) = crossed_bulk_pair();
 
