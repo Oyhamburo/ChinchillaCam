@@ -71,7 +71,7 @@ pub struct DesktopVideoSessionReceiver<C> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DesktopVideoSessionBinding {
     session_id: String,
-    next_sequence: i32,
+    last_sequence: i32,
 }
 
 impl<C> DesktopVideoSessionReceiver<C>
@@ -111,19 +111,49 @@ where
             return Err(DesktopReceiverError::Closed);
         }
 
-        match self.receive_open(bulk_frame, sink) {
+        match self.receive_bulk_open(bulk_frame, sink) {
             Ok(()) => Ok(()),
             Err(error) => {
-                self.reassembler.reset_all();
-                self.fragment_in_flight = false;
-                self.binding = None;
-                self.closed = true;
+                self.fail_closed();
                 Err(error)
             }
         }
     }
 
-    fn receive_open<S>(
+    /// Accepts an already-decoded `SessionFrame` directly (contract section 4.4): the session
+    /// runtime decodes each frame once from the transport, then dispatches video frames here.
+    /// Behaviour matches the `BulkFrame` path after its decode step; the stream-id check and
+    /// the 64 KiB USB decode limit live only on the `BulkFrame` path ([`receive`]), which
+    /// delegates here after decoding.
+    pub fn receive_session_frame<S>(
+        &mut self,
+        session_frame: &SessionFrame,
+        sink: &mut S,
+    ) -> Result<(), DesktopReceiverError>
+    where
+        S: EncodedVideoSink,
+    {
+        if self.closed {
+            return Err(DesktopReceiverError::Closed);
+        }
+
+        match self.receive_session_frame_open(session_frame, sink) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.fail_closed();
+                Err(error)
+            }
+        }
+    }
+
+    fn fail_closed(&mut self) {
+        self.reassembler.reset_all();
+        self.fragment_in_flight = false;
+        self.binding = None;
+        self.closed = true;
+    }
+
+    fn receive_bulk_open<S>(
         &mut self,
         bulk_frame: &BulkFrame,
         sink: &mut S,
@@ -142,8 +172,19 @@ where
             SessionFrameCodec::decode_with_limit(bulk_frame.payload(), MAX_USB_SESSION_FRAME_BYTES)
                 .map_err(DesktopReceiverError::MalformedSessionFrame)?;
 
+        self.receive_session_frame_open(&session_frame, sink)
+    }
+
+    fn receive_session_frame_open<S>(
+        &mut self,
+        session_frame: &SessionFrame,
+        sink: &mut S,
+    ) -> Result<(), DesktopReceiverError>
+    where
+        S: EncodedVideoSink,
+    {
         if is_desktop_video_payload(session_frame.payload()) {
-            self.validate_and_advance_binding(&session_frame)?;
+            self.validate_and_advance_binding(session_frame)?;
         }
 
         if self.fragment_in_flight
@@ -165,10 +206,10 @@ where
             } => {
                 let frame_kind = self
                     .classifier
-                    .classify_frame_kind(&session_frame)?
+                    .classify_frame_kind(session_frame)?
                     .ok_or(DesktopReceiverError::UnknownFrameKind)?;
                 push_encoded_chunk(
-                    bulk_frame.stream_id(),
+                    USB_SESSION_FRAME_STREAM_ID,
                     *presentation_time_us,
                     frame_kind,
                     h264_bytes.clone(),
@@ -185,7 +226,7 @@ where
                 ..
             } => {
                 push_encoded_chunk(
-                    bulk_frame.stream_id(),
+                    USB_SESSION_FRAME_STREAM_ID,
                     *presentation_time_us,
                     encoded_frame_kind(*kind),
                     h264_bytes.clone(),
@@ -198,7 +239,7 @@ where
             SessionFramePayload::VideoChunkFragmentV1 { .. } => {
                 let Some(chunk) = self
                     .reassembler
-                    .push_frame(&session_frame)
+                    .push_frame(session_frame)
                     .map_err(DesktopReceiverError::FragmentReassemblyFailed)?
                 else {
                     self.fragment_in_flight = true;
@@ -211,7 +252,7 @@ where
                 };
                 self.fragment_in_flight = false;
                 push_encoded_chunk(
-                    bulk_frame.stream_id(),
+                    USB_SESSION_FRAME_STREAM_ID,
                     chunk.presentation_time_us(),
                     encoded_frame_kind(chunk.kind()),
                     chunk.h264_bytes().to_vec(),
@@ -237,11 +278,13 @@ where
             });
         }
 
+        // The first video frame establishes the session id and the sequence baseline.
+        let is_new_binding = self.binding.is_none();
         let binding = self
             .binding
             .get_or_insert_with(|| DesktopVideoSessionBinding {
                 session_id: session_frame.session_id().to_string(),
-                next_sequence: session_frame.sequence(),
+                last_sequence: session_frame.sequence(),
             });
 
         if session_frame.session_id() != binding.session_id {
@@ -251,26 +294,29 @@ where
             });
         }
 
-        if session_frame.sequence() != binding.next_sequence {
+        if is_new_binding {
+            return Ok(());
+        }
+
+        // Contract section 4.2: the receiver requires a strictly INCREASING sequence with the
+        // same session id (keepalives and other frame types share the one session counter, so
+        // the video receiver legitimately sees gaps), rather than an exact +1 between video
+        // frames. An equal or decreasing sequence is still rejected.
+        if session_frame.sequence() <= binding.last_sequence {
             return Err(DesktopReceiverError::UnexpectedSequence {
                 actual: session_frame.sequence(),
-                expected: binding.next_sequence,
+                expected: binding.last_sequence.saturating_add(1),
             });
         }
 
-        if binding.next_sequence != i32::MAX {
-            binding.next_sequence += 1;
-        }
+        binding.last_sequence = session_frame.sequence();
 
         Ok(())
     }
 
     fn close_if_sequence_exhausted(&mut self, sequence: i32) {
         if sequence == i32::MAX {
-            self.reassembler.reset_all();
-            self.fragment_in_flight = false;
-            self.binding = None;
-            self.closed = true;
+            self.fail_closed();
         }
     }
 }

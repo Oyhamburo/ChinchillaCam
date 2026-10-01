@@ -40,6 +40,23 @@ fn video_bulk_frame_with_sequence_and_session(
     .unwrap()
 }
 
+fn video_session_frame(
+    sequence: i32,
+    session_id: &str,
+    presentation_time_us: i64,
+    payload: Vec<u8>,
+) -> SessionFrame {
+    SessionFrame::new(
+        sequence,
+        session_id,
+        SessionFramePayload::VideoChunk {
+            chunk_index: 3,
+            presentation_time_us,
+            h264_bytes: payload,
+        },
+    )
+}
+
 #[allow(dead_code)]
 fn video_fragment_bulk_frame(
     session_id: &str,
@@ -230,12 +247,18 @@ fn desktop_receiver_session_replay_same_sequence_closes_without_second_sink_push
         .unwrap();
 }
 
+// Task s1 (`odd/tasks/session-runtime.md`, contract section 4.2): the receiver now requires a
+// strictly INCREASING sequence (shared with interleaved keepalives, which consume sequence
+// numbers the video receiver never sees) rather than an exact +1 between video frames. A gap
+// is therefore accepted; only an equal or decreasing sequence, or a different session id, is
+// rejected. This test was `desktop_receiver_session_gap_sequence_closes_without_sink_push`
+// before s1, where it asserted the now-removed exact-+1 gap rejection.
 #[test]
-fn desktop_receiver_session_gap_sequence_closes_without_sink_push() {
+fn desktop_receiver_session_sequence_gap_is_accepted_decreasing_closes() {
     let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(
         StaticFrameKindClassifier::known(EncodedVideoFrameKind::Delta),
     );
-    let mut queue = BoundedEncodedVideoQueue::new(2).unwrap();
+    let mut queue = BoundedEncodedVideoQueue::new(3).unwrap();
 
     receiver
         .receive(
@@ -243,16 +266,99 @@ fn desktop_receiver_session_gap_sequence_closes_without_sink_push() {
             &mut queue,
         )
         .unwrap();
-    assert!(receiver
+    // A gap (keepalives consumed 21) is now accepted: strictly increasing, same session id.
+    receiver
         .receive(
             &video_bulk_frame_with_sequence(22, 2_002, vec![0x41]),
+            &mut queue,
+        )
+        .unwrap();
+    assert_eq!(queue.len(), 2);
+    // A decreasing sequence is still rejected and closes the session.
+    assert!(receiver
+        .receive(
+            &video_bulk_frame_with_sequence(21, 2_001, vec![0x41]),
             &mut queue
         )
         .is_err());
-    assert_eq!(queue.len(), 1);
     assert_eq!(
         receiver.receive(
-            &video_bulk_frame_with_sequence(21, 2_001, vec![0x41]),
+            &video_bulk_frame_with_sequence(23, 2_003, vec![0x41]),
+            &mut queue
+        ),
+        Err(DesktopReceiverError::Closed)
+    );
+}
+
+// Task s1 RED (`odd/tasks/session-runtime.md`, contract section 4.2): a keepalive-bearing
+// session advances the shared sequence counter between video frames, so the video receiver
+// legitimately sees gaps. It must accept them while still rejecting an equal sequence.
+#[test]
+fn receiver_accepts_sequence_gaps_from_interleaved_keepalives() {
+    let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(
+        StaticFrameKindClassifier::known(EncodedVideoFrameKind::Delta),
+    );
+    let mut queue = BoundedEncodedVideoQueue::new(4).unwrap();
+
+    receiver
+        .receive(
+            &video_bulk_frame_with_sequence(20, 2_000, vec![0x65]),
+            &mut queue,
+        )
+        .unwrap();
+    // Keepalives in the shared session sequence consumed 21 and 22; the next video frame is 23.
+    receiver
+        .receive(
+            &video_bulk_frame_with_sequence(23, 2_003, vec![0x41]),
+            &mut queue,
+        )
+        .unwrap();
+    assert_eq!(queue.len(), 2);
+    // An equal sequence is still rejected.
+    assert!(receiver
+        .receive(
+            &video_bulk_frame_with_sequence(23, 2_004, vec![0x41]),
+            &mut queue
+        )
+        .is_err());
+}
+
+// Task s1 RED (`odd/tasks/session-runtime.md`, contract section 4.4 / task 2): the receiver
+// accepts an already-decoded `SessionFrame` directly (the runtime decodes once, then
+// dispatches), with the same binding/sequence behaviour as the `BulkFrame` path.
+#[test]
+fn receiver_accepts_session_frames_directly() {
+    let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(
+        StaticFrameKindClassifier::known(EncodedVideoFrameKind::Delta),
+    );
+    let mut queue = BoundedEncodedVideoQueue::new(3).unwrap();
+
+    receiver
+        .receive_session_frame(
+            &video_session_frame(5, "session-direct", 9_000, vec![0x65]),
+            &mut queue,
+        )
+        .unwrap();
+    receiver
+        .receive_session_frame(
+            &video_session_frame(6, "session-direct", 9_001, vec![0x41]),
+            &mut queue,
+        )
+        .unwrap();
+    assert_eq!(queue.len(), 2);
+    let chunk = queue.pop_front().unwrap();
+    assert_eq!(chunk.stream_id(), USB_SESSION_FRAME_STREAM_ID);
+    assert_eq!(chunk.presentation_timestamp().as_micros(), 9_000);
+    // A different session id is still rejected and closes the session.
+    assert!(receiver
+        .receive_session_frame(
+            &video_session_frame(7, "session-other", 9_002, vec![0x41]),
+            &mut queue
+        )
+        .is_err());
+    assert_eq!(
+        receiver.receive_session_frame(
+            &video_session_frame(8, "session-direct", 9_003, vec![0x41]),
             &mut queue
         ),
         Err(DesktopReceiverError::Closed)

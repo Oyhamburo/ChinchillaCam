@@ -22,7 +22,7 @@ use usb_probe::{
     accept_phone_pairing_connection, accept_phone_reconnect_connection, phone_id_for_spki,
     DesktopTlsIdentity, FileTrustedPhoneStore, FrameTransferBudget, FramedUsbStream,
     PairingProofFrame, PairingProofRequest, PairingProofResponse, PairingQrIssuer,
-    PairingQrIssuerError, PhoneConnectionError, SessionFrame, SessionFramePayload,
+    PairingQrIssuerError, PhoneConnectionError, SessionFrame, SessionFramePayload, SessionIdentity,
     TlsSessionFrameError, TrustedPhoneIdentity, UsbBulkIo, UsbProbeError, UsbTlsCiphertextStream,
 };
 
@@ -223,6 +223,76 @@ fn reconnect_mode_accepts_trusted_phone_hello() {
 
         let returned_phone_id = server.join().unwrap().unwrap();
         assert_eq!(returned_phone_id, phone_id);
+    });
+
+    cleanup(store_path);
+}
+
+/// Task s1 RED (`odd/tasks/session-runtime.md`, contract section 4.1): an authenticated
+/// reconnect session must retain the session identity established by HELLO/ACCEPT -- the
+/// `session_id`, the next inbound sequence (`h + 1`) and the next outbound sequence
+/// (`h + 2`) -- so the runtime can validate and continue the shared sequence counter.
+#[test]
+fn reconnect_session_keeps_session_identity() {
+    let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Reconnecting Phone").unwrap();
+    let phone_id = phone_id_for_spki(phone_identity.spki_der_p256());
+
+    let store_path = unique_store_path("reconnect-keeps-session-identity");
+    let store = FileTrustedPhoneStore::new(&store_path);
+    store
+        .trust(
+            TrustedPhoneIdentity::new(
+                phone_id.clone(),
+                "Reconnecting Phone",
+                phone_identity.spki_der_p256().to_vec(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let cert = identity.certificate_der().to_vec();
+    let (desktop_io, phone_io) = crossed_bulk_pair();
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| -> Result<Option<SessionIdentity>, String> {
+            let session = accept_phone_reconnect_connection(
+                ciphertext_stream(desktop_io),
+                &identity,
+                Arc::new(store),
+                Duration::from_millis(1500),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(session.session)
+        });
+
+        let mut phone_tls = phone_tls_stream(phone_io, &cert, &phone_identity);
+        let hello = SessionFrame::new(
+            41,
+            "session-keep",
+            SessionFramePayload::HandshakeHello {
+                device_id: phone_id.clone(),
+                app_name: "ChinchillaCam".to_string(),
+                capabilities: vec!["video".to_string()],
+            },
+        );
+        usb_probe::write_session_frame(&mut phone_tls, &hello).unwrap();
+        let accept = usb_probe::read_session_frame(&mut phone_tls, test_deadline()).unwrap();
+        assert_eq!(
+            accept.sequence(),
+            42,
+            "ACCEPT uses hello.sequence() + 1 (contract section 4.1)"
+        );
+
+        let session = server.join().unwrap().unwrap();
+        assert_eq!(
+            session,
+            Some(SessionIdentity {
+                session_id: "session-keep".to_string(),
+                next_inbound_sequence: 42,
+                next_outbound_sequence: 43,
+            })
+        );
     });
 
     cleanup(store_path);

@@ -61,7 +61,7 @@ pub use phone_client_cert_verifier::{
 };
 pub use phone_connection::{
     accept_phone_pairing_connection, accept_phone_reconnect_connection, AuthenticatedPhoneSession,
-    PendingPairedPhoneSession, PhoneConnectionError,
+    PendingPairedPhoneSession, PhoneConnectionError, SessionIdentity,
 };
 pub use session_frame::{
     SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,

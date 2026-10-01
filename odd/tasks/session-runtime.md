@@ -43,7 +43,7 @@ TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecuci�
 
 Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test --offline`. Baseline: 231 tests, 0 fallos (HEAD `cbd1c70`).
 
-1. [ ] s1 — Prerrequisitos: corregir la carrera de la fase de espera (un byte recibido nunca se descarta como `PeerIdle`), `DesktopVideoSessionReceiver::receive_session_frame` (el camino `BulkFrame` delega sin cambio), regla de secuencia estrictamente creciente en el receptor, y `AuthenticatedPhoneSession` conserva `session_id` y las próximas secuencias. RED: `first_byte_after_idle_deadline_is_not_lost`, `receiver_accepts_session_frames_directly`, `receiver_accepts_sequence_gaps_from_interleaved_keepalives`, `reconnect_session_keeps_session_identity`. ~300 líneas.
+1. [x] s1 — Prerrequisitos: corregir la carrera de la fase de espera (un byte recibido nunca se descarta como `PeerIdle`), `DesktopVideoSessionReceiver::receive_session_frame` (el camino `BulkFrame` delega sin cambio), regla de secuencia estrictamente creciente en el receptor, y `AuthenticatedPhoneSession` conserva `session_id` y las próximas secuencias. RED: `first_byte_after_idle_deadline_is_not_lost`, `receiver_accepts_session_frames_directly`, `receiver_accepts_sequence_gaps_from_interleaved_keepalives`, `reconnect_session_keeps_session_identity`. ~300 líneas.
 2. [ ] s2 — `SessionRuntime::step(now)`: lectura con slice corto, validación de secuencia/`session_id`, despacho a receptor/métricas, keepalive y par muerto por tracker, `send_command`, `shutdown` con close_notify, causas de fin tipadas. RED: `video_frames_reach_sink_through_runtime`, `sends_keepalive_after_silence`, `detects_dead_peer`, `rejects_out_of_order_sequence`, `handshake_frame_after_start_is_protocol_violation`. ~400 líneas.
 3. [ ] s3 — Runtime de punta a punta sobre `LoopbackLanListener`: reconexión y luego sesión viva con keepalives y video sobre TCP loopback real. RED: `runtime_keeps_loopback_session_alive_with_keepalives`. ~200 líneas.
 
@@ -52,3 +52,58 @@ Criterios: `cargo fmt -- --check` y `cargo test --offline` verdes sin regresione
 ## Progreso
 
 Plan creado el 2026-10-01.
+
+### Evidencia s1 (2026-10-01)
+
+TDD estricto, RED observado antes de cada implementación:
+
+1. **Carrera de la fase de espera** (`src/tls_session_frame.rs`). Se agregó
+   `read_first_byte_before_deadline`: intenta al menos una lectura (un `idle_budget` cero
+   igual poliza una vez) y sólo decide `PeerIdle` cuando una lectura no trae byte después del
+   deadline; un byte real devuelto nunca se descarta, aunque el deadline ya haya pasado.
+   - RED: `first_byte_after_idle_deadline_is_not_lost` → `Err(PeerIdle)` en vez del frame.
+   - GREEN: pasa; `zero_idle_budget_still_attempts_one_read` documenta y prueba la decisión
+     de que un `idle_budget` cero igual intenta una lectura (no se rechaza con error tipado).
+   - TRIANGULATE: siguen verdes `idle_beyond_threshold_fails_as_peer_idle`,
+     `stalled_frame_after_first_byte_times_out`, `idle_session_does_not_time_out_waiting_for_next_frame`.
+2. **`receive_session_frame`** (`src/desktop_receiver.rs`). `receive`/`receive_open` se
+   dividió: `receive` → `receive_bulk_open` (chequeo de `stream_id` + límite de decodificación
+   de 64 KiB) → `receive_session_frame_open`; `receive_session_frame` entra directo al mismo
+   paso post-decodificación. El `stream_id` del chunk pasa a ser la constante
+   `USB_SESSION_FRAME_STREAM_ID` (equivalente, porque el camino `BulkFrame` ya exigía ese
+   valor), así el comportamiento del camino `BulkFrame` no cambia.
+   - RED: `receiver_accepts_session_frames_directly` → no compila (método ausente).
+   - GREEN: pasa.
+3. **Secuencia estrictamente creciente** (`validate_and_advance_binding`). El binding guarda
+   `last_sequence` (antes `next_sequence`); el primer frame fija la línea base y cada frame
+   posterior exige `sequence > last_sequence`, mismo `session_id`. Igual o decreciente se
+   sigue rechazando.
+   - RED: `receiver_accepts_sequence_gaps_from_interleaved_keepalives` y el test de gap
+     renombrado → fallaban con la regla +1 exacta.
+   - GREEN: ambos pasan.
+4. **Identidad de sesión en `AuthenticatedPhoneSession`** (`src/phone_connection.rs`). Nuevo
+   `SessionIdentity { session_id, next_inbound_sequence, next_outbound_sequence }` y campo
+   `session: Option<SessionIdentity>`. Reconexión: `Some` con `next_inbound = h + 1`,
+   `next_outbound = h + 2` (aritmética chequeada; desborde → `PhoneConnectionError::SessionSequenceOverflow`,
+   cierra antes de responder). Camino `confirm` de pairing (sin HELLO): `None` documentado —
+   las sesiones de runtime requieren el camino de reconexión (§8 marca pairing sin HELLO
+   fuera de alcance).
+   - RED: `reconnect_session_keeps_session_identity` → no compilaba (`SessionIdentity` y
+     campo `session` ausentes).
+   - GREEN: pasa; `reconnect_mode_accepts_trusted_phone_hello` sigue verde (ACCEPT usa
+     `h + 1`).
+
+**Tests existentes cambiados:** `desktop_receiver_session_gap_sequence_closes_without_sink_push`
+se renombró a `desktop_receiver_session_sequence_gap_is_accepted_decreasing_closes` y ahora
+afirma que un gap se acepta (creciente, mismo `session_id`) y que sólo una secuencia
+decreciente/igual cierra la sesión; antes afirmaba el rechazo de gap +1 exacto, que el
+contrato §4.2 eliminó. El resto de los tests de binding (`replay_same_sequence`,
+`mixed_session_id`, los de secuencia máxima) siguen válidos sin cambio.
+
+**Verificación:** `cargo fmt -- --check` verde; `cargo test --offline` 236 pasados, 0
+fallos (baseline 231 + 5 nuevos netos, con un test renombrado). El archivo de prueba
+sensible al tiempo (`tls_session_frame_test`) corrió 3 veces, verde las tres.
+
+**Nota de tamaño:** el diff quedó en ~426 inserciones / 39 borrados (~465 líneas, por encima
+de la cota blanda de ~450); el excedente es sobre todo documentación y tests nuevos, no
+lógica. s1 quedó cohesivo y verde.

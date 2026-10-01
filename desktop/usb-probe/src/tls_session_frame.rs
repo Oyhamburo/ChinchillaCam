@@ -196,17 +196,14 @@ pub fn read_session_frame_with_budgets<S: Read>(
     // Phase (a): bounded by `idle_budget`, waiting only for the first byte of the next
     // frame's length prefix. A `checked_add` overflow here (an absurdly large `idle_budget`)
     // is treated the same as the idle wait itself failing, since there is no meaningful
-    // deadline left to wait against.
+    // deadline left to wait against. Once a byte is actually received it continues into
+    // phase (b) even if the read returned after `idle_deadline`: the byte is a real frame
+    // boundary and must not be dropped as `PeerIdle` (see
+    // `read_first_byte_before_deadline`).
     let idle_deadline = Instant::now()
         .checked_add(idle_budget)
         .ok_or(TlsSessionFrameError::PeerIdle)?;
-    read_exact_before_deadline(
-        stream,
-        &mut length_prefix[..1],
-        idle_deadline,
-        "length prefix",
-        TlsSessionFrameError::PeerIdle,
-    )?;
+    length_prefix[0] = read_first_byte_before_deadline(stream, idle_deadline)?;
 
     // Phase (b): a frame has started, so re-time a FRESH `frame_budget`-length deadline from
     // now (never reusing or subtracting from `idle_budget`) to complete the rest of it. Same
@@ -316,6 +313,53 @@ fn read_exact_before_deadline<S: Read>(
         }
     }
     Ok(())
+}
+
+/// Phase (a) of [`read_session_frame_with_budgets`]: wait for only the FIRST byte of the
+/// next frame, bounded by `deadline`. Unlike [`read_exact_before_deadline`], the deadline
+/// is only consulted when a read actually reports no data yet
+/// (`WouldBlock`/`TimedOut`): a read is always attempted at least once (so a zero
+/// `idle_budget` still polls once), and a read that returns a real byte is never discarded
+/// even if `deadline` has already elapsed by the time it returns. Only a read that yields
+/// no byte after `deadline` fails closed with [`TlsSessionFrameError::PeerIdle`].
+///
+/// `Interrupted` is retried transparently (like `std::io::Read::read_exact`), and
+/// `WouldBlock`/`TimedOut` is retried with the same bounded `WOULD_BLOCK_RETRY_BACKOFF`
+/// used by [`read_exact_before_deadline`] so a non-blocking transport polls rather than
+/// busy-spins.
+fn read_first_byte_before_deadline<S: Read>(
+    stream: &mut S,
+    deadline: Instant,
+) -> Result<u8, TlsSessionFrameError> {
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => return Err(TlsSessionFrameError::TruncatedFrame("length prefix")),
+            Ok(_) => return Ok(byte[0]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                // Consumed no bytes; retry, like `std::io::Read::read_exact` does.
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                // No byte yet: only now does the idle deadline decide whether to keep
+                // waiting. A byte that a later read actually returns is handled by the
+                // `Ok(_)` arm above and is never lost, even past `deadline`.
+                if Instant::now() >= deadline {
+                    return Err(TlsSessionFrameError::PeerIdle);
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let backoff = WOULD_BLOCK_RETRY_BACKOFF.min(remaining);
+                if !backoff.is_zero() {
+                    thread::sleep(backoff);
+                }
+            }
+            Err(error) => return Err(TlsSessionFrameError::Io(error.to_string())),
+        }
+    }
 }
 
 fn ensure_before_deadline(

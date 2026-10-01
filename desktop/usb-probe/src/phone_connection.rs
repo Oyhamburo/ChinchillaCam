@@ -62,6 +62,10 @@ pub enum PhoneConnectionError {
     /// authenticated (contract section 4.4 addendum, task s2b): rejected with a
     /// best-effort `HandshakeReject` before closing, same as `UnexpectedFirstFrame`.
     HelloDeviceIdMismatch,
+    /// The accepted `HandshakeHello`'s sequence `h` is so close to `i32::MAX` that the
+    /// session's next inbound/outbound sequence (`h + 1` / `h + 2`, contract section 4.1)
+    /// would overflow. Carries the rejected `h`. Fails closed before replying.
+    SessionSequenceOverflow(i32),
 }
 
 impl fmt::Display for PhoneConnectionError {
@@ -84,6 +88,10 @@ impl fmt::Display for PhoneConnectionError {
             Self::HelloDeviceIdMismatch => write!(
                 formatter,
                 "reconnected phone's HandshakeHello device_id did not match its TLS-authenticated phone_id"
+            ),
+            Self::SessionSequenceOverflow(sequence) => write!(
+                formatter,
+                "HandshakeHello sequence {sequence} is too close to i32::MAX for the session's next inbound/outbound sequence"
             ),
         }
     }
@@ -113,6 +121,7 @@ impl<S: Read + Write> PendingPairedPhoneSession<S> {
             Ok(_identity) => Ok(AuthenticatedPhoneSession {
                 tls: self.tls,
                 phone_id: self.candidate.phone_id,
+                session: None,
             }),
             Err(error) => {
                 close_best_effort(self.tls);
@@ -128,12 +137,30 @@ impl<S: Read + Write> PendingPairedPhoneSession<S> {
     }
 }
 
+/// The session identity a reconnect handshake established from `HandshakeHello`/
+/// `HandshakeAccept` (contract section 4.1): the `session_id` shared for the whole session,
+/// plus the next sequence number expected on each direction. `HELLO` carries the initial
+/// sequence `h`, so the next inbound (phone to desktop) frame is `h + 1` and -- because
+/// `ACCEPT` uses `h + 1` -- the next outbound (desktop to phone) frame is `h + 2`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionIdentity {
+    pub session_id: String,
+    pub next_inbound_sequence: i32,
+    pub next_outbound_sequence: i32,
+}
+
 /// A connection that has passed authentication (either a confirmed pairing candidate, or a
 /// trusted phone's successful reconnection handshake + `HandshakeHello`/`HandshakeAccept`
 /// exchange) and still holds its live TLS stream, ready for `SessionFrame` traffic.
+///
+/// `session` is `Some` only for the reconnect path, which establishes a session identity
+/// through HELLO/ACCEPT (contract section 4.1). The pairing-`confirm` path has no HELLO, so
+/// it carries `None`: a runtime session with a live sequence counter requires the reconnect
+/// path (contract section 8 lists pairing-initiated sessions without HELLO as out of scope).
 pub struct AuthenticatedPhoneSession<S: Read + Write> {
     pub tls: StreamOwned<ServerConnection, S>,
     pub phone_id: String,
+    pub session: Option<SessionIdentity>,
 }
 
 /// Contract section 4.1, pairing branch: runs the existing pairing handshake + CCP1
@@ -246,11 +273,29 @@ where
         return Err(PhoneConnectionError::HelloDeviceIdMismatch);
     }
 
+    // Contract section 4.1: the session keeps the identity HELLO established. `HELLO` carries
+    // sequence `h`; the next inbound frame is `h + 1` and the next outbound frame is `h + 2`
+    // (because `ACCEPT` below uses `h + 1`). Checked arithmetic fails closed BEFORE replying
+    // if `h` is too close to `i32::MAX`, rather than saturating into a reused sequence.
+    let hello_sequence = hello.sequence();
+    let next_inbound_sequence =
+        hello_sequence
+            .checked_add(1)
+            .ok_or(PhoneConnectionError::SessionSequenceOverflow(
+                hello_sequence,
+            ))?;
+    let next_outbound_sequence =
+        hello_sequence
+            .checked_add(2)
+            .ok_or(PhoneConnectionError::SessionSequenceOverflow(
+                hello_sequence,
+            ))?;
+
     // `desktop_id` is derived the same way a phone's own stable id is (`phone_id_for_spki`
     // over the desktop's own SPKI), so Reconnect mode does not need a separate desktop-id
     // parameter: there is no `PairingQrIssuer` in this flow to source one from otherwise.
     let accept = SessionFrame::new(
-        hello.sequence().saturating_add(1),
+        next_inbound_sequence,
         hello.session_id().to_string(),
         SessionFramePayload::HandshakeAccept {
             desktop_id: phone_id_for_spki(identity.spki_der_p256()),
@@ -265,6 +310,11 @@ where
     Ok(AuthenticatedPhoneSession {
         tls,
         phone_id: handshake.phone_id,
+        session: Some(SessionIdentity {
+            session_id: hello.session_id().to_string(),
+            next_inbound_sequence,
+            next_outbound_sequence,
+        }),
     })
 }
 

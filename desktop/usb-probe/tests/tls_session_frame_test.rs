@@ -245,6 +245,51 @@ fn stalled_frame_after_first_byte_times_out() {
     assert_eq!(result, Err(TlsSessionFrameError::Timeout));
 }
 
+/// Task s1 (`odd/tasks/session-runtime.md`, contract section 4.2 / problem statement): the
+/// idle-wait phase must never lose a first byte that arrives (or whose read returns) only
+/// after the idle deadline has already elapsed. The reader below blocks inside its single
+/// `read` call until past the idle deadline, then returns a real first byte; the old
+/// post-read deadline check consumed that byte but still reported `PeerIdle`, desyncing the
+/// stream. The read must instead continue into phase (b) and complete the frame.
+#[test]
+fn first_byte_after_idle_deadline_is_not_lost() {
+    let bytes = encoded_frame_with_length_prefix(&sample_session_frame());
+    let idle_budget = Duration::from_millis(30);
+    let frame_budget = Duration::from_millis(500);
+    let mut source = ReleasesFirstByteAfterDeadline {
+        release_at: Instant::now() + Duration::from_millis(80),
+        first_byte: bytes[0],
+        first_byte_sent: false,
+        rest: Cursor::new(bytes[1..].to_vec()),
+    };
+
+    let result = read_session_frame_with_budgets(&mut source, idle_budget, frame_budget);
+
+    assert_eq!(
+        result,
+        Ok(sample_session_frame()),
+        "a first byte whose read returns after the idle deadline must continue into phase (b), not be lost as PeerIdle"
+    );
+}
+
+/// Task s1 (`odd/tasks/session-runtime.md`): a zero `idle_budget` still attempts exactly one
+/// read (the chosen behaviour over rejecting zero with a typed error). An immediately
+/// available first byte is therefore read and the frame completes under `frame_budget`.
+#[test]
+fn zero_idle_budget_still_attempts_one_read() {
+    let bytes = encoded_frame_with_length_prefix(&sample_session_frame());
+    let mut source = Cursor::new(bytes);
+
+    let result =
+        read_session_frame_with_budgets(&mut source, Duration::ZERO, Duration::from_millis(500));
+
+    assert_eq!(
+        result,
+        Ok(sample_session_frame()),
+        "a zero idle budget must still attempt one read, not fail closed before reading"
+    );
+}
+
 fn test_deadline() -> Instant {
     Instant::now() + Duration::from_millis(1500)
 }
@@ -385,6 +430,32 @@ impl Read for StallsAfterFirstByte {
                 "simulated stall after first byte",
             )),
         }
+    }
+}
+
+/// Blocks inside its single first `read` call until `release_at` (which the caller sets
+/// past the idle deadline), then returns exactly one byte; every later call delegates to
+/// `rest`. Simulates a blocking read that returns a real first byte only after the idle
+/// deadline has elapsed.
+struct ReleasesFirstByteAfterDeadline {
+    release_at: Instant,
+    first_byte: u8,
+    first_byte_sent: bool,
+    rest: Cursor<Vec<u8>>,
+}
+
+impl Read for ReleasesFirstByteAfterDeadline {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.first_byte_sent {
+            let now = Instant::now();
+            if now < self.release_at {
+                thread::sleep(self.release_at - now);
+            }
+            self.first_byte_sent = true;
+            buf[0] = self.first_byte;
+            return Ok(1);
+        }
+        self.rest.read(buf)
     }
 }
 
