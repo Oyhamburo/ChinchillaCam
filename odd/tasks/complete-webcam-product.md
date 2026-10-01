@@ -110,7 +110,7 @@ Para cada unidad de trabajo:
 ### M4 — Transportes autenticados y cambio de modo
 
 14. **T15 — USB video transport sobre AOA bulk.** Reusar claim/framing existente para stream sostenido con backpressure/timeouts; sin prueba física todavía.
-15. **T16 — Wi‑Fi LAN transport fake/loopback.** Modelar transporte Wi‑Fi sin listener externo no autenticado; fakes o loopback local hasta tener pairing/trust.
+15. **T16 — Wi‑Fi LAN transport fake/loopback.** Modelar transporte Wi‑Fi sin listener externo no autenticado; fakes o loopback local hasta tener pairing/trust. Estado (2026-09-30): hecho a nivel de dominio/tests en ambos lados (`odd/tasks/wifi-loopback-transport.md`); desktop: stack TLS genérico `S: Read + Write` (`02206e1`) y `LoopbackLanListener` sólo `127.0.0.1` (`4108428`); Android en `feat/t15c-fake-usb-sustained`: seam `TlsCiphertextTransport` + `StreamTlsCiphertextTransport` en memoria, sin permisos de red. Sin listener externo; revisión nativa pendiente.
 16. **T17 — Wi‑Fi LAN transport autenticado.** Habilitar listener/red local solo después de QR pairing + confianza local + one-active-computer; rechazar tráfico no autenticado.
 17. **T18 — Transport switch model.** Cambiar USB/Wi‑Fi sin reemparejar; interrupción explícita y estado recuperable.
 18. **T19 — Reconnection and session resume.** Reconectar cable/red sin nuevo QR cuando confianza local siga válida.

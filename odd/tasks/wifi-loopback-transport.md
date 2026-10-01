@@ -47,7 +47,8 @@ Criterios: `cargo fmt -- --check` y `cargo test --offline` verdes sin regresione
 
 Plan creado el 2026-09-30.
 d1 completada el 2026-09-30 (commit `02206e1`; 227 tests, 0 fallos). Revisión nativa pendiente: el START del facade ignoró `baseRef` y resolvió como candidato toda la rama desde `32d0401`; no se creó lineage. Incidente de tooling a diagnosticar antes de revisar.
-d2 completada el 2026-09-30 (231 tests, 0 fallos; baseline 227 + 4 nuevos). Sin commit todavía: el usuario decide push/commit. Revisión nativa pendiente.
+d2 completada el 2026-09-30 (commit `4108428`; 231 tests, 0 fallos; baseline 227 + 4 nuevos). Revisión nativa pendiente.
+Lado desktop de T16 cerrado el 2026-09-30: stack TLS genérico sobre `S: Read + Write` y `LoopbackLanListener` sólo en `127.0.0.1`, sin listener externo. Lado Android cerrado en `feat/t15c-fake-usb-sustained` (`9c11014`, `227a733`, `2952e65`). Pendientes: revisión nativa de `7c15ffd..4108428` (incidente del facade), interop real Android stream crudo ↔ `LoopbackLanListener` entre worktrees (pospuesta, requiere autorización), y consolidar el CCP1 duplicado de `LoopbackPairingProofServer`.
 
 ### Evidencia d1 (2026-09-30)
 
