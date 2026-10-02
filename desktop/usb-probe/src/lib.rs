@@ -1,3 +1,4 @@
+mod desktop_metrics;
 mod desktop_receiver;
 mod desktop_tls_identity;
 mod encoded_video_sink;
@@ -22,6 +23,10 @@ mod usb_tls_pairing_proof;
 mod video_decoder;
 mod video_fragment_reassembler;
 
+pub use desktop_metrics::{
+    DesktopMetricsAggregator, DesktopMetricsError, DesktopMetricsSnapshot, PhoneReportedMetrics,
+    DEFAULT_METRICS_WINDOW,
+};
 pub use desktop_receiver::{
     receive_desktop_video_frame, DesktopReceiverError, DesktopVideoSessionReceiver,
     StaticFrameKindClassifier, VideoFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
