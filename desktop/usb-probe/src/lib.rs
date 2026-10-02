@@ -1,5 +1,6 @@
 mod desktop_metrics;
 mod desktop_receiver;
+mod desktop_session_pipeline;
 mod desktop_tls_identity;
 mod encoded_video_sink;
 mod h264_access_unit;
@@ -30,6 +31,9 @@ pub use desktop_metrics::{
 pub use desktop_receiver::{
     receive_desktop_video_frame, DesktopReceiverError, DesktopVideoSessionReceiver,
     StaticFrameKindClassifier, VideoFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
+};
+pub use desktop_session_pipeline::{
+    DesktopSessionPipeline, DesktopSessionPipelineError, PipelineStep,
 };
 pub use desktop_tls_identity::{
     DesktopTlsIdentity, DesktopTlsIdentityError, DesktopTlsIdentityStore,
@@ -100,8 +104,9 @@ pub use usb_tls_pairing_proof::{
     UsbTlsPairingProofServer,
 };
 pub use video_decoder::{
-    DecodedFrameSink, DecodedFrameSinkError, DecodedVideoFrame, DecodingEncodedVideoSink,
-    FakeVideoDecoder, PixelFormat, RecordingDecodedFrameSink, VideoDecoder, VideoDecoderError,
+    DecodedFrameCounter, DecodedFrameSink, DecodedFrameSinkError, DecodedVideoFrame,
+    DecodingEncodedVideoSink, FakeVideoDecoder, PixelFormat, RecordingDecodedFrameSink,
+    VideoDecoder, VideoDecoderError,
 };
 pub use video_fragment_reassembler::{
     ReassembledVideoChunk, VideoFragmentReassembler, VideoFragmentReassemblerError,

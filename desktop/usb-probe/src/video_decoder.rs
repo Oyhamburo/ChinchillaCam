@@ -91,6 +91,13 @@ pub trait DecodedFrameSink {
         -> Result<(), DecodedFrameSinkError>;
 }
 
+/// Exposes how many decoded frames a decoder has emitted so far, so a pipeline can measure the
+/// decoded rate from the lifetime counter deltas without inspecting the decoder's private sink
+/// (contract section 4.5). Additive: a real backend implements this alongside [`VideoDecoder`].
+pub trait DecodedFrameCounter {
+    fn frames_emitted(&self) -> u64;
+}
+
 /// A [`DecodedFrameSink`] that records every frame it is given, for tests and pipeline wiring.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecordingDecodedFrameSink {
@@ -130,6 +137,7 @@ pub struct FakeVideoDecoder<F> {
     pixel_format: PixelFormat,
     width: u32,
     height: u32,
+    frames_emitted: u64,
 }
 
 impl<F> FakeVideoDecoder<F> {
@@ -141,6 +149,7 @@ impl<F> FakeVideoDecoder<F> {
             pixel_format: PixelFormat::Nv12,
             width: FAKE_DECODER_FRAME_WIDTH,
             height: FAKE_DECODER_FRAME_HEIGHT,
+            frames_emitted: 0,
         }
     }
 
@@ -194,7 +203,15 @@ where
         );
         self.sink.push_decoded_frame(frame).map_err(|error| {
             VideoDecoderError::Failure(format!("decoded frame sink rejected frame: {error:?}"))
-        })
+        })?;
+        self.frames_emitted += 1;
+        Ok(())
+    }
+}
+
+impl<F> DecodedFrameCounter for FakeVideoDecoder<F> {
+    fn frames_emitted(&self) -> u64 {
+        self.frames_emitted
     }
 }
 

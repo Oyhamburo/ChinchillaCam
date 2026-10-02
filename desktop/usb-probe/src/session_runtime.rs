@@ -146,6 +146,21 @@ impl fmt::Display for SessionEnd {
 
 impl std::error::Error for SessionEnd {}
 
+/// Encoded H.264 payload byte length of a video frame, or 0 for any non-video payload. A
+/// fragment reports only its own fragment bytes (the receiver reassembles whole chunks
+/// elsewhere); whole chunks report their full encoded payload.
+fn video_payload_byte_len(payload: &SessionFramePayload) -> u64 {
+    match payload {
+        SessionFramePayload::VideoChunk { h264_bytes, .. }
+        | SessionFramePayload::VideoChunkV2 { h264_bytes, .. } => h264_bytes.len() as u64,
+        SessionFramePayload::VideoChunkFragmentV1 {
+            fragment_h264_bytes,
+            ..
+        } => fragment_h264_bytes.len() as u64,
+        _ => 0,
+    }
+}
+
 /// What a single [`SessionRuntime::step`] observed. A step reads at most one frame and may
 /// also send one keepalive, so several of these flags can be set at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -186,6 +201,7 @@ where
     keepalives_received: u64,
     keepalives_sent: u64,
     video_frames_delivered: u64,
+    last_video_bytes_delivered: u64,
 }
 
 impl<S, C, K> SessionRuntime<S, C, K>
@@ -235,6 +251,7 @@ where
             keepalives_received: 0,
             keepalives_sent: 0,
             video_frames_delivered: 0,
+            last_video_bytes_delivered: 0,
         })
     }
 
@@ -260,6 +277,14 @@ where
 
     pub fn video_frames_delivered(&self) -> u64 {
         self.video_frames_delivered
+    }
+
+    /// Encoded byte length (the frame's H.264 payload) of the most recently delivered video
+    /// frame. Refreshed only when a step delivers a video frame, so callers read it on the same
+    /// step that saw `StepOutcome::received_video`; it is a minimal additive accessor used to
+    /// feed arrival-byte metrics without threading byte counts through the receiver.
+    pub fn last_video_bytes_delivered(&self) -> u64 {
+        self.last_video_bytes_delivered
     }
 
     /// Latest `MetricsSnapshot` payload received, if any (contract section 4.4: metrics are
@@ -377,6 +402,7 @@ where
             SessionFramePayload::VideoChunk { .. }
             | SessionFramePayload::VideoChunkV2 { .. }
             | SessionFramePayload::VideoChunkFragmentV1 { .. } => {
+                self.last_video_bytes_delivered = video_payload_byte_len(frame.payload());
                 self.receiver
                     .receive_session_frame(&frame, &mut self.sink)
                     .map_err(|error| match error {
