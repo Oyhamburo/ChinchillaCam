@@ -2,3 +2,4 @@
 //! test crate that declares `mod common;`, not as their own test binary.
 
 pub mod duplex;
+pub mod usb_transfer_pipe;
