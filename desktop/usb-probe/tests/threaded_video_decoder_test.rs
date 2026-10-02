@@ -180,6 +180,36 @@ fn inner_backpressure_is_counted_and_decoding_continues() {
 }
 
 #[test]
+fn inner_backpressure_drops_deltas_until_next_keyframe() {
+    let (sink, frames) = ChannelDecodedFrameSink::bounded(16).unwrap();
+    let mut decoder = ThreadedVideoDecoder::spawn(
+        "keyframe-gated-decoder",
+        config(16, Duration::from_millis(200)),
+        move || FakeVideoDecoder::new(sink).script_error(VideoDecoderError::Backpressure),
+    )
+    .unwrap();
+
+    // The key is lost to backpressure, so the delta that follows has no reference: it must be
+    // dropped, while the codec config still reaches the decoder and the next key reopens it.
+    for chunk in [
+        chunk(EncodedVideoFrameKind::Key, 10),
+        chunk(EncodedVideoFrameKind::CodecConfig, 0),
+        delta(20),
+        chunk(EncodedVideoFrameKind::Key, 30),
+        delta(40),
+    ] {
+        decoder.decode_encoded_video(chunk).unwrap();
+    }
+
+    let observed: Vec<u64> = (0..2)
+        .map(|_| frames.recv_timeout(GENEROUS).unwrap().pts_us())
+        .collect();
+    assert_eq!(observed, vec![30, 40]);
+    assert!(wait_until(|| decoder.frames_emitted() == 2));
+    assert_eq!(decoder.dropped_decodes(), 2);
+}
+
+#[test]
 fn frames_reach_channel_consumer_in_order() {
     let (sink, frames) = ChannelDecodedFrameSink::bounded(16).unwrap();
     let mut decoder = ThreadedVideoDecoder::spawn(

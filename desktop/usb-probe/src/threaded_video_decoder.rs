@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::{
     DecodedFrameCounter, DecodedFrameSink, DecodedFrameSinkError, DecodedVideoFrame,
-    EncodedVideoChunk, VideoDecoder, VideoDecoderError,
+    EncodedVideoChunk, EncodedVideoFrameKind, VideoDecoder, VideoDecoderError,
 };
 
 /// Why a threaded decoder or its channel sink could not be built.
@@ -92,7 +92,8 @@ impl Shared {
 ///
 /// Inner errors surface one chunk late: a `Failure` (or a panic in the factory or decoder) is
 /// recorded as sticky, the worker stops decoding, and every later call returns that error. An
-/// inner `Backpressure` (e.g. a full frame channel) only drops that chunk, counted in
+/// inner `Backpressure` (e.g. a full frame channel) drops that chunk and every following
+/// `Delta` until the next `Key` (codec configs still pass), all counted in
 /// [`dropped_decodes`](Self::dropped_decodes).
 ///
 /// Drop closes the queue and waits at most the join timeout for the worker's completion signal
@@ -149,7 +150,8 @@ impl ThreadedVideoDecoder {
         })
     }
 
-    /// Chunks the worker dropped because the inner decoder reported backpressure.
+    /// Chunks the worker dropped because the inner decoder reported backpressure, plus the
+    /// deltas it skipped afterwards while waiting for the next keyframe.
     pub fn dropped_decodes(&self) -> u64 {
         self.shared.dropped_decodes.load(Ordering::Acquire)
     }
@@ -161,7 +163,16 @@ where
     F: FnOnce() -> D,
 {
     let mut decoder = factory();
+    let mut awaiting_key = false;
     while let Ok(chunk) = receiver.recv() {
+        match chunk.frame_kind() {
+            EncodedVideoFrameKind::Key => awaiting_key = false,
+            EncodedVideoFrameKind::Delta if awaiting_key => {
+                shared.dropped_decodes.fetch_add(1, Ordering::AcqRel);
+                continue;
+            }
+            EncodedVideoFrameKind::Delta | EncodedVideoFrameKind::CodecConfig => {}
+        }
         let result = decoder.decode_encoded_video(chunk);
         shared
             .frames_emitted
@@ -169,6 +180,7 @@ where
         match result {
             Ok(()) => {}
             Err(VideoDecoderError::Backpressure) => {
+                awaiting_key = true;
                 shared.dropped_decodes.fetch_add(1, Ordering::AcqRel);
             }
             Err(error) => {
