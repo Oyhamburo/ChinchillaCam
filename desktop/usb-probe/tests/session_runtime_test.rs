@@ -23,9 +23,9 @@ use usb_probe::{
     accept_phone_reconnect_connection, phone_id_for_spki, read_session_frame, write_session_frame,
     AuthenticatedPhoneSession, BoundedEncodedVideoQueue, DecodingEncodedVideoSink,
     DesktopTlsIdentity, DesktopVideoSessionReceiver, FakeVideoDecoder, FileTrustedPhoneStore,
-    RecordingDecodedFrameSink, SessionEnd, SessionFrame, SessionFramePayload, SessionRuntime,
-    SessionRuntimeConfig, StaticFrameKindClassifier, StepOutcome, TrustedPhoneIdentity,
-    VideoDecoderError,
+    KeyframeGatedSink, RecordingDecodedFrameSink, SessionEnd, SessionFrame, SessionFramePayload,
+    SessionRuntime, SessionRuntimeConfig, StaticFrameKindClassifier, StepOutcome,
+    TrustedPhoneIdentity, VideoDecoderError,
 };
 
 const READ_TIMEOUT: Duration = Duration::from_millis(400);
@@ -140,6 +140,95 @@ fn decoder_failure_ends_session_with_decoder_cause() {
         assert!(
             matches!(end, SessionEnd::DecoderFailed(_)),
             "expected a decoder-caused end, got {end:?}"
+        );
+        drop(done_tx);
+    });
+
+    fixture.cleanup();
+}
+
+#[test]
+fn session_continues_after_saturation() {
+    let fixture = Fixture::new("continues-after-saturation");
+    let (desktop_duplex, phone_duplex) = InMemoryDuplex::pair(READ_TIMEOUT);
+    let cert = fixture.desktop_identity.certificate_der().to_vec();
+    let phone_identity = fixture.phone_identity.clone();
+
+    std::thread::scope(|scope| {
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        scope.spawn(move || {
+            let mut phone = phone_hello_and_accept(phone_duplex, &cert, &phone_identity);
+            // CodecConfig first (the decoder requires it), then a Key and a Delta.
+            send_phone_frame(
+                &mut phone,
+                HELLO_SEQUENCE + 1,
+                SessionFramePayload::video_chunk_v2_codec_config(0, 0, vec![0x67, 0x42]),
+            );
+            send_phone_frame(
+                &mut phone,
+                HELLO_SEQUENCE + 2,
+                SessionFramePayload::video_chunk_v2_key(1, 10_000, vec![0x65, 0x88, 0x84]),
+            );
+            send_phone_frame(
+                &mut phone,
+                HELLO_SEQUENCE + 3,
+                SessionFramePayload::video_chunk_v2_delta(2, 20_000, vec![0x41, 0x9a]),
+            );
+            let _ = done_rx.recv();
+        });
+
+        let session = accept_desktop_session(desktop_duplex, &fixture);
+        let start = Instant::now();
+        // The decoder backpressures exactly once; the gated sink must keep the session open.
+        let sink = KeyframeGatedSink::new(DecodingEncodedVideoSink::new(
+            FakeVideoDecoder::new(RecordingDecodedFrameSink::default())
+                .script_error(VideoDecoderError::Backpressure),
+        ));
+        let mut runtime = SessionRuntime::new(
+            session,
+            DesktopVideoSessionReceiver::new(StaticFrameKindClassifier::unknown()),
+            sink,
+            test_config(),
+            start,
+        )
+        .unwrap();
+
+        // Drive the session at a fixed `now` (no keepalive/dead logic) until all three frames
+        // are processed, failing loudly if the session ends early.
+        let mut ended = None;
+        for _ in 0..200 {
+            match runtime.step(start) {
+                Ok(_) => {
+                    if runtime.frames_received() >= 3 {
+                        break;
+                    }
+                }
+                Err(end) => {
+                    ended = Some(end);
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            ended.is_none(),
+            "session must survive saturation, but ended with {ended:?}"
+        );
+        assert_eq!(runtime.frames_received(), 3);
+
+        let gated = runtime.sink();
+        assert_eq!(
+            gated.saturation_events(),
+            1,
+            "one backpressure was absorbed"
+        );
+        // After the Key re-pushes the pending config, later frames decode: the Key and the
+        // Delta both reach the decoded-frame sink.
+        let decoded = gated.inner().decoder().sink().frames();
+        assert_eq!(
+            decoded.len(),
+            2,
+            "the Key and Delta should decode after saturation, got {decoded:?}"
         );
         drop(done_tx);
     });
