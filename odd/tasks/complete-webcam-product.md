@@ -119,6 +119,7 @@ Para cada unidad de trabajo:
 
 19. **T20 — Desktop receiver session core.** Separar transporte, protocolo, decode y métricas; fakes para USB/Wi‑Fi.
 20. **T21 — Video decode pipeline.** Decodificar frames H.264 con boundary testeable; errores tipados.
+    - 2026-10-01: decodificación H.264 real en macOS vía VideoToolbox completada (`odd/tasks/videotoolbox-decoder.md`) y probada con un fixture real, también de punta a punta en `DesktopSessionPipeline` sobre loopback TCP. Windows (Media Foundation) pendiente.
 21. **T22 — Desktop metrics.** FPS, latency, dropped frames, active transport quality y causa probable.
 
 ### M6 — Cámara seleccionable por plataforma
