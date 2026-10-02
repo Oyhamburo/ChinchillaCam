@@ -21,10 +21,11 @@ use rustls::{
 };
 use usb_probe::{
     accept_phone_reconnect_connection, phone_id_for_spki, read_session_frame, write_session_frame,
-    AuthenticatedPhoneSession, BoundedEncodedVideoQueue, DesktopTlsIdentity,
-    DesktopVideoSessionReceiver, FileTrustedPhoneStore, SessionEnd, SessionFrame,
-    SessionFramePayload, SessionRuntime, SessionRuntimeConfig, StaticFrameKindClassifier,
-    StepOutcome, TrustedPhoneIdentity,
+    AuthenticatedPhoneSession, BoundedEncodedVideoQueue, DecodingEncodedVideoSink,
+    DesktopTlsIdentity, DesktopVideoSessionReceiver, FakeVideoDecoder, FileTrustedPhoneStore,
+    RecordingDecodedFrameSink, SessionEnd, SessionFrame, SessionFramePayload, SessionRuntime,
+    SessionRuntimeConfig, StaticFrameKindClassifier, StepOutcome, TrustedPhoneIdentity,
+    VideoDecoderError,
 };
 
 const READ_TIMEOUT: Duration = Duration::from_millis(400);
@@ -89,6 +90,57 @@ fn video_frames_reach_sink_through_runtime() {
         assert_eq!(runtime.sink().len(), 1, "video chunk must reach the sink");
         assert_eq!(runtime.video_frames_delivered(), 1);
         assert_eq!(runtime.frames_received(), 1);
+        drop(done_tx);
+    });
+
+    fixture.cleanup();
+}
+
+#[test]
+fn decoder_failure_ends_session_with_decoder_cause() {
+    let fixture = Fixture::new("decoder-failure-cause");
+    let (desktop_duplex, phone_duplex) = InMemoryDuplex::pair(READ_TIMEOUT);
+    let cert = fixture.desktop_identity.certificate_der().to_vec();
+    let phone_identity = fixture.phone_identity.clone();
+
+    std::thread::scope(|scope| {
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        scope.spawn(move || {
+            let mut phone = phone_hello_and_accept(phone_duplex, &cert, &phone_identity);
+            send_phone_frame(
+                &mut phone,
+                HELLO_SEQUENCE + 1,
+                SessionFramePayload::video_chunk_v2_key(0, 10_000, vec![0x65, 0x88, 0x84]),
+            );
+            let _ = done_rx.recv();
+        });
+
+        let session = accept_desktop_session(desktop_duplex, &fixture);
+        let start = Instant::now();
+        let sink = DecodingEncodedVideoSink::new(
+            FakeVideoDecoder::new(RecordingDecodedFrameSink::default()).script_error(
+                VideoDecoderError::Failure("synthetic decode failure".to_string()),
+            ),
+        );
+        let mut runtime = SessionRuntime::new(
+            session,
+            DesktopVideoSessionReceiver::new(StaticFrameKindClassifier::unknown()),
+            sink,
+            test_config(),
+            start,
+        )
+        .unwrap();
+
+        let end = loop {
+            match runtime.step(start) {
+                Ok(_) => continue,
+                Err(end) => break end,
+            }
+        };
+        assert!(
+            matches!(end, SessionEnd::DecoderFailed(_)),
+            "expected a decoder-caused end, got {end:?}"
+        );
         drop(done_tx);
     });
 

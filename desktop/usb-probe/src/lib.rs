@@ -92,7 +92,10 @@ pub use usb_tls_pairing_proof::{
     PairedPhoneCandidate, PairedPhoneCandidateConfirmError, UsbTlsPairingProofError,
     UsbTlsPairingProofServer,
 };
-pub use video_decoder::{DecodingEncodedVideoSink, VideoDecoder, VideoDecoderError};
+pub use video_decoder::{
+    DecodedFrameSink, DecodedFrameSinkError, DecodedVideoFrame, DecodingEncodedVideoSink,
+    FakeVideoDecoder, PixelFormat, RecordingDecodedFrameSink, VideoDecoder, VideoDecoderError,
+};
 pub use video_fragment_reassembler::{
     ReassembledVideoChunk, VideoFragmentReassembler, VideoFragmentReassemblerError,
 };

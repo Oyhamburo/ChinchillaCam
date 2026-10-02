@@ -25,9 +25,10 @@ use rustls::{ServerConnection, StreamOwned};
 
 use crate::{
     phone_connection::close_best_effort, read_session_frame_with_budgets, write_session_frame,
-    AuthenticatedPhoneSession, DesktopVideoSessionReceiver, EncodedVideoSink, SessionFrame,
-    SessionFramePayload, SessionLivenessError, SessionLivenessTracker, TlsSessionFrameError,
-    VideoFrameKindClassifier, DEFAULT_DEAD_THRESHOLD, DEFAULT_KEEPALIVE_INTERVAL,
+    AuthenticatedPhoneSession, DesktopReceiverError, DesktopVideoSessionReceiver, EncodedVideoSink,
+    SessionFrame, SessionFramePayload, SessionLivenessError, SessionLivenessTracker,
+    TlsSessionFrameError, VideoFrameKindClassifier, DEFAULT_DEAD_THRESHOLD,
+    DEFAULT_KEEPALIVE_INTERVAL,
 };
 
 /// Default read poll slice: how long a single `step` waits for the next frame before giving
@@ -108,8 +109,11 @@ pub enum SessionEnd {
     /// No frame was received within `dead_threshold` (contract section 4.3).
     PeerDead,
     /// A frame violated the shared contract: wrong `sessionId`, a non-+1 sequence, an illegal
-    /// frame type after the handshake, a sequence counter exhausted, or a receiver rejection.
+    /// frame type after the handshake, or a sequence counter exhausted.
     ProtocolViolation(String),
+    /// The decoder or the decoded-frame sink rejected a video frame (contract section 4.3): a
+    /// decoder/sink failure is not a protocol violation, so it carries its own cause.
+    DecoderFailed(String),
     /// Reading the next frame failed for a non-idle reason (framing/decode/transport).
     ReadFailed(String),
     /// Writing an outbound frame (keepalive or command) failed.
@@ -128,6 +132,9 @@ impl fmt::Display for SessionEnd {
             Self::PeerDead => write!(formatter, "session ended: peer is dead"),
             Self::ProtocolViolation(detail) => {
                 write!(formatter, "session ended: protocol violation: {detail}")
+            }
+            Self::DecoderFailed(detail) => {
+                write!(formatter, "session ended: decoder failed: {detail}")
             }
             Self::ReadFailed(detail) => write!(formatter, "session ended: read failed: {detail}"),
             Self::WriteFailed(detail) => write!(formatter, "session ended: write failed: {detail}"),
@@ -233,6 +240,10 @@ where
 
     pub fn sink(&self) -> &K {
         &self.sink
+    }
+
+    pub fn sink_mut(&mut self) -> &mut K {
+        &mut self.sink
     }
 
     pub fn frames_received(&self) -> u64 {
@@ -368,10 +379,17 @@ where
             | SessionFramePayload::VideoChunkFragmentV1 { .. } => {
                 self.receiver
                     .receive_session_frame(&frame, &mut self.sink)
-                    .map_err(|error| {
-                        SessionEnd::ProtocolViolation(format!(
-                            "video receiver rejected frame: {error:?}"
-                        ))
+                    .map_err(|error| match error {
+                        // A sink/decoder rejection is not a protocol violation (contract
+                        // section 4.3): it carries its own decoder cause.
+                        DesktopReceiverError::SinkRejected(sink_error) => {
+                            SessionEnd::DecoderFailed(format!(
+                                "video sink rejected frame: {sink_error:?}"
+                            ))
+                        }
+                        other => SessionEnd::ProtocolViolation(format!(
+                            "video receiver rejected frame: {other:?}"
+                        )),
                     })?;
                 self.video_frames_delivered += 1;
                 outcome.received_video = true;
