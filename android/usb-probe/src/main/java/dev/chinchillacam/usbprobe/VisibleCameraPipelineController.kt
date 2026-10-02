@@ -75,7 +75,7 @@ class VisibleCameraPipelineController(
                             encodedVideoSinkFactory?.invoke()
                         } catch (error: RuntimeException) {
                             result.handle.stop()
-                            return@synchronized setError("Egreso fake no pudo iniciar: ${error.message ?: error::class.java.simpleName}")
+                            return@synchronized setError("No se pudo iniciar el envío de video: ${error.message ?: error::class.java.simpleName}")
                         }
                         activeEncodedVideoSink = sink
                         handle = result.handle
@@ -124,27 +124,27 @@ class VisibleCameraPipelineController(
                 EncodedVideoEgressSinkResult.BackpressureExceeded -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
-                    "Egreso fake detenido por backpressure; cámara local detenida.",
+                    "El envío de video se detuvo por saturación; cámara local detenida.",
                 )
                 EncodedVideoEgressSinkResult.Closed -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
-                    "Egreso fake cerrado; cámara local detenida.",
+                    "El envío de video se detuvo porque el canal se cerró; cámara local detenida.",
                 )
                 EncodedVideoEgressSinkResult.Oversized -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
-                    "Egreso fake rechazó chunk H.264 oversized; cámara local detenida.",
+                    "El envío de video se detuvo: un fragmento de video superó el tamaño permitido; cámara local detenida.",
                 )
                 is EncodedVideoEgressSinkResult.InvalidPayload -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
-                    "Egreso fake rechazó payload inválido: ${result.reason}; cámara local detenida.",
+                    "El envío de video se detuvo: fragmento de video inválido: ${result.reason}; cámara local detenida.",
                 )
                 is EncodedVideoEgressSinkResult.Failed -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
-                    "Egreso fake falló: ${result.reason}",
+                    "El envío de video se detuvo: ${result.reason}",
                 )
             }
         }
@@ -152,7 +152,7 @@ class VisibleCameraPipelineController(
         running.consumeEncoded(chunks.size)
         val stats = sink.stats()
         return setRunning(
-            detail = "Cámara local activa. ${stats.accepted} chunks codificados enviados al egreso fake; ${stats.dropped} descartados.",
+            detail = "Cámara local activa. ${stats.accepted} fragmentos de video entregados al canal de salida; ${stats.dropped} descartados.",
             metricsText = fakeEgressMetricsText(stats),
         )
     }
@@ -174,7 +174,7 @@ class VisibleCameraPipelineController(
         handle = null
         stoppedHandle?.stop()
         val closeError = closeActiveSink()
-        val errorDetail = if (closeError == null) detail else "$detail Egreso fake se cerró con errores: $closeError"
+        val errorDetail = if (closeError == null) detail else "$detail El canal de salida se cerró con errores: $closeError"
         return setError(errorDetail, metricsText)
     }
 
@@ -185,16 +185,16 @@ class VisibleCameraPipelineController(
         metrics.reset()
         val closeError = closeActiveSink()
         if (stoppedHandle == null) {
-            state = if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("falló el cierre del egreso simulado: $closeError"))
+            state = if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("falló el cierre del canal de salida: $closeError"))
             return state
         }
         state = when (val stopped = stoppedHandle.stop()) {
             CameraEncoderPipelineStopResult.Stopped,
             CameraEncoderPipelineStopResult.AlreadyStopped -> {
-                if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("falló el cierre del egreso simulado: $closeError"))
+                if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("falló el cierre del canal de salida: $closeError"))
             }
             is CameraEncoderPipelineStopResult.Failed -> {
-                val reasons = stopped.reasons + listOfNotNull(closeError?.let { "falló el cierre del egreso simulado: $it" })
+                val reasons = stopped.reasons + listOfNotNull(closeError?.let { "falló el cierre del canal de salida: $it" })
                 stopErrorState(reasons)
             }
         }

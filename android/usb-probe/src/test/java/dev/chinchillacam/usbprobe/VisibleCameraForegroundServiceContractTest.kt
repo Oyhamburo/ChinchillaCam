@@ -8,6 +8,15 @@ import java.io.File
 
 class VisibleCameraForegroundServiceContractTest {
     @Test
+    fun serviceStopsItselfWhenThePipelineFails() {
+        val source = File("src/main/java/dev/chinchillacam/usbprobe/VisibleCameraForegroundService.kt").readText()
+        assertTrue(
+            "the production pipeline owner must wire onPipelineFailureStop to stop the service on the main thread",
+            Regex("""onPipelineFailureStop\s*=\s*\{\s*mainHandler\.post\s*\{\s*stopForegroundAndSelfPreservingStatus\(\)""").containsMatchIn(source),
+        )
+    }
+
+    @Test
     fun manifestDeclaresCameraForegroundServiceContract() {
         val manifest = File("src/main/AndroidManifest.xml").readText()
 

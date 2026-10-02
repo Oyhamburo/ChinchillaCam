@@ -68,6 +68,29 @@ class VisibleCameraForegroundServiceDrainLoopTest {
     }
 
     @Test
+    fun drainLoopExitOnErrorIsVisible() {
+        val errorPipeline = ErrorOnDrainPipeline()
+        val errorNotified = CountDownLatch(1)
+        val errorLoop = ThreadedVisibleCameraServiceDrainLoop(intervalMillis = 10L)
+
+        errorLoop.start(errorPipeline) { errorNotified.countDown() }
+
+        assertTrue("a non-Running drain exit must notify the owner", errorNotified.await(1, TimeUnit.SECONDS))
+
+        val runningPipeline = BlockingDrainPipeline()
+        val userStopNotified = AtomicBoolean(false)
+        val runningLoop = ThreadedVisibleCameraServiceDrainLoop(intervalMillis = 10L)
+        runningLoop.start(runningPipeline) { userStopNotified.set(true) }
+        assertTrue(runningPipeline.awaitFirstDrainEntered())
+
+        runningLoop.stop()
+        runningPipeline.releaseFirstDrain()
+        Thread.sleep(150)
+
+        assertFalse("a user stop must not notify the owner of a failure", userStopNotified.get())
+    }
+
+    @Test
     fun repeatedStartWhileRunningDoesNotCreateTwoActiveLoops() {
         val pipeline = BlockingDrainPipeline()
         val drainLoop = ThreadedVisibleCameraServiceDrainLoop(intervalMillis = 10L)
@@ -150,6 +173,15 @@ class VisibleCameraForegroundServiceDrainLoopTest {
         fun awaitFirstDrain(): Boolean = firstDrain.await(1, TimeUnit.SECONDS)
         fun awaitSuccessfulDrain(): Boolean = successfulDrain.await(1, TimeUnit.SECONDS)
         fun firstDrainThread(): Thread = firstThread
+    }
+
+    private class ErrorOnDrainPipeline : VisibleCameraServicePipeline {
+        override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String, cameraPermissionGranted: Boolean): VisibleCameraPipelineStatus =
+            VisibleCameraPipelineStatus.Running
+
+        override fun drainOnce(maxOutputs: Int): VisibleCameraPipelineStatus = VisibleCameraPipelineStatus.Error
+
+        override fun stop(): VisibleCameraPipelineStatus = VisibleCameraPipelineStatus.Stopped
     }
 
     private class BlockingDrainPipeline : VisibleCameraServicePipeline {

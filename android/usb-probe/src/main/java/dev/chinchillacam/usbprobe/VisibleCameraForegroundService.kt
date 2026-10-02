@@ -37,6 +37,7 @@ class VisibleCameraForegroundService : Service() {
                 ),
             ),
             drainLoop = ThreadedVisibleCameraServiceDrainLoop(),
+            onPipelineFailureStop = { mainHandler.post { stopForegroundAndSelfPreservingStatus() } },
         )
     }
 
@@ -92,6 +93,12 @@ class VisibleCameraForegroundService : Service() {
     private fun currentCameraCatalogSnapshot(): CameraCatalogSnapshot {
         val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         return CameraCapabilityCatalog(AndroidCameraManagerGateway(AndroidCameraManagerFacadeImpl(cameraManager))).snapshot()
+    }
+
+    private fun stopForegroundAndSelfPreservingStatus() {
+        @Suppress("DEPRECATION")
+        stopForeground(true)
+        stopSelf()
     }
 
     private fun stopForegroundAndSelf() {
@@ -434,14 +441,15 @@ interface VisibleCameraServicePipeline {
     fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String, cameraPermissionGranted: Boolean): VisibleCameraPipelineStatus
     fun drainOnce(maxOutputs: Int): VisibleCameraPipelineStatus
     fun stop(): VisibleCameraPipelineStatus
+    fun currentDetail(): String = ""
 }
 
 interface VisibleCameraServiceDrainLoop {
-    fun start(pipeline: VisibleCameraServicePipeline)
+    fun start(pipeline: VisibleCameraServicePipeline, onPipelineStopped: () -> Unit = {})
     fun stop()
 
     object Noop : VisibleCameraServiceDrainLoop {
-        override fun start(pipeline: VisibleCameraServicePipeline) = Unit
+        override fun start(pipeline: VisibleCameraServicePipeline, onPipelineStopped: () -> Unit) = Unit
         override fun stop() = Unit
     }
 }
@@ -450,6 +458,7 @@ class VisibleCameraForegroundServicePipelineOwner(
     private val pipeline: VisibleCameraServicePipeline,
     private val drainLoop: VisibleCameraServiceDrainLoop,
     private val policy: VisibleCameraForegroundServiceCommandPolicy = VisibleCameraForegroundServiceCommandPolicy(),
+    private val onPipelineFailureStop: () -> Unit = {},
 ) {
     val requiresActivityReference: Boolean = false
     private var active: Boolean = false
@@ -497,7 +506,7 @@ class VisibleCameraForegroundServicePipelineOwner(
                 true
             } else {
                 active = status == VisibleCameraPipelineStatus.Running || status == VisibleCameraPipelineStatus.Starting
-                if (active) drainLoop.start(pipeline)
+                if (active) drainLoop.start(pipeline) { handlePipelineStoppedByFailure() }
                 false
             }
         }
@@ -535,12 +544,27 @@ class VisibleCameraForegroundServicePipelineOwner(
     }
 
     fun handleDestroy() {
-        VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
+        val preserveError = VisibleCameraServiceStatusStore.snapshot().state == VisibleCameraServiceState.Error
+        if (!preserveError) {
+            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
+        }
         synchronized(this) {
             generation += 1
             stopActiveLocked()
         }
-        VisibleCameraServiceStatusStore.clearStopped()
+        if (!preserveError) VisibleCameraServiceStatusStore.clearStopped()
+    }
+
+    private fun handlePipelineStoppedByFailure() {
+        val detail = pipeline.currentDetail().ifBlank { "El servicio visible de cámara local informó un error." }
+        synchronized(this) {
+            generation += 1
+            stopActiveLocked()
+        }
+        VisibleCameraServiceStatusStore.publish(
+            VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = detail),
+        )
+        onPipelineFailureStop()
     }
 
     private fun stopActiveLocked() {
@@ -559,6 +583,8 @@ class ControllerVisibleCameraServicePipeline(
     override fun drainOnce(maxOutputs: Int): VisibleCameraPipelineStatus = controller.drainOnce(maxOutputs).status
 
     override fun stop(): VisibleCameraPipelineStatus = controller.stopFromUser().status
+
+    override fun currentDetail(): String = controller.currentState().detail
 }
 
 class ThreadedVisibleCameraServiceDrainLoop(
@@ -569,12 +595,12 @@ class ThreadedVisibleCameraServiceDrainLoop(
     private var nextGeneration: Long = 0L
     private var currentJob: DrainJob? = null
 
-    override fun start(pipeline: VisibleCameraServicePipeline) {
+    override fun start(pipeline: VisibleCameraServicePipeline, onPipelineStopped: () -> Unit) {
         val job = synchronized(lock) {
             val activeJob = currentJob
             if (activeJob != null && !activeJob.stopRequested) return
             nextGeneration += 1
-            DrainJob(generation = nextGeneration, pipeline = pipeline).also { newJob ->
+            DrainJob(generation = nextGeneration, pipeline = pipeline, onPipelineStopped = onPipelineStopped).also { newJob ->
                 newJob.thread = Thread({ runDrainLoop(newJob) }, "visible-camera-service-drain-${newJob.generation}")
                 currentJob = newJob
             }
@@ -593,14 +619,19 @@ class ThreadedVisibleCameraServiceDrainLoop(
     }
 
     private fun runDrainLoop(job: DrainJob) {
+        var stoppedByFailure = false
         try {
             while (isCurrent(job)) {
                 val status = try {
                     job.pipeline.drainOnce(maxOutputs)
                 } catch (exception: RuntimeException) {
+                    stoppedByFailure = isCurrent(job)
                     return
                 }
-                if (status != VisibleCameraPipelineStatus.Running) return
+                if (status != VisibleCameraPipelineStatus.Running) {
+                    stoppedByFailure = isCurrent(job)
+                    return
+                }
                 if (!isCurrent(job)) return
                 try {
                     Thread.sleep(intervalMillis)
@@ -611,6 +642,7 @@ class ThreadedVisibleCameraServiceDrainLoop(
             }
         } finally {
             finish(job)
+            if (stoppedByFailure) job.onPipelineStopped()
         }
     }
 
@@ -628,6 +660,7 @@ class ThreadedVisibleCameraServiceDrainLoop(
     private class DrainJob(
         val generation: Long,
         val pipeline: VisibleCameraServicePipeline,
+        val onPipelineStopped: () -> Unit,
     ) {
         @Volatile var stopRequested: Boolean = false
         lateinit var thread: Thread

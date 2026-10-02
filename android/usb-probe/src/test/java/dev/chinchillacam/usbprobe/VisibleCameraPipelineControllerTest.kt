@@ -117,7 +117,7 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(listOf(2), handle.consumed)
         assertEquals(listOf(0, 1), transport.payloads.map { it.chunkIndex })
         assertEquals(listOf(SessionVideoFrameKind.CODEC_CONFIG, SessionVideoFrameKind.DELTA), transport.payloads.map { it.frameKind })
-        assertEquals("Cámara local activa. 2 chunks codificados enviados al egreso fake; 0 descartados.", state.detail)
+        assertEquals("Cámara local activa. 2 fragmentos de video entregados al canal de salida; 0 descartados.", state.detail)
         assertTrue(state.metricsText.contains("Chunks aceptados: 2"))
         assertTrue(state.metricsText.contains("Chunks descartados: 0"))
     }
@@ -223,7 +223,7 @@ class VisibleCameraPipelineControllerTest {
 
         assertEquals(1, handle.stopCount)
         assertEquals(VisibleCameraPipelineStatus.Error, state.status)
-        assertEquals("Egreso fake no pudo iniciar: sink init boom", state.detail)
+        assertEquals("No se pudo iniciar el envío de video: sink init boom", state.detail)
         assertEquals(state, afterFailure)
     }
 
@@ -247,7 +247,7 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(emptyList<Int>(), handle.consumed)
         assertEquals(1, transport.closeCount)
         assertEquals(VisibleCameraPipelineStatus.Error, state.status)
-        assertEquals("Egreso fake detenido por backpressure; cámara local detenida.", state.detail)
+        assertEquals("El envío de video se detuvo por saturación; cámara local detenida.", state.detail)
         assertEquals(state, afterFailure)
     }
 
@@ -271,7 +271,7 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(emptyList<Int>(), handle.consumed)
         assertEquals(1, transport.payloads.size)
         assertEquals(1, transport.closeCount)
-        assertEquals("Egreso fake cerrado; cámara local detenida.", state.detail)
+        assertEquals("El envío de video se detuvo porque el canal se cerró; cámara local detenida.", state.detail)
     }
 
     @Test
@@ -293,7 +293,7 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(emptyList<Int>(), handle.consumed)
         assertEquals(0, transport.payloads.size)
         assertEquals(1, transport.closeCount)
-        assertEquals("Egreso fake rechazó chunk H.264 oversized; cámara local detenida.", state.detail)
+        assertEquals("El envío de video se detuvo: un fragmento de video superó el tamaño permitido; cámara local detenida.", state.detail)
     }
 
     @Test
@@ -337,7 +337,7 @@ class VisibleCameraPipelineControllerTest {
         controller.start(sampleSnapshot(), "camera-1", true)
         val restarted = controller.drainOnce(maxOutputs = 4)
 
-        assertEquals("La cámara se detuvo con errores: falló el cierre del egreso simulado: close boom", stopped.detail)
+        assertEquals("La cámara se detuvo con errores: falló el cierre del canal de salida: close boom", stopped.detail)
         assertEquals(1, secondTransport.payloads.size)
         assertEquals(VisibleCameraPipelineStatus.Running, restarted.status)
     }

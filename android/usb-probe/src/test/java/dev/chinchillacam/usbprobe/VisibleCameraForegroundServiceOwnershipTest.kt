@@ -2,6 +2,7 @@ package dev.chinchillacam.usbprobe
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -47,6 +48,53 @@ class VisibleCameraForegroundServiceOwnershipTest {
     }
 
     @Test
+    fun egressFailurePublishesErrorAndStopsService() {
+        val pipeline = FailingDetailServicePipeline("El envío de video se detuvo: el canal se cerró; cámara local detenida.")
+        val drainLoop = CallbackCapturingDrainLoop()
+        var failureStopRequested = false
+        val owner = VisibleCameraForegroundServicePipelineOwner(
+            pipeline,
+            drainLoop,
+            onPipelineFailureStop = { failureStopRequested = true },
+        )
+        owner.handleStartCommand(
+            VisibleCameraServiceStartRequest(selectedCameraId = "camera-1", visibleStartRequested = true),
+            cameraPermissionGranted = true,
+            snapshot = sampleSnapshot(),
+        )
+
+        drainLoop.invokeOnPipelineStopped()
+
+        val status = VisibleCameraServiceStatusStore.snapshot()
+        assertEquals(VisibleCameraServiceState.Error, status.state)
+        assertEquals("El envío de video se detuvo: el canal se cerró; cámara local detenida.", status.message)
+        assertTrue("pipeline failure must request the service stop", failureStopRequested)
+        assertTrue("pipeline resources must be released on failure", pipeline.stopped)
+    }
+
+    @Test
+    fun userStopDoesNotPublishError() {
+        val pipeline = FakeServicePipeline()
+        val drainLoop = CallbackCapturingDrainLoop()
+        val owner = VisibleCameraForegroundServicePipelineOwner(
+            pipeline,
+            drainLoop,
+            onPipelineFailureStop = { throw AssertionError("a user stop must not use the failure stop path") },
+        )
+        owner.handleStartCommand(
+            VisibleCameraServiceStartRequest(selectedCameraId = "camera-1", visibleStartRequested = true),
+            cameraPermissionGranted = true,
+            snapshot = sampleSnapshot(),
+        )
+
+        owner.handleStopCommand()
+
+        val status = VisibleCameraServiceStatusStore.snapshot()
+        assertEquals(VisibleCameraServiceState.Stopped, status.state)
+        assertNotEquals(VisibleCameraServiceState.Error, status.state)
+    }
+
+    @Test
     fun serviceOwnerDoesNotHoldActivityReference() {
         val owner = VisibleCameraForegroundServicePipelineOwner(FakeServicePipeline(), VisibleCameraServiceDrainLoop.Noop)
 
@@ -81,5 +129,38 @@ private class FakeServicePipeline : VisibleCameraServicePipeline {
     override fun stop(): VisibleCameraPipelineStatus {
         stopped = true
         return VisibleCameraPipelineStatus.Stopped
+    }
+}
+
+private class FailingDetailServicePipeline(private val detail: String) : VisibleCameraServicePipeline {
+    var stopped: Boolean = false
+
+    override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String, cameraPermissionGranted: Boolean): VisibleCameraPipelineStatus =
+        VisibleCameraPipelineStatus.Running
+
+    override fun drainOnce(maxOutputs: Int): VisibleCameraPipelineStatus = VisibleCameraPipelineStatus.Error
+
+    override fun stop(): VisibleCameraPipelineStatus {
+        stopped = true
+        return VisibleCameraPipelineStatus.Error
+    }
+
+    override fun currentDetail(): String = detail
+}
+
+private class CallbackCapturingDrainLoop : VisibleCameraServiceDrainLoop {
+    private var onPipelineStopped: (() -> Unit)? = null
+    var stopCount: Int = 0
+
+    override fun start(pipeline: VisibleCameraServicePipeline, onPipelineStopped: () -> Unit) {
+        this.onPipelineStopped = onPipelineStopped
+    }
+
+    override fun stop() {
+        stopCount += 1
+    }
+
+    fun invokeOnPipelineStopped() {
+        onPipelineStopped?.invoke()
     }
 }
