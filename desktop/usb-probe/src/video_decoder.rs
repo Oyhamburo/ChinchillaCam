@@ -82,6 +82,9 @@ impl DecodedVideoFrame {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodedFrameSinkError {
     Rejected(String),
+    /// The sink is saturated and cannot take a frame right now; a decoder reports it as
+    /// [`VideoDecoderError::Backpressure`].
+    Backpressure,
 }
 
 /// Where a decoder emits decoded frames (contract section 4.3). A decoder owns its sink and

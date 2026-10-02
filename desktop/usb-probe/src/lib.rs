@@ -114,7 +114,7 @@ pub use video_fragment_reassembler::{
     ReassembledVideoChunk, VideoFragmentReassembler, VideoFragmentReassemblerError,
 };
 #[cfg(target_os = "macos")]
-pub use videotoolbox_decoder::{VideoToolboxError, VideoToolboxFormat};
+pub use videotoolbox_decoder::{VideoToolboxDecoder, VideoToolboxError, VideoToolboxFormat};
 
 use std::{
     collections::VecDeque,
