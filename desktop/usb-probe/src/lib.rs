@@ -163,6 +163,7 @@ pub enum UsbProbeError {
     BulkInterfaceNotClaimed,
     ActiveConfigurationUnavailable,
     InvalidBulkTransferBudget,
+    InvalidBulkReadTransferLen(usize),
     EmptyBulkFrame,
     OversizeBulkFrame { length: usize, max: usize },
     BulkFrameHeaderTruncated,
@@ -1488,11 +1489,18 @@ impl BulkFrame {
     }
 }
 
+/// Default size of the buffer handed to each bulk IN read. It is a multiple
+/// of every USB bulk max packet size, so libusb never overflows mid-packet.
+pub const DEFAULT_BULK_READ_TRANSFER_LEN: usize = 16 * 1024;
+
+const BULK_READ_TRANSFER_GRANULE: usize = 512;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameTransferBudget {
     timeout: Duration,
     max_payload_len: usize,
     max_io_attempts: usize,
+    read_transfer_len: usize,
 }
 
 impl FrameTransferBudget {
@@ -1509,11 +1517,29 @@ impl FrameTransferBudget {
             timeout,
             max_payload_len,
             max_io_attempts,
+            read_transfer_len: DEFAULT_BULK_READ_TRANSFER_LEN,
         })
+    }
+
+    /// Sets the bulk IN read buffer size; it must be a non-zero multiple of
+    /// 512 bytes so that a whole bulk packet always fits.
+    pub fn with_read_transfer_len(
+        mut self,
+        read_transfer_len: usize,
+    ) -> Result<Self, UsbProbeError> {
+        if read_transfer_len == 0 || read_transfer_len % BULK_READ_TRANSFER_GRANULE != 0 {
+            return Err(UsbProbeError::InvalidBulkReadTransferLen(read_transfer_len));
+        }
+        self.read_transfer_len = read_transfer_len;
+        Ok(self)
     }
 
     pub fn timeout(&self) -> Duration {
         self.timeout
+    }
+
+    pub fn read_transfer_len(&self) -> usize {
+        self.read_transfer_len
     }
 
     pub fn max_payload_len(&self) -> usize {
@@ -1619,27 +1645,95 @@ impl UsbBulkIo for RecordingUsbBulkIo {
     }
 }
 
+/// Test double that models how libusb delivers bulk IN transfers: every
+/// queued transfer is returned whole by a single `read_bulk`, and a buffer
+/// smaller than the next transfer fails with the overflow error instead of
+/// splitting it or keeping a residual.
+#[derive(Debug, Clone)]
+pub struct TransferExactBulkIo {
+    transfers: VecDeque<Vec<u8>>,
+    read_buffer_lens: Vec<usize>,
+    written_bytes: Vec<u8>,
+}
+
+impl TransferExactBulkIo {
+    pub fn with_transfers(transfers: Vec<Vec<u8>>) -> Self {
+        Self {
+            transfers: transfers.into(),
+            read_buffer_lens: Vec::new(),
+            written_bytes: Vec::new(),
+        }
+    }
+
+    pub fn read_buffer_lens(&self) -> &[usize] {
+        &self.read_buffer_lens
+    }
+
+    pub fn pending_transfers(&self) -> usize {
+        self.transfers.len()
+    }
+
+    pub fn written_bytes(&self) -> &[u8] {
+        &self.written_bytes
+    }
+}
+
+impl UsbBulkIo for TransferExactBulkIo {
+    fn read_bulk(&mut self, buffer: &mut [u8], _timeout: Duration) -> Result<usize, UsbProbeError> {
+        self.read_buffer_lens.push(buffer.len());
+        let Some(transfer) = self.transfers.front() else {
+            return Ok(0);
+        };
+        if buffer.len() < transfer.len() {
+            return Err(UsbProbeError::UsbBulkTransferFailed(
+                rusb::Error::Overflow.to_string(),
+            ));
+        }
+        let transfer = self.transfers.pop_front().expect("front transfer exists");
+        buffer[..transfer.len()].copy_from_slice(&transfer);
+        Ok(transfer.len())
+    }
+
+    fn write_bulk(&mut self, bytes: &[u8], _timeout: Duration) -> Result<usize, UsbProbeError> {
+        self.written_bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FramedUsbStream<I> {
     io: I,
     budget: FrameTransferBudget,
+    residual: Vec<u8>,
+    transfer_buffer: Vec<u8>,
 }
+
+const BULK_FRAME_HEADER_LEN: usize = 8;
 
 impl<I> FramedUsbStream<I>
 where
     I: UsbBulkIo,
 {
     pub fn new(io: I, budget: FrameTransferBudget) -> Self {
-        Self { io, budget }
+        let transfer_buffer = vec![0; budget.read_transfer_len()];
+        Self {
+            io,
+            budget,
+            residual: Vec::new(),
+            transfer_buffer,
+        }
     }
 
+    /// Reads one frame from the residual bytes of earlier bulk transfers,
+    /// pulling whole transfers only while the frame is incomplete. Bytes past
+    /// the frame stay buffered for the next call.
     pub fn read_frame(&mut self) -> Result<BulkFrame, UsbProbeError> {
-        let mut header = [0; 8];
-        let header_read = self.read_exact_bounded(&mut header)?;
-        if header_read < header.len() {
+        let mut transfers = 0;
+        if !self.fill_residual(BULK_FRAME_HEADER_LEN, &mut transfers)? {
             return Err(UsbProbeError::BulkFrameHeaderTruncated);
         }
 
+        let header = &self.residual[..BULK_FRAME_HEADER_LEN];
         let stream_id = u32::from_le_bytes(header[0..4].try_into().expect("fixed header slice"));
         let payload_len_u32 =
             u32::from_le_bytes(header[4..8].try_into().expect("fixed header slice"));
@@ -1655,15 +1749,16 @@ where
             });
         }
 
-        let mut payload = vec![0; payload_len];
-        let payload_read = self.read_exact_bounded(&mut payload)?;
-        if payload_read < payload_len {
+        let frame_len = BULK_FRAME_HEADER_LEN + payload_len;
+        if !self.fill_residual(frame_len, &mut transfers)? {
             return Err(UsbProbeError::BulkFramePayloadTruncated {
                 expected: payload_len,
-                actual: payload_read,
+                actual: self.residual.len() - BULK_FRAME_HEADER_LEN,
             });
         }
 
+        let payload = self.residual[BULK_FRAME_HEADER_LEN..frame_len].to_vec();
+        self.residual.drain(..frame_len);
         BulkFrame::new(stream_id, payload)
     }
 
@@ -1709,28 +1804,33 @@ where
         &self.io
     }
 
-    fn read_exact_bounded(&mut self, buffer: &mut [u8]) -> Result<usize, UsbProbeError> {
-        let mut read = 0;
-        for _ in 0..self.budget.max_io_attempts() {
-            if read == buffer.len() {
-                return Ok(read);
+    /// Appends whole bulk transfers to the residual until it holds `target`
+    /// bytes. Returns `false` when the source ends (zero-length read) or the
+    /// per-frame transfer budget is spent first.
+    fn fill_residual(
+        &mut self,
+        target: usize,
+        transfers: &mut usize,
+    ) -> Result<bool, UsbProbeError> {
+        while self.residual.len() < target {
+            if *transfers == self.budget.max_io_attempts() {
+                return Ok(false);
             }
-            let remaining = buffer.len() - read;
+            *transfers += 1;
+            let limit = self.transfer_buffer.len();
             let count = self
                 .io
-                .read_bulk(&mut buffer[read..], self.budget.timeout())?;
-            if count > remaining {
-                return Err(UsbProbeError::BulkTransferCountExceeded {
-                    count,
-                    limit: remaining,
-                });
+                .read_bulk(&mut self.transfer_buffer, self.budget.timeout())?;
+            if count > limit {
+                return Err(UsbProbeError::BulkTransferCountExceeded { count, limit });
             }
             if count == 0 {
-                return Ok(read);
+                return Ok(false);
             }
-            read += count;
+            self.residual
+                .extend_from_slice(&self.transfer_buffer[..count]);
         }
-        Ok(read)
+        Ok(true)
     }
 }
 

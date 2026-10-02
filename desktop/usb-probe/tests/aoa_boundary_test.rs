@@ -904,8 +904,9 @@ fn framed_usb_stream_preserves_coalesced_read_residual_for_next_frame() {
 
 #[test]
 fn framed_usb_stream_rejects_backend_read_count_larger_than_buffer_without_panic() {
+    let limit = usb_probe::DEFAULT_BULK_READ_TRANSFER_LEN;
     let io = ContractViolatingBulkIo {
-        read_count: 9,
+        read_count: limit + 1,
         write_count: 0,
     };
     let budget = FrameTransferBudget::new(Duration::from_millis(250), 16, 8).unwrap();
@@ -913,7 +914,10 @@ fn framed_usb_stream_rejects_backend_read_count_larger_than_buffer_without_panic
 
     assert_eq!(
         stream.read_frame().unwrap_err(),
-        usb_probe::UsbProbeError::BulkTransferCountExceeded { count: 9, limit: 8 }
+        usb_probe::UsbProbeError::BulkTransferCountExceeded {
+            count: limit + 1,
+            limit
+        }
     );
 }
 
@@ -1249,7 +1253,7 @@ fn claimed_bulk_interface_selects_alt_zero_then_exchanges_fixed_frame() {
     );
     assert_eq!(
         stream.io().claim_state().read_timeouts(),
-        &[Duration::from_millis(123), Duration::from_millis(123)]
+        &[Duration::from_millis(123)]
     );
     assert_eq!(stream.io().claim_state().endpoints().in_endpoint(), 0x81);
     assert_eq!(stream.io().claim_state().endpoints().out_endpoint(), 0x02);
