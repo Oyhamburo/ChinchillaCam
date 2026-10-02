@@ -93,11 +93,35 @@ sealed class AccessoryOpenResult<out T> {
     data class Opened(val session: AccessoryIoSession) : AccessoryOpenResult<Nothing>()
 }
 
+const val DEFAULT_ACCESSORY_READ_TRANSFER_BYTES: Int = 16 * 1024
+const val MIN_ACCESSORY_READ_TRANSFER_BYTES: Int = 512
+
+/**
+ * Accessory I/O over the AOA bulk endpoints.
+ *
+ * The accessory input delivers whole bulk transfers; reading it with a buffer smaller than the
+ * incoming transfer can drop the remainder or fail, and the peer may send a complete frame
+ * (header and payload) in a single transfer. Reads therefore always use a fixed transfer-sized
+ * buffer, and [readExactly] serves callers from the bytes left over by previous transfers.
+ *
+ * Reads are not thread-safe: a session supports a single reader at a time. Writes are
+ * independent of the read buffer.
+ */
 class AccessoryIoSession(
     private val input: InputStream,
     private val output: OutputStream,
     private val closeable: Closeable,
+    readTransferBytes: Int = DEFAULT_ACCESSORY_READ_TRANSFER_BYTES,
 ) : Closeable {
+    init {
+        require(readTransferBytes >= MIN_ACCESSORY_READ_TRANSFER_BYTES) {
+            "readTransferBytes must be at least $MIN_ACCESSORY_READ_TRANSFER_BYTES"
+        }
+    }
+
+    private val transferBuffer = ByteArray(readTransferBytes)
+    private var residualStart = 0
+    private var residualEnd = 0
     private var closed = false
 
     fun readExactly(expectedBytes: Int): AccessoryReadResult {
@@ -106,17 +130,31 @@ class AccessoryIoSession(
         val buffer = ByteArray(expectedBytes)
         var offset = 0
         while (offset < expectedBytes) {
-            val read = input.read(buffer, offset, expectedBytes - offset)
-            if (read == -1) {
+            if (residualStart == residualEnd && !refillTransferBuffer()) {
                 return if (offset == 0) {
                     AccessoryReadResult.Eof
                 } else {
                     AccessoryReadResult.ShortRead(expectedBytes = expectedBytes, actualBytes = offset)
                 }
             }
-            offset += read
+            val copied = minOf(expectedBytes - offset, residualEnd - residualStart)
+            transferBuffer.copyInto(buffer, offset, residualStart, residualStart + copied)
+            residualStart += copied
+            offset += copied
         }
         return AccessoryReadResult.Complete(buffer)
+    }
+
+    private fun refillTransferBuffer(): Boolean {
+        while (true) {
+            val read = input.read(transferBuffer, 0, transferBuffer.size)
+            if (read == -1) return false
+            if (read > 0) {
+                residualStart = 0
+                residualEnd = read
+                return true
+            }
+        }
     }
 
     fun write(bytes: ByteArray) {
