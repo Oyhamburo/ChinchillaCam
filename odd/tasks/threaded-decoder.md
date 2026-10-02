@@ -36,7 +36,9 @@ TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecuci�
 
 Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test --offline`. Baseline: 265 tests, 0 fallos (HEAD `f1d1c91`).
 
-1. [ ] h1 — `ThreadedVideoDecoder` y `ChannelDecodedFrameSink` genéricos, probados con `FakeVideoDecoder`. RED: `enqueue_does_not_block_on_slow_decoder`, `full_queue_reports_backpressure`, `inner_failure_is_reported_on_next_chunk`, `frames_reach_channel_consumer_in_order`, `drop_joins_worker_within_bound`. ~350 líneas.
+1. [x] h1 — `ThreadedVideoDecoder` y `ChannelDecodedFrameSink` genéricos, probados con `FakeVideoDecoder`. RED: `enqueue_does_not_block_on_slow_decoder`, `full_queue_reports_backpressure`, `inner_failure_is_reported_on_next_chunk`, `frames_reach_channel_consumer_in_order`, `drop_joins_worker_within_bound`. ~350 líneas.
+   - Evidencia: nuevo `src/threaded_video_decoder.rs` (exportado en `lib.rs`, todas las plataformas) y `tests/threaded_video_decoder_test.rs`. RED observado: `error[E0432]: unresolved imports usb_probe::ChannelDecodedFrameSink, usb_probe::ThreadedVideoDecoder, usb_probe::ThreadedVideoDecoderConfig, usb_probe::ThreadedVideoDecoderError`. GREEN: 8/8 en 5 corridas focalizadas (5 RED + triangulación `inner_backpressure_is_counted_and_decoding_continues`, `factory_panic_is_reported_as_failure`, `config_rejects_zero_capacity_and_zero_join_timeout`). Suite completa: 273 tests, 0 fallos; `cargo fmt --check` limpio; clippy sin avisos en archivos tocados.
+   - Desvíos: `ThreadedVideoDecoder` no es genérico en su tipo (el `D` sólo aparece en `spawn`), así el pipeline no arrastra el tipo del decoder interno. `ChannelDecodedFrameSink::bounded` devuelve el `Receiver<DecodedVideoFrame>` de `std`. Un `Backpressure` del decoder interno descarta sólo ese chunk y se cuenta en `dropped_decodes`; ojo: `FakeVideoDecoder` convierte cualquier error del sink (incluido `Backpressure`) en `Failure`, por lo que con el fake una cola de salida llena es fallo fijo (VideoToolbox sí propaga `Backpressure`). Si el trabajador sigue trabado al vencer `join_timeout`, el hilo se suelta (detach) y termina solo. Tamaño: ~530 líneas (por encima de la meta de ~350, por las pruebas de triangulación y la documentación).
 2. [ ] h2 — Integración con VideoToolbox en el pipeline: el step que recibe `CodecConfig` ya no espera la creación de la sesión. RED: `config_step_does_not_wait_for_session_creation` (sobre loopback, con el fixture real). ~250 líneas.
 
 Criterios: suite completa verde sin regresiones; build `--offline`; sin dependencias nuevas.
@@ -44,3 +46,7 @@ Criterios: suite completa verde sin regresiones; build `--offline`; sin dependen
 ## Progreso
 
 Plan creado el 2026-10-01.
+
+h1 implementada (sin commit): decoder en hilo propio y sink por canal, 273/0.
+
+Nota del orquestador en la lectura de h1 (2026-10-01): `ThreadedVideoDecoder` no es genérico en `D` (sólo `spawn` lo es); se acepta porque oculta el tipo del decoder interno al pipeline. Seguimiento: si el trabajador descarta un chunk `Key` por backpressure de la salida, los `Delta` siguientes llegan sin referencia; conviene aplicar dentro del trabajador la misma regla de descarte hasta el próximo keyframe. Tamaño ~534 líneas (declarado: tres tests extra).

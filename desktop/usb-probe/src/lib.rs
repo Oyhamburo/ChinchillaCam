@@ -17,6 +17,7 @@ mod phone_connection;
 mod session_frame;
 mod session_liveness;
 mod session_runtime;
+mod threaded_video_decoder;
 mod tls_session_frame;
 mod trusted_phone_store;
 mod usb_tls_ciphertext_stream;
@@ -88,6 +89,10 @@ pub use session_liveness::{
 pub use session_runtime::{
     SessionEnd, SessionRuntime, SessionRuntimeConfig, SessionRuntimeError, StepOutcome,
     DEFAULT_FRAME_BUDGET, DEFAULT_POLL_SLICE,
+};
+pub use threaded_video_decoder::{
+    ChannelDecodedFrameSink, ThreadedVideoDecoder, ThreadedVideoDecoderConfig,
+    ThreadedVideoDecoderError,
 };
 pub use tls_session_frame::{
     read_session_frame, read_session_frame_with_budgets, write_session_frame, TlsSessionFrameError,
