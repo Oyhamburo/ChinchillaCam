@@ -15,3 +15,9 @@ rusb = "0.9"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["alloc"] }
 sha2 = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFBase", "CFDictionary", "CFString", "CFNumber"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMBase", "CMFormatDescription", "CMBlockBuffer", "CMSampleBuffer", "CMTime", "objc2-core-video"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVReturn", "CVBuffer", "CVImageBuffer", "CVPixelBuffer"] }
+objc2-video-toolbox = { version = "0.3.2", default-features = false, features = ["std", "VTBase", "VTErrors", "VTSession", "VTDecompressionSession", "VTDecompressionProperties", "objc2-core-media", "objc2-core-video"] }

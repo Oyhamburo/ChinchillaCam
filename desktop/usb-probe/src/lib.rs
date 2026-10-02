@@ -23,6 +23,8 @@ mod usb_tls_ciphertext_stream;
 mod usb_tls_pairing_proof;
 mod video_decoder;
 mod video_fragment_reassembler;
+#[cfg(target_os = "macos")]
+mod videotoolbox_decoder;
 
 pub use desktop_metrics::{
     DesktopMetricsAggregator, DesktopMetricsError, DesktopMetricsSnapshot, PhoneReportedMetrics,
@@ -111,6 +113,8 @@ pub use video_decoder::{
 pub use video_fragment_reassembler::{
     ReassembledVideoChunk, VideoFragmentReassembler, VideoFragmentReassemblerError,
 };
+#[cfg(target_os = "macos")]
+pub use videotoolbox_decoder::{VideoToolboxError, VideoToolboxFormat};
 
 use std::{
     collections::VecDeque,

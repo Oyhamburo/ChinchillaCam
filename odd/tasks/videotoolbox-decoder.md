@@ -36,7 +36,11 @@ TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecuci�
 
 Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test --offline`. Baseline: 258 tests, 0 fallos (HEAD `0b79ab7`).
 
-1. [ ] v1 — Dependencias macOS y descripción de formato: `CMVideoFormatDescriptionCreateFromH264ParameterSets` desde `H264ParameterSets`, dimensiones leídas de la descripción. RED: `format_description_reports_fixture_dimensions`, `invalid_parameter_sets_fail_without_panic`. ~250 líneas.
+1. [x] v1 — Dependencias macOS y descripción de formato: `CMVideoFormatDescriptionCreateFromH264ParameterSets` desde `H264ParameterSets`, dimensiones leídas de la descripción. RED: `format_description_reports_fixture_dimensions`, `invalid_parameter_sets_fail_without_panic`. ~250 líneas.
+   - Dependencias agregadas en `Cargo.toml` bajo `[target.'cfg(target_os = "macos")'.dependencies]`, todas `0.3.2` con `default-features = false`: `objc2-core-foundation` (`std`, `CFBase`, `CFDictionary`, `CFString`, `CFNumber`), `objc2-core-media` (`std`, `CMBase`, `CMFormatDescription`, `CMBlockBuffer`, `CMSampleBuffer`, `CMTime`, `objc2-core-video`), `objc2-core-video` (`std`, `CVBase`, `CVReturn`, `CVBuffer`, `CVImageBuffer`, `CVPixelBuffer`), `objc2-video-toolbox` (`std`, `VTBase`, `VTErrors`, `VTSession`, `VTDecompressionSession`, `VTDecompressionProperties`, `objc2-core-media`, `objc2-core-video`). `Cargo.lock` sumó `bitflags 2.13.1` y los cuatro crates; resolvió y compiló con `--offline` desde el caché local.
+   - `src/videotoolbox_decoder.rs` (sólo macOS): `VideoToolboxFormat::from_parameter_sets` crea la descripción con longitud de cabecera NAL 4, la guarda en `CFRetained<CMFormatDescription>` y expone `dimensions()` leído de `CMVideoFormatDescriptionGetDimensions`; `VideoToolboxError::FormatDescription { status }` lleva el OSStatus y `InvalidDimensions` rechaza dimensiones no positivas. Cada bloque `unsafe` tiene comentario `SAFETY`.
+   - RED observado: `cargo test --offline --test videotoolbox_decoder_test` falló con `error[E0432]: unresolved imports usb_probe::VideoToolboxError, usb_probe::VideoToolboxFormat`. GREEN: 2/2; fixture 16x16 y SPS/PPS basura devuelve error tipado con OSStatus distinto de cero, sin `panic`.
+   - Suite: `cargo fmt -- --check` limpio, `cargo test --offline` 260 pasan, 0 fallan (baseline 258 + 2). `cargo clippy --offline -- -D warnings` falla sólo por dos lints preexistentes en `src/trusted_phone_store.rs` (`manual_is_multiple_of`, `chunks_exact_to_as_chunks`), sin hallazgos en el módulo nuevo.
 2. [ ] v2 — Sesión y decodificación: `CMBlockBuffer`/`CMSampleBuffer` length-prefixed con PTS, `VTDecompressionSession` con callback, copia NV12 a `DecodedVideoFrame`, `VideoToolboxDecoder` implementando `VideoDecoder`. RED: `decodes_fixture_idr_to_one_nv12_frame`, `access_unit_before_config_fails`, `corrupt_access_unit_fails_without_panic`, `sink_backpressure_maps_to_decoder_backpressure`. ~400 líneas.
 3. [ ] v3 — Pipeline real: `DesktopSessionPipeline` con `VideoToolboxDecoder` sobre loopback TCP enviando el fixture como `CodecConfig` + `Key`; se mide el tiempo de decodificación por step. RED: `pipeline_decodes_real_h264_over_loopback`. ~250 líneas.
 
@@ -45,3 +49,5 @@ Criterios: suite completa verde sin regresiones; build `--offline`; sin `panic` 
 ## Progreso
 
 Plan creado el 2026-10-01.
+
+v1 implementado sobre `de9ad3c` sin commit: dependencias objc2 sólo macOS verificadas con `--offline` y descripción de formato H.264 con dimensiones reales; suite 260/0.
