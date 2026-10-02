@@ -164,12 +164,29 @@ pub enum UsbProbeError {
     ActiveConfigurationUnavailable,
     InvalidBulkTransferBudget,
     InvalidBulkReadTransferLen(usize),
+    InvalidBulkIdleReadTimeout(Duration),
     EmptyBulkFrame,
-    OversizeBulkFrame { length: usize, max: usize },
+    OversizeBulkFrame {
+        length: usize,
+        max: usize,
+    },
     BulkFrameHeaderTruncated,
-    BulkFramePayloadTruncated { expected: usize, actual: usize },
+    BulkFramePayloadTruncated {
+        expected: usize,
+        actual: usize,
+    },
     BulkShortWrite,
-    BulkTransferCountExceeded { count: usize, limit: usize },
+    BulkTransferCountExceeded {
+        count: usize,
+        limit: usize,
+    },
+    /// A bulk IN read timed out before transferring any byte.
+    BulkReadTimeout,
+    /// A bulk IN read timed out after `consumed` bytes of the current frame
+    /// were already buffered; the frame boundary is lost.
+    BulkFrameStalled {
+        consumed: usize,
+    },
     UsbBulkTransferFailed(String),
     SelectedDeviceNotFound(DeviceIdentifier),
     InvalidReenumerationWait,
@@ -1263,13 +1280,22 @@ where
     fn read_bulk(&mut self, buffer: &mut [u8], timeout: Duration) -> Result<usize, UsbProbeError> {
         self.handle
             .read_bulk(self.claim.endpoints().in_endpoint(), buffer, timeout)
-            .map_err(|error| UsbProbeError::UsbBulkTransferFailed(error.to_string()))
+            .map_err(map_rusb_read_error)
     }
 
     fn write_bulk(&mut self, bytes: &[u8], timeout: Duration) -> Result<usize, UsbProbeError> {
         self.handle
             .write_bulk(self.claim.endpoints().out_endpoint(), bytes, timeout)
             .map_err(|error| UsbProbeError::UsbBulkTransferFailed(error.to_string()))
+    }
+}
+
+/// Maps a bulk IN read error from rusb. rusb reports `Timeout` only when no
+/// byte was transferred, so it becomes the recoverable `BulkReadTimeout`.
+pub fn map_rusb_read_error(error: rusb::Error) -> UsbProbeError {
+    match error {
+        rusb::Error::Timeout => UsbProbeError::BulkReadTimeout,
+        other => UsbProbeError::UsbBulkTransferFailed(other.to_string()),
     }
 }
 
@@ -1495,12 +1521,16 @@ pub const DEFAULT_BULK_READ_TRANSFER_LEN: usize = 16 * 1024;
 
 const BULK_READ_TRANSFER_GRANULE: usize = 512;
 
+/// libusb treats a zero timeout as infinite, so idle reads need at least 1 ms.
+const MIN_BULK_IDLE_READ_TIMEOUT: Duration = Duration::from_millis(1);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameTransferBudget {
     timeout: Duration,
     max_payload_len: usize,
     max_io_attempts: usize,
     read_transfer_len: usize,
+    idle_read_timeout: Option<Duration>,
 }
 
 impl FrameTransferBudget {
@@ -1518,6 +1548,7 @@ impl FrameTransferBudget {
             max_payload_len,
             max_io_attempts,
             read_transfer_len: DEFAULT_BULK_READ_TRANSFER_LEN,
+            idle_read_timeout: None,
         })
     }
 
@@ -1534,8 +1565,26 @@ impl FrameTransferBudget {
         Ok(self)
     }
 
+    /// Sets the timeout of the first bulk IN read of a frame while nothing of
+    /// that frame is buffered yet; every other read keeps `timeout()`. It
+    /// must be at least 1 ms because libusb treats zero as infinite.
+    pub fn with_idle_read_timeout(
+        mut self,
+        idle_read_timeout: Duration,
+    ) -> Result<Self, UsbProbeError> {
+        if idle_read_timeout < MIN_BULK_IDLE_READ_TIMEOUT {
+            return Err(UsbProbeError::InvalidBulkIdleReadTimeout(idle_read_timeout));
+        }
+        self.idle_read_timeout = Some(idle_read_timeout);
+        Ok(self)
+    }
+
     pub fn timeout(&self) -> Duration {
         self.timeout
+    }
+
+    pub fn idle_read_timeout(&self) -> Option<Duration> {
+        self.idle_read_timeout
     }
 
     pub fn read_transfer_len(&self) -> usize {
@@ -1648,25 +1697,44 @@ impl UsbBulkIo for RecordingUsbBulkIo {
 /// Test double that models how libusb delivers bulk IN transfers: every
 /// queued transfer is returned whole by a single `read_bulk`, and a buffer
 /// smaller than the next transfer fails with the overflow error instead of
-/// splitting it or keeping a residual.
+/// splitting it or keeping a residual. Queued errors (for example
+/// `BulkReadTimeout`) are returned by one read each.
 #[derive(Debug, Clone)]
 pub struct TransferExactBulkIo {
-    transfers: VecDeque<Vec<u8>>,
+    transfers: VecDeque<Result<Vec<u8>, UsbProbeError>>,
     read_buffer_lens: Vec<usize>,
+    read_timeouts: Vec<Duration>,
+    write_error: Option<UsbProbeError>,
     written_bytes: Vec<u8>,
 }
 
 impl TransferExactBulkIo {
     pub fn with_transfers(transfers: Vec<Vec<u8>>) -> Self {
+        Self::with_reads(transfers.into_iter().map(Ok).collect())
+    }
+
+    pub fn with_reads(reads: Vec<Result<Vec<u8>, UsbProbeError>>) -> Self {
         Self {
-            transfers: transfers.into(),
+            transfers: reads.into(),
             read_buffer_lens: Vec::new(),
+            read_timeouts: Vec::new(),
+            write_error: None,
             written_bytes: Vec::new(),
         }
     }
 
+    /// Makes every later `write_bulk` fail with `error`.
+    pub fn failing_writes_with(mut self, error: UsbProbeError) -> Self {
+        self.write_error = Some(error);
+        self
+    }
+
     pub fn read_buffer_lens(&self) -> &[usize] {
         &self.read_buffer_lens
+    }
+
+    pub fn read_timeouts(&self) -> &[Duration] {
+        &self.read_timeouts
     }
 
     pub fn pending_transfers(&self) -> usize {
@@ -1679,22 +1747,27 @@ impl TransferExactBulkIo {
 }
 
 impl UsbBulkIo for TransferExactBulkIo {
-    fn read_bulk(&mut self, buffer: &mut [u8], _timeout: Duration) -> Result<usize, UsbProbeError> {
+    fn read_bulk(&mut self, buffer: &mut [u8], timeout: Duration) -> Result<usize, UsbProbeError> {
         self.read_buffer_lens.push(buffer.len());
-        let Some(transfer) = self.transfers.front() else {
-            return Ok(0);
-        };
-        if buffer.len() < transfer.len() {
-            return Err(UsbProbeError::UsbBulkTransferFailed(
-                rusb::Error::Overflow.to_string(),
-            ));
+        self.read_timeouts.push(timeout);
+        match self.transfers.front() {
+            None => return Ok(0),
+            Some(Ok(transfer)) if buffer.len() < transfer.len() => {
+                return Err(UsbProbeError::UsbBulkTransferFailed(
+                    rusb::Error::Overflow.to_string(),
+                ));
+            }
+            Some(_) => {}
         }
-        let transfer = self.transfers.pop_front().expect("front transfer exists");
+        let transfer = self.transfers.pop_front().expect("front transfer exists")?;
         buffer[..transfer.len()].copy_from_slice(&transfer);
         Ok(transfer.len())
     }
 
     fn write_bulk(&mut self, bytes: &[u8], _timeout: Duration) -> Result<usize, UsbProbeError> {
+        if let Some(error) = &self.write_error {
+            return Err(error.clone());
+        }
         self.written_bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
@@ -1724,9 +1797,29 @@ where
         }
     }
 
+    /// Sets or clears the idle read timeout after construction, for example
+    /// once a handshake that must keep the full read timeout has finished.
+    pub fn set_idle_read_timeout(
+        &mut self,
+        idle_read_timeout: Option<Duration>,
+    ) -> Result<(), UsbProbeError> {
+        self.budget = match idle_read_timeout {
+            Some(timeout) => self.budget.clone().with_idle_read_timeout(timeout)?,
+            None => FrameTransferBudget {
+                idle_read_timeout: None,
+                ..self.budget.clone()
+            },
+        };
+        Ok(())
+    }
+
     /// Reads one frame from the residual bytes of earlier bulk transfers,
     /// pulling whole transfers only while the frame is incomplete. Bytes past
     /// the frame stay buffered for the next call.
+    ///
+    /// A read timeout while nothing of the frame is buffered returns
+    /// `BulkReadTimeout` and leaves the stream intact; a timeout once part of
+    /// the frame is buffered returns the fatal `BulkFrameStalled`.
     pub fn read_frame(&mut self) -> Result<BulkFrame, UsbProbeError> {
         let mut transfers = 0;
         if !self.fill_residual(BULK_FRAME_HEADER_LEN, &mut transfers)? {
@@ -1818,9 +1911,19 @@ where
             }
             *transfers += 1;
             let limit = self.transfer_buffer.len();
-            let count = self
-                .io
-                .read_bulk(&mut self.transfer_buffer, self.budget.timeout())?;
+            let frame_started = !self.residual.is_empty();
+            let timeout = match self.budget.idle_read_timeout() {
+                Some(idle_timeout) if !frame_started => idle_timeout,
+                _ => self.budget.timeout(),
+            };
+            let count = match self.io.read_bulk(&mut self.transfer_buffer, timeout) {
+                Err(UsbProbeError::BulkReadTimeout) if frame_started => {
+                    return Err(UsbProbeError::BulkFrameStalled {
+                        consumed: self.residual.len(),
+                    });
+                }
+                result => result?,
+            };
             if count > limit {
                 return Err(UsbProbeError::BulkTransferCountExceeded { count, limit });
             }

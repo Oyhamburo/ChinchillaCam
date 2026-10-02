@@ -2,8 +2,9 @@ use std::io::{Read, Write};
 use std::time::Duration;
 
 use usb_probe::{
-    BulkFrame, FrameTransferBudget, FramedUsbStream, RecordingUsbBulkIo, UsbProbeError,
-    UsbTlsCiphertextStream, USB_TLS_CIPHERTEXT_MAX_CHUNK_BYTES, USB_TLS_CIPHERTEXT_STREAM_ID,
+    BulkFrame, FrameTransferBudget, FramedUsbStream, RecordingUsbBulkIo, TransferExactBulkIo,
+    UsbProbeError, UsbTlsCiphertextStream, USB_TLS_CIPHERTEXT_MAX_CHUNK_BYTES,
+    USB_TLS_CIPHERTEXT_STREAM_ID,
 };
 
 #[test]
@@ -117,6 +118,73 @@ fn read_transport_error_poisons_stream_for_later_reads_writes_and_flushes() {
     assert!(stream.read(&mut out).is_err());
     assert!(stream.write(b"later plaintext").is_err());
     assert!(stream.flush().is_err());
+}
+
+#[test]
+fn idle_bulk_timeout_surfaces_timed_out_without_poisoning() {
+    let idle_timeout = Duration::from_millis(2);
+    let mut stream = UsbTlsCiphertextStream::new(FramedUsbStream::new(
+        TransferExactBulkIo::with_reads(vec![
+            Err(UsbProbeError::BulkReadTimeout),
+            Ok(frame_bytes(USB_TLS_CIPHERTEXT_STREAM_ID, b"late")),
+        ]),
+        budget(),
+    ));
+    stream.set_idle_read_timeout(Some(idle_timeout)).unwrap();
+    let mut out = [0; 4];
+
+    let error = stream.read(&mut out).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    stream.read_exact(&mut out).unwrap();
+    assert_eq!(&out, b"late");
+    assert_eq!(
+        stream.framed_stream().io().read_timeouts(),
+        &[idle_timeout, idle_timeout]
+    );
+    assert_eq!(stream.write(b"reply").unwrap(), 5);
+    assert!(stream.flush().is_ok());
+}
+
+#[test]
+fn mid_frame_bulk_timeout_poisons_stream() {
+    let encoded = frame_bytes(USB_TLS_CIPHERTEXT_STREAM_ID, b"partial");
+    let mut stream = UsbTlsCiphertextStream::new(FramedUsbStream::new(
+        TransferExactBulkIo::with_reads(vec![
+            Ok(encoded[..5].to_vec()),
+            Err(UsbProbeError::BulkReadTimeout),
+            Ok(frame_bytes(USB_TLS_CIPHERTEXT_STREAM_ID, b"valid")),
+        ]),
+        budget(),
+    ));
+    let mut out = [0; 5];
+
+    let error = stream.read(&mut out).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(stream.read(&mut out).is_err());
+    assert!(stream.write(b"later plaintext").is_err());
+}
+
+#[test]
+fn write_timeout_still_poisons() {
+    for write_error in [
+        UsbProbeError::UsbBulkTransferFailed(rusb::Error::Timeout.to_string()),
+        UsbProbeError::BulkReadTimeout,
+    ] {
+        let mut stream = UsbTlsCiphertextStream::new(FramedUsbStream::new(
+            TransferExactBulkIo::with_reads(vec![Ok(frame_bytes(
+                USB_TLS_CIPHERTEXT_STREAM_ID,
+                b"valid",
+            ))])
+            .failing_writes_with(write_error),
+            budget(),
+        ));
+        let mut out = [0; 5];
+
+        assert!(stream.write(b"ciphertext").is_err());
+        assert!(stream.flush().is_err());
+        assert!(stream.read(&mut out).is_err());
+        assert!(stream.write(b"again").is_err());
+    }
 }
 
 #[test]

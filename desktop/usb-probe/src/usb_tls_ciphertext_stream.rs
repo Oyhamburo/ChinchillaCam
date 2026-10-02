@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
+use std::time::Duration;
 
-use crate::{FramedUsbStream, UsbBulkIo};
+use crate::{FramedUsbStream, UsbBulkIo, UsbProbeError};
 
 pub const USB_TLS_CIPHERTEXT_STREAM_ID: u32 = 0x0102_0305;
 pub const USB_TLS_CIPHERTEXT_MAX_CHUNK_BYTES: usize = 32_768;
@@ -33,8 +34,17 @@ where
         &self.framed_stream
     }
 
+    /// Sets or clears the idle read timeout of the underlying framed stream.
+    /// Apply it after the TLS handshake, which keeps the full read timeout.
+    pub fn set_idle_read_timeout(
+        &mut self,
+        idle_read_timeout: Option<Duration>,
+    ) -> Result<(), UsbProbeError> {
+        self.framed_stream.set_idle_read_timeout(idle_read_timeout)
+    }
+
     fn read_next_ciphertext_chunk(&mut self) -> io::Result<()> {
-        let frame = self.framed_stream.read_frame().map_err(io_error)?;
+        let frame = self.framed_stream.read_frame().map_err(read_frame_error)?;
         if frame.stream_id() != USB_TLS_CIPHERTEXT_STREAM_ID {
             return Err(invalid_data(
                 "USB TLS ciphertext frame used the wrong stream id",
@@ -102,8 +112,12 @@ where
             return Ok(copied);
         }
 
-        if let Err(error) = self.read_next_ciphertext_chunk() {
-            return self.fail_closed(Err(error));
+        // Only an idle bulk timeout surfaces as `TimedOut`; pending_read is
+        // empty here, so nothing is lost and the stream stays usable.
+        match self.read_next_ciphertext_chunk() {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => return Err(error),
+            Err(error) => return self.fail_closed(Err(error)),
         }
 
         Ok(self.copy_pending_read(out))
@@ -144,7 +158,14 @@ where
     }
 }
 
-fn io_error(error: crate::UsbProbeError) -> io::Error {
+fn read_frame_error(error: UsbProbeError) -> io::Error {
+    match error {
+        UsbProbeError::BulkReadTimeout => io::Error::from(io::ErrorKind::TimedOut),
+        other => io_error(other),
+    }
+}
+
+fn io_error(error: UsbProbeError) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}"))
 }
 
