@@ -121,6 +121,18 @@ fun interface ChannelPairingProofVerifier {
 }
 
 /**
+ * Transport-neutral sibling of [ChannelPairingProofVerifier] (task g1, `android-followups` §4.1):
+ * same contract, but the proof is exchanged over any [TlsCiphertextTransport] (USB or raw stream)
+ * instead of an [AccessoryIoSession]. Kept as a separate `fun interface` rather than generalizing
+ * [ChannelPairingProofVerifier], so every existing session-based caller and SAM conversion stays
+ * source-compatible. [UsbTlsPairingProofVerifier.verify]'s transport overload matches this signature
+ * and can be passed as a bound method reference.
+ */
+fun interface TransportPairingProofVerifier {
+    fun verify(challenge: PairingProofChallenge, transport: TlsCiphertextTransport): UsbTlsPairingProofVerificationResult
+}
+
+/**
  * Result of [PendingPairingCoordinator.start] when called with a [ChannelPairingProofVerifier].
  * [channel] is the live TLS channel the proof was verified over; it is non-null if and only if
  * [result] is a [PendingPairingStartResult.PendingConfirmation]. Every rejection path — including
@@ -169,6 +181,21 @@ class PendingPairingCoordinator(
         channelVerifier: ChannelPairingProofVerifier,
     ): ChannelPairingStartResult =
         startCore(qrPayload) { challenge -> ProofOutcome.from(channelVerifier.verify(challenge, session)) }
+
+    /**
+     * Transport-neutral overload (task g1, `android-followups` §4.1): identical to the session
+     * overload above — same [startCore] rules and [ChannelPairingStartResult] channel-liveness
+     * contract — but the proof is exchanged over [transport] via [transportVerifier]. As with the
+     * session overload, every rejection reached before the proof step (including
+     * [PendingPairingStartResult.Rejected.AlreadyPending]) leaves [transport] untouched.
+     */
+    @Synchronized
+    fun start(
+        qrPayload: PairingQrPayload,
+        transport: TlsCiphertextTransport,
+        transportVerifier: TransportPairingProofVerifier,
+    ): ChannelPairingStartResult =
+        startCore(qrPayload) { challenge -> ProofOutcome.from(transportVerifier.verify(challenge, transport)) }
 
     private fun startCore(qrPayload: PairingQrPayload, verify: (PairingProofChallenge) -> ProofOutcome): ChannelPairingStartResult {
         val now = epochSecondsSource.nowEpochSeconds()

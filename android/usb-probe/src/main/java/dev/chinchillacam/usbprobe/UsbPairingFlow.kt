@@ -41,11 +41,28 @@ data class UsbPairingConfirmOutcome(
  * class only tracks which live channel belongs to the coordinator's current pending pairing. It
  * expects exclusive ownership of the [coordinator] instance it wraps — nothing else should call
  * [PendingPairingCoordinator.cancel] or [PendingPairingCoordinator.confirm] directly on it.
+ *
+ * Transport-neutral pairing (task g1, `android-followups` §4.1): [start] also accepts any
+ * [TlsCiphertextTransport] (e.g. a raw stream) through [transportVerifier]; both overloads share the
+ * same held-channel lifecycle. Build the flow from a [UsbTlsPairingProofVerifier] to get both paths
+ * from one verifier: its session overload wraps the session with its channel's configured USB
+ * adapter (`tlsChannel.usbTransport`) and delegates to its transport overload, so the USB path keeps
+ * identical behaviour. A flow built with only a [ChannelPairingProofVerifier] (no
+ * [transportVerifier]) rejects a transport [start] with [IllegalStateException] before touching the
+ * coordinator or the transport.
  */
 class UsbPairingFlow(
     private val coordinator: PendingPairingCoordinator,
     private val channelVerifier: ChannelPairingProofVerifier,
+    private val transportVerifier: TransportPairingProofVerifier? = null,
 ) {
+    /** Uses [verifier] for both the [AccessoryIoSession] and the [TlsCiphertextTransport] paths. */
+    constructor(coordinator: PendingPairingCoordinator, verifier: UsbTlsPairingProofVerifier) : this(
+        coordinator,
+        ChannelPairingProofVerifier(verifier::verify),
+        TransportPairingProofVerifier(verifier::verify),
+    )
+
     private data class HeldChannel(val pendingId: String, val channel: SslEngineUsbTlsEstablishedChannel)
 
     private var held: HeldChannel? = null
@@ -59,12 +76,28 @@ class UsbPairingFlow(
      * the caller in that case.
      */
     @Synchronized
-    fun start(qrPayload: PairingQrPayload, session: AccessoryIoSession): ChannelPairingStartResult {
+    fun start(qrPayload: PairingQrPayload, session: AccessoryIoSession): ChannelPairingStartResult =
+        startHolding { coordinator.start(qrPayload, session, channelVerifier) }
+
+    /**
+     * Transport-neutral overload (task g1): same contract as the session overload, with [transport]
+     * in place of the session — untouched on every rejection reached before the proof step, and its
+     * ownership stays with the caller there.
+     *
+     * @throws IllegalStateException if this flow was built without a [transportVerifier].
+     */
+    @Synchronized
+    fun start(qrPayload: PairingQrPayload, transport: TlsCiphertextTransport): ChannelPairingStartResult {
+        val verifier = checkNotNull(transportVerifier) { "UsbPairingFlow was built without a TransportPairingProofVerifier" }
+        return startHolding { coordinator.start(qrPayload, transport, verifier) }
+    }
+
+    private fun startHolding(coordinatorStart: () -> ChannelPairingStartResult): ChannelPairingStartResult {
         // Reconcile a previous, never-confirmed/rejected pending that has since expired: without
         // this, the coordinator would still see it as pending and reject this new attempt with
         // AlreadyPending even though its own state()/TTL rules already consider it gone.
         expireIfNeeded()
-        val outcome = coordinator.start(qrPayload, session, channelVerifier)
+        val outcome = coordinatorStart()
         val summary = (outcome.result as? PendingPairingStartResult.PendingConfirmation)?.summary
         // Only a new PendingConfirmation replaces `held`. A rejection — including AlreadyPending,
         // the coordinator's answer while a different pending is still live — must not disturb that

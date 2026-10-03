@@ -22,6 +22,7 @@ class UsbTlsPairingProofVerifier(
      * Transport-neutral counterpart (contract `wifi-loopback-transport` §4.3): runs the same
      * challenge validation, pinned mTLS handshake, and CCP1 proof exchange over any
      * [TlsCiphertextTransport]. An invalid challenge still closes [transport] before any TLS I/O.
+     * Matches [TransportPairingProofVerifier] (task g1) and can be passed as a bound method reference.
      */
     fun verify(
         challenge: PairingProofChallenge,
