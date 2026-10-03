@@ -118,25 +118,60 @@ class SessionEgressBinding private constructor(
 
 /**
  * Composes a [SessionEgressBinding] with the visible-camera service layer WITHOUT a production
- * session source (contract §4.6, decision 4: USB production source and pairing UI are out of scope).
- * This only exposes the two seams the service would use, so it is exercised with fakes:
+ * session source (contract `session-pipeline-wiring.md` §4.6, decision 4: USB production source and
+ * pairing UI are out of scope). It is built in ONE step by [start], which starts its own binding with
+ * the composition's own end handler, so neither side needs a holder for the other
+ * (`android-followups.md` §4.3). It only exposes the seams the service would use:
  *
  * - [encodedVideoSinkFactory] is handed to [VisibleCameraPipelineController] as its egress factory.
- * - [onSessionEndedWithError] publishes `Error` to [VisibleCameraServiceStatusStore] with the typed
- *   Spanish message and asks the pipeline to stop through the same failure-stop path p1 uses
- *   ([requestPipelineFailureStop]), which mirrors `onPipelineFailureStop`.
+ * - On any session end other than [SessionEnd.LocalClose] (already handed off the runtime thread by
+ *   the binding), it publishes `Error` to [VisibleCameraServiceStatusStore] with the typed Spanish
+ *   message and asks the pipeline to stop through the same failure-stop path p1 uses
+ *   (`requestPipelineFailureStop`, which mirrors `onPipelineFailureStop`).
+ * - [close] ends the owned binding; idempotent, with the same threading rules as
+ *   [SessionEgressBinding.close].
  */
-class SessionEgressServicePipelineComposition(
-    binding: SessionEgressBinding,
-    private val requestPipelineFailureStop: () -> Unit,
+class SessionEgressServicePipelineComposition private constructor(
+    private val binding: SessionEgressBinding,
 ) {
     val encodedVideoSinkFactory: () -> EncodedVideoEgressSink = binding.videoSinkFactory
 
-    /** Publishes the visible error and requests the same failure stop p1 wires through the owner. */
-    fun onSessionEndedWithError(cause: SessionEnd, message: String) {
-        VisibleCameraServiceStatusStore.publish(
-            VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = message),
-        )
-        requestPipelineFailureStop()
+    /** Ends the owned binding (see [SessionEgressBinding.close]); idempotent. */
+    fun close() = binding.close()
+
+    companion object {
+        /**
+         * Starts the binding from [reconnected] with this composition's end handler and returns the
+         * composition that owns it. [requestPipelineFailureStop] runs on the [endExecutor] thread,
+         * never on the runtime thread.
+         */
+        fun start(
+            reconnected: UsbTrustedReconnectResult.Reconnected,
+            requestPipelineFailureStop: () -> Unit,
+            endExecutor: Executor,
+            onCameraControlCommand: (SessionPayload.CameraControlCommand) -> Unit,
+            config: SessionRuntimeConfig = SessionRuntimeConfig(),
+            clock: () -> Long = { System.nanoTime() / 1_000_000 },
+        ): SessionEgressServicePipelineComposition {
+            val binding = SessionEgressBinding.start(
+                reconnected = reconnected,
+                onCameraControlCommand = onCameraControlCommand,
+                onSessionEndedWithError = { _, message ->
+                    publishErrorAndRequestStop(message, requestPipelineFailureStop)
+                },
+                endExecutor = endExecutor,
+                config = config,
+                clock = clock,
+            )
+            return SessionEgressServicePipelineComposition(binding)
+        }
+
+        /** Publishes the visible error and requests the same failure stop p1 wires through the owner. */
+        private fun publishErrorAndRequestStop(message: String, requestPipelineFailureStop: () -> Unit) {
+            VisibleCameraServiceStatusStore.publish(
+                VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = message),
+            )
+            requestPipelineFailureStop()
+        }
     }
 }

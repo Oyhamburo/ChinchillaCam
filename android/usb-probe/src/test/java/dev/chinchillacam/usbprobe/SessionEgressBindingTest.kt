@@ -218,10 +218,10 @@ class SessionEgressBindingTest {
         val endExecutor = Executors.newSingleThreadExecutor { Thread(it, "p2-end-executor") }
         val callbackThread = AtomicReference<String?>(null)
         val latch = CountDownLatch(1)
-        val stopCalls = AtomicInteger(0)
-        val compositionRef = AtomicReference<SessionEgressServicePipelineComposition>()
+        val errorEnds = CopyOnWriteArrayList<Pair<SessionEnd, String>>()
 
-        VisibleCameraServiceStatusStore.clearStopped("reset for test")
+        // Binding-level contract only: the composition (status store + failure stop) is covered by
+        // compositionStartsBindingAndPublishesErrorWithoutHolder, built in one step with no holder.
         val binding = SessionEgressBinding.start(
             channel = channel,
             frameAdapter = phoneAdapter(),
@@ -231,14 +231,12 @@ class SessionEgressBindingTest {
             onCameraControlCommand = {},
             onSessionEndedWithError = { end, message ->
                 callbackThread.set(Thread.currentThread().name)
-                compositionRef.get().onSessionEndedWithError(end, message)
+                errorEnds.add(end to message)
                 latch.countDown()
             },
             endExecutor = endExecutor,
             config = deadConfig(),
         )
-        val composition = SessionEgressServicePipelineComposition(binding) { stopCalls.incrementAndGet() }
-        compositionRef.set(composition)
 
         try {
             assertTrue("peer-dead error was not reported", latch.await(4, TimeUnit.SECONDS))
@@ -247,13 +245,75 @@ class SessionEgressBindingTest {
             assertEquals("the error must be handed off the runtime thread", "p2-end-executor", thread)
             assertFalse("must not run on the runtime reader thread", thread!!.contains("session-runtime-reader"))
             assertFalse("must not run on the runtime writer thread", thread.contains("session-runtime-writer"))
+            assertEquals(listOf(SessionEnd.PeerDead to "Se perdió la conexión con la computadora."), errorEnds.toList())
+        } finally {
+            binding.close()
+            endExecutor.shutdownNow()
+            server.join(4_000)
+            serverError.get()?.let { throw it }
+        }
+    }
+
+    @Test
+    fun compositionStartsBindingAndPublishesErrorWithoutHolder() {
+        val desktop = RawStreamTlsTestSupport.desktopFixture("g2-composition-desktop")
+        val phone = RawStreamTlsTestSupport.phoneFixture("g2-composition-phone")
+        val endpoints = RawStreamTlsTestSupport.rawStreamPair()
+        val serverError = AtomicReference<Throwable?>(null)
+
+        val server = thread {
+            try {
+                val peer = RawStreamTlsTestSupport.serverPeer(endpoints, desktop)
+                peer.handshake()
+                // Never respond: the tracker declares the peer dead after the threshold.
+                val reader = FramedPeerReader(peer)
+                runCatching { while (true) reader.next() }
+                peer.close()
+            } catch (error: Throwable) {
+                serverError.set(error)
+            }
+        }
+
+        val reconnected = UsbTrustedReconnectResult.Reconnected(
+            desktopId = "g2-desktop",
+            channel = establishPhoneChannel(desktop, phone, endpoints),
+            frameAdapter = phoneAdapter(),
+            sessionId = sessionId,
+            nextOutboundSequence = nextOutbound,
+            nextInboundSequence = nextInbound,
+        )
+        val endExecutor = Executors.newSingleThreadExecutor { Thread(it, "g2-end-executor") }
+        val stopThread = AtomicReference<String?>(null)
+        val stopCalls = AtomicInteger(0)
+        val stopped = CountDownLatch(1)
+
+        VisibleCameraServiceStatusStore.clearStopped("reset for test")
+        // One step: the composition starts its own binding with its own error handler (no holder).
+        val composition = SessionEgressServicePipelineComposition.start(
+            reconnected = reconnected,
+            requestPipelineFailureStop = {
+                stopThread.set(Thread.currentThread().name)
+                stopCalls.incrementAndGet()
+                stopped.countDown()
+            },
+            endExecutor = endExecutor,
+            onCameraControlCommand = {},
+            config = deadConfig(),
+        )
+
+        try {
+            assertNotNull("the composition must expose the encoded video sink factory", composition.encodedVideoSinkFactory())
+            assertTrue("the pipeline failure stop was not requested", stopped.await(4, TimeUnit.SECONDS))
+            assertEquals("the stop must be requested off the runtime thread", "g2-end-executor", stopThread.get())
 
             val status = VisibleCameraServiceStatusStore.snapshot()
             assertEquals(VisibleCameraServiceState.Error, status.state)
             assertEquals("Se perdió la conexión con la computadora.", status.message)
             assertEquals(1, stopCalls.get())
         } finally {
-            binding.close()
+            composition.close()
+            // Idempotent close through the composition.
+            composition.close()
             endExecutor.shutdownNow()
             server.join(4_000)
             serverError.get()?.let { throw it }

@@ -148,7 +148,7 @@ class SslEngineUsbTlsEstablishedChannel internal constructor(
         if (out.hasRemaining()) {
             val bytes = ByteArray(out.remaining()).also { out.get(it) }
             val write = transport.writeCiphertext(bytes)
-            if (write is TlsCiphertextWriteResult.Failed) throw IllegalStateException("USB TLS ciphertext write failed: ${write.detail}")
+            if (write is TlsCiphertextWriteResult.Failed) throw IllegalStateException("TLS ciphertext write failed: ${write.detail}")
         }
         out.clear()
     }
@@ -163,10 +163,10 @@ class SslEngineUsbTlsEstablishedChannel internal constructor(
         }
         val bytes = when (read) {
             is TlsCiphertextReadResult.Received -> read.ciphertext
-            is TlsCiphertextReadResult.Eof -> throw IllegalStateException("USB TLS ciphertext read failed: ${read.detail}")
-            is TlsCiphertextReadResult.Failed -> throw IllegalStateException("USB TLS ciphertext read failed: ${read.detail}")
+            is TlsCiphertextReadResult.Eof -> throw IllegalStateException("TLS ciphertext read failed: ${read.detail}")
+            is TlsCiphertextReadResult.Failed -> throw IllegalStateException("TLS ciphertext read failed: ${read.detail}")
         }
-        if (bytes.size > pendingCiphertext.remaining()) throw IllegalStateException("USB TLS ciphertext overflow")
+        if (bytes.size > pendingCiphertext.remaining()) throw IllegalStateException("TLS ciphertext overflow: pending=${pendingCiphertext.position()} incoming=${bytes.size}")
         pendingCiphertext.put(bytes)
     }
 
@@ -345,7 +345,7 @@ class SslEngineUsbTlsChannel(
                     if (out.hasRemaining()) {
                         val bytes = ByteArray(out.remaining()).also { out.get(it) }
                         val write = transport.writeCiphertext(bytes)
-                        if (write is TlsCiphertextWriteResult.Failed) return "USB TLS ciphertext write failed: ${write.detail}"
+                        if (write is TlsCiphertextWriteResult.Failed) return "TLS ciphertext write failed: ${write.detail}"
                     }
                     return null
                 }
@@ -402,10 +402,10 @@ class SslEngineUsbTlsChannel(
         }
         val bytes = when (read) {
             is TlsCiphertextReadResult.Received -> read.ciphertext
-            is TlsCiphertextReadResult.Eof -> return "USB TLS ciphertext read failed: ${read.detail}"
-            is TlsCiphertextReadResult.Failed -> return "USB TLS ciphertext read failed: ${read.detail}"
+            is TlsCiphertextReadResult.Eof -> return "TLS ciphertext read failed: ${read.detail}"
+            is TlsCiphertextReadResult.Failed -> return "TLS ciphertext read failed: ${read.detail}"
         }
-        if (bytes.size > pending.remaining()) return "USB TLS ciphertext overflow: pending=${pending.position()} incoming=${bytes.size} max=${transport.maxWriteBytes}"
+        if (bytes.size > pending.remaining()) return "TLS ciphertext overflow: pending=${pending.position()} incoming=${bytes.size} max=${transport.maxWriteBytes}"
         pending.put(bytes)
         return null
     }
@@ -446,7 +446,7 @@ class SslEngineUsbTlsChannel(
     }
 
     private object DaemonThreadFactory : ThreadFactory {
-        override fun newThread(runnable: Runnable): Thread = Thread(runnable, "usb-tls-ciphertext-read").apply { isDaemon = true }
+        override fun newThread(runnable: Runnable): Thread = Thread(runnable, "tls-ciphertext-read").apply { isDaemon = true }
     }
 
     private companion object {

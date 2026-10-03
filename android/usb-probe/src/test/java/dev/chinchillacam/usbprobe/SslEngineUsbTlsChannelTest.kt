@@ -568,8 +568,9 @@ class SslEngineUsbTlsChannelTest {
                 fail("expected the first application read to fail closed, but got ${bytes.size} application bytes")
             } catch (error: IllegalStateException) {
                 assertTrue(
-                    "expected the USB ciphertext EOF message, got: ${error.message}",
-                    error.message.orEmpty().contains("USB TLS ciphertext read failed: EofEmpty"),
+                    "expected the transport-neutral ciphertext EOF message, got: ${error.message}",
+                    error.message.orEmpty().contains("TLS ciphertext read failed: EofEmpty") &&
+                        !error.message.orEmpty().contains("USB TLS"),
                 )
                 assertEquals(true, pair.clientCloseable.closed)
             }
