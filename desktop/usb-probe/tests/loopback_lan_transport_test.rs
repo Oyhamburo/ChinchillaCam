@@ -13,10 +13,7 @@ use std::{
     io::{Read, Write},
     net::TcpStream,
     path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::{mpsc, Arc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -33,6 +30,13 @@ use usb_probe::{
 
 const OP_TIMEOUT: Duration = Duration::from_millis(1500);
 const ACCEPT_DEADLINE: Duration = Duration::from_millis(1500);
+/// Hard cap on how long a helper peer thread may hold its socket. Helpers are released
+/// earlier through a channel (explicitly, or implicitly when the sender is dropped while a
+/// failing test unwinds), so this cap only matters if the release is somehow lost; it
+/// guarantees `thread::scope` can always join the helper instead of hanging.
+const PEER_HOLD_LIMIT: Duration = Duration::from_secs(10);
+/// Scheduler/clock slack allowed below a deadline when asserting a timing lower bound.
+const TIMING_TOLERANCE: Duration = Duration::from_millis(50);
 
 #[test]
 fn loopback_lan_listener_binds_only_loopback() {
@@ -61,6 +65,10 @@ fn pairing_then_reconnect_over_loopback_tcp() {
     let addr = listener.local_addr();
 
     std::thread::scope(|scope| {
+        // Hang safety: every blocking call in this helper is bounded (1500 ms socket read/write
+        // timeouts in `phone_tls_stream`, `test_deadline()` for the session frame), so if a
+        // desktop-side assertion below fails and the scope unwinds, the helper still finishes
+        // on its own and `thread::scope` joins it within a bounded time.
         let phone = scope.spawn(|| -> Result<(), String> {
             // Connection 1: pairing (CCP1 proof over mTLS).
             let tcp = TcpStream::connect(addr).map_err(|error| error.to_string())?;
@@ -144,17 +152,18 @@ fn silent_loopback_peer_fails_bounded() {
     let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
     let mut issuer = test_issuer(&identity);
 
-    let desktop_done = Arc::new(AtomicBool::new(false));
-    let phone_done = Arc::clone(&desktop_done);
+    // Hang safety: the silent peer holds its socket only until it is released through this
+    // channel. The desktop side releases it and joins it BEFORE any assertion runs; if the
+    // desktop side panics earlier (e.g. a failed `accept`), unwinding drops `release_tx`, which
+    // disconnects the channel and frees the helper. `PEER_HOLD_LIMIT` caps it regardless.
+    let (release_tx, release_rx) = mpsc::channel::<()>();
 
-    std::thread::scope(|scope| {
+    let (result, elapsed) = std::thread::scope(|scope| {
         // A peer that connects but never sends anything: the TCP accept succeeds, but the TLS
         // handshake read must time out via the per-stream read timeout.
         let phone = scope.spawn(move || {
             let _tcp = TcpStream::connect(addr).expect("connect silent peer");
-            while !phone_done.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            let _ = release_rx.recv_timeout(PEER_HOLD_LIMIT);
         });
 
         let tcp = listener
@@ -166,31 +175,37 @@ fn silent_loopback_peer_fails_bounded() {
         let start = Instant::now();
         let result = accept_phone_pairing_connection(tcp, &identity, &mut issuer, logical_timeout);
         let elapsed = start.elapsed();
-        desktop_done.store(true, Ordering::SeqCst);
 
-        let error = result.err();
-        assert!(
-            error.is_some(),
-            "silent peer must fail the handshake, got Ok(..)"
-        );
-        assert!(
-            elapsed < read_timeout * 10,
-            "handshake against a silent peer must be bounded, took {elapsed:?}"
-        );
-
-        phone.join().unwrap();
+        drop(release_tx);
+        phone.join().expect("silent peer helper panicked");
+        (result, elapsed)
     });
+
+    // The helper is already joined: a failing assertion here cannot hang the test.
+    assert!(
+        result.is_err(),
+        "silent peer must fail the handshake, got Ok(..)"
+    );
+    assert!(
+        elapsed < read_timeout * 10,
+        "handshake against a silent peer must be bounded, took {elapsed:?}"
+    );
 }
 
 #[test]
 fn accept_times_out_without_peer() {
+    let deadline = Duration::from_millis(200);
     let listener = LoopbackLanListener::bind().expect("bind loopback listener");
     let start = Instant::now();
-    let result = listener.accept(Duration::from_millis(200));
+    let result = listener.accept(deadline);
     let elapsed = start.elapsed();
     assert!(
         matches!(result, Err(LoopbackLanError::Timeout)),
         "accept with no peer must return a typed timeout, got {result:?}"
+    );
+    assert!(
+        elapsed >= deadline - TIMING_TOLERANCE,
+        "accept must wait for its deadline before timing out, took {elapsed:?}"
     );
     assert!(
         elapsed < Duration::from_secs(5),

@@ -34,10 +34,15 @@ TDD estricto donde aplica (fuente: `odd/tasks/complete-webcam-product.md`, Regla
 
 Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test --offline`. Baseline: 292 tests, 0 fallos (HEAD `0eca383`).
 
-1. [ ] f1 — Tests robustos: loopback sin cuelgue ante falla y cota inferior del timeout de accept; tests de caminos de falla del duplex en memoria (EOF del par, timeout de lectura). ~200 líneas.
+1. [x] f1 — Tests robustos: loopback sin cuelgue ante falla y cota inferior del timeout de accept; tests de caminos de falla del duplex en memoria (EOF del par, timeout de lectura). ~200 líneas.
+   - Evidencia: `silent_loopback_peer_fails_bounded` libera el par silencioso por canal (`recv_timeout` con tope `PEER_HOLD_LIMIT` de 10 s; el emisor se descarta también al desenrollar un pánico) y lo une antes de cualquier aserción; las aserciones corren fuera del `thread::scope`. `pairing_then_reconnect_over_loopback_tcp` documenta que su hilo auxiliar ya está acotado por timeouts de socket de 1500 ms. `accept_times_out_without_peer` agrega cota inferior (`elapsed >= 200 ms - 50 ms`). Nuevo `tests/in_memory_duplex_test.rs`: `duplex_read_times_out_without_data`, `duplex_read_returns_eof_after_peer_drop`, `duplex_blocked_read_wakes_with_eof_when_peer_drops`, `duplex_buffered_data_is_read_before_eof`.
+   - Caracterización declarada: los tests nuevos y modificados pasaron en la primera ejecución (sin RED). Mutante temporal (pánico tras `accept` en el test del par silencioso) falló en 0,01 s sin colgarse; se revirtió. Sin cambios de producción.
+   - Verificación: tests focalizados 5 de 5 ejecuciones en verde (4 + 4); runner completo 296 tests, 0 fallos (292 + 4 nuevos).
 2. [ ] f2 — `arrival_fps` por chunk completo. RED: `arrival_fps_counts_reassembled_chunks_not_fragments`. ~150 líneas.
 3. [ ] f3 — Lints de clippy en `trusted_phone_store.rs` y en archivos de tests tocados. ~50 líneas.
 
 ## Progreso
 
 Plan creado el 2026-10-03.
+
+- f1 completada: endurecimiento de tests de loopback y del duplex en memoria, sin cambios de producción; 296 tests, 0 fallos.
