@@ -66,6 +66,8 @@ pub struct DesktopVideoSessionReceiver<C> {
     fragment_in_flight: bool,
     binding: Option<DesktopVideoSessionBinding>,
     closed: bool,
+    chunks_delivered: u64,
+    chunk_bytes_delivered: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +91,24 @@ where
             fragment_in_flight: false,
             binding: None,
             closed: false,
+            chunks_delivered: 0,
+            chunk_bytes_delivered: 0,
         }
+    }
+
+    /// Lifetime count of whole encoded chunks this receiver pushed to its sink and the sink
+    /// accepted (`Ok`): one per `VideoChunk`/`VideoChunkV2`, one per fully reassembled fragment
+    /// set (never one per fragment). A sink that accepts a chunk only to drop it later (e.g. a
+    /// keyframe gate under saturation) still counts it as delivered. Not reset by
+    /// [`reset_for_new_session`](Self::reset_for_new_session), so callers can take deltas.
+    pub fn chunks_delivered(&self) -> u64 {
+        self.chunks_delivered
+    }
+
+    /// Lifetime total of the encoded H.264 payload bytes of the chunks counted by
+    /// [`chunks_delivered`](Self::chunks_delivered) (whole reassembled chunk bytes for fragments).
+    pub fn chunk_bytes_delivered(&self) -> u64 {
+        self.chunk_bytes_delivered
     }
 
     pub fn reset_for_new_session(&mut self) {
@@ -208,14 +227,7 @@ where
                     .classifier
                     .classify_frame_kind(session_frame)?
                     .ok_or(DesktopReceiverError::UnknownFrameKind)?;
-                push_encoded_chunk(
-                    USB_SESSION_FRAME_STREAM_ID,
-                    *presentation_time_us,
-                    frame_kind,
-                    h264_bytes.clone(),
-                    &self.reassembled_chunk_limits,
-                    sink,
-                )?;
+                self.push_and_count(*presentation_time_us, frame_kind, h264_bytes.clone(), sink)?;
                 self.close_if_sequence_exhausted(session_frame.sequence());
                 Ok(())
             }
@@ -225,12 +237,10 @@ where
                 h264_bytes,
                 ..
             } => {
-                push_encoded_chunk(
-                    USB_SESSION_FRAME_STREAM_ID,
+                self.push_and_count(
                     *presentation_time_us,
                     encoded_frame_kind(*kind),
                     h264_bytes.clone(),
-                    &self.reassembled_chunk_limits,
                     sink,
                 )?;
                 self.close_if_sequence_exhausted(session_frame.sequence());
@@ -251,12 +261,10 @@ where
                     return Ok(());
                 };
                 self.fragment_in_flight = false;
-                push_encoded_chunk(
-                    USB_SESSION_FRAME_STREAM_ID,
+                self.push_and_count(
                     chunk.presentation_time_us(),
                     encoded_frame_kind(chunk.kind()),
                     chunk.h264_bytes().to_vec(),
-                    &self.reassembled_chunk_limits,
                     sink,
                 )?;
                 self.close_if_sequence_exhausted(session_frame.sequence());
@@ -311,6 +319,32 @@ where
 
         binding.last_sequence = session_frame.sequence();
 
+        Ok(())
+    }
+
+    /// Pushes one whole encoded chunk to the sink and, once the sink accepts it, counts it in the
+    /// lifetime delivered-chunk counters.
+    fn push_and_count<S>(
+        &mut self,
+        presentation_time_us: i64,
+        frame_kind: EncodedVideoFrameKind,
+        h264_bytes: Vec<u8>,
+        sink: &mut S,
+    ) -> Result<(), DesktopReceiverError>
+    where
+        S: EncodedVideoSink,
+    {
+        let byte_len = h264_bytes.len() as u64;
+        push_encoded_chunk(
+            USB_SESSION_FRAME_STREAM_ID,
+            presentation_time_us,
+            frame_kind,
+            h264_bytes,
+            &self.reassembled_chunk_limits,
+            sink,
+        )?;
+        self.chunks_delivered = self.chunks_delivered.saturating_add(1);
+        self.chunk_bytes_delivered = self.chunk_bytes_delivered.saturating_add(byte_len);
         Ok(())
     }
 

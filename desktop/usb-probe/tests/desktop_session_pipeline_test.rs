@@ -250,6 +250,142 @@ fn pipeline_survives_decoder_backpressure() {
     fixture.cleanup();
 }
 
+/// Task f2 (`odd/tasks/review-followups.md`, contract section 4.2): arrivals count whole encoded
+/// chunks reaching the sink, not wire fragments. The phone sends three whole chunks (codec config,
+/// key, delta), each split into three `VIDEO_CHUNK_FRAGMENT_V1` frames, so nine video frames cross
+/// the wire but only three reassembled chunks reach the sink.
+#[test]
+fn arrival_fps_counts_reassembled_chunks_not_fragments() {
+    let fixture = Fixture::new("counts-reassembled-chunks");
+    let config = test_config();
+
+    let listener = bind_listener();
+    let addr = listener.local_addr();
+    let cert = fixture.desktop_identity.certificate_der().to_vec();
+    let phone_identity = fixture.phone_identity.clone();
+
+    let run = Arc::new(AtomicBool::new(true));
+    let stopped = Arc::new(AtomicBool::new(false));
+    let phone_run = Arc::clone(&run);
+    let phone_stopped = Arc::clone(&stopped);
+
+    std::thread::scope(|scope| {
+        let phone = scope.spawn(move || {
+            let mut phone = phone_hello_and_accept(connect(addr), &cert, &phone_identity);
+            let mut sequence = HELLO_SEQUENCE + 1;
+            for payload in fragmented_phone_payloads() {
+                send_phone_frame(&mut phone, sequence, payload);
+                sequence += 1;
+                std::thread::sleep(PHONE_SEND_INTERVAL);
+            }
+            while phone_run.load(Ordering::SeqCst) {
+                send_phone_frame(&mut phone, sequence, SessionFramePayload::Keepalive);
+                sequence += 1;
+                std::thread::sleep(PHONE_SEND_INTERVAL);
+            }
+            phone_stopped.store(true, Ordering::SeqCst);
+            drain_until_close(&mut phone)
+        });
+
+        let session = accept_desktop_session(&listener, &fixture);
+        let start = Instant::now();
+        let mut pipeline = build_pipeline(session, start, config);
+
+        // Drive until the key and the delta decode (the codec config emits no frame), which
+        // happens only after all nine fragments were received and reassembled.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let now = Instant::now();
+            if let Err(end) = pipeline.step(now) {
+                panic!("pipeline ended unexpectedly while the peer was alive: {end:?}");
+            }
+            if pipeline.decoder().frames_emitted() >= 2 {
+                break;
+            }
+            assert!(
+                now < deadline,
+                "pipeline did not decode the reassembled chunks in time"
+            );
+        }
+
+        let snapshot = pipeline.metrics(Instant::now());
+        assert_eq!(
+            snapshot.total_chunks, FRAGMENTED_CHUNKS,
+            "arrivals must count whole reassembled chunks, not fragments"
+        );
+        assert_eq!(
+            snapshot.total_bytes, FRAGMENTED_CHUNK_BYTES,
+            "arrival bytes must be the whole reassembled chunk payloads"
+        );
+        assert!(
+            snapshot.arrival_fps.is_some(),
+            "arrival fps must be measured once two whole chunks arrived"
+        );
+        assert_eq!(
+            pipeline.video_fragments_received(),
+            FRAGMENTED_CHUNKS * FRAGMENTS_PER_CHUNK as u64,
+            "fragments are counted apart from whole-chunk arrivals"
+        );
+
+        run.store(false, Ordering::SeqCst);
+        wait_for(&stopped, Duration::from_secs(2));
+
+        let (end, final_snapshot) = pipeline.shutdown();
+        assert_eq!(end, SessionEnd::LocalClose);
+        assert_eq!(final_snapshot.total_chunks, FRAGMENTED_CHUNKS);
+        assert!(
+            phone.join().unwrap(),
+            "phone must observe close after shutdown"
+        );
+    });
+
+    fixture.cleanup();
+}
+
+/// Whole chunks in [`fragmented_phone_payloads`].
+const FRAGMENTED_CHUNKS: u64 = 3;
+/// Fragments per whole chunk in [`fragmented_phone_payloads`].
+const FRAGMENTS_PER_CHUNK: i32 = 3;
+/// Total reassembled H.264 bytes across the whole chunks (three chunks of six bytes).
+const FRAGMENTED_CHUNK_BYTES: u64 = 18;
+
+/// A codec config, a key and a delta, each six bytes split into three two-byte fragments: nine
+/// `VIDEO_CHUNK_FRAGMENT_V1` frames that reassemble into three whole chunks.
+fn fragmented_phone_payloads() -> Vec<SessionFramePayload> {
+    type FragmentCtor = fn(i32, i64, i32, i32, i32, Vec<u8>) -> SessionFramePayload;
+    let chunks: [(FragmentCtor, i64, [u8; 6]); 3] = [
+        (
+            SessionFramePayload::video_chunk_fragment_v1_codec_config,
+            0,
+            [0x00, 0x00, 0x01, 0x67, 0x42, 0x00],
+        ),
+        (
+            SessionFramePayload::video_chunk_fragment_v1_key,
+            10_000,
+            [0x00, 0x00, 0x01, 0x65, 0x88, 0x84],
+        ),
+        (
+            SessionFramePayload::video_chunk_fragment_v1_delta,
+            20_000,
+            [0x00, 0x00, 0x01, 0x41, 0x9a, 0x01],
+        ),
+    ];
+    let mut payloads = Vec::new();
+    for (chunk_index, (ctor, pts, bytes)) in chunks.into_iter().enumerate() {
+        for (fragment_index, fragment) in bytes.chunks(2).enumerate() {
+            payloads.push(ctor(
+                chunk_index as i32,
+                pts,
+                fragment_index as i32,
+                FRAGMENTS_PER_CHUNK,
+                bytes.len() as i32,
+                fragment.to_vec(),
+            ));
+        }
+    }
+    payloads
+}
+
 /// A codec config, a key, three deltas and one metrics snapshot: the decoder emits one frame per
 /// non-config chunk, so this scripts exactly four decoded frames in the happy path.
 fn scripted_phone_payloads() -> Vec<SessionFramePayload> {

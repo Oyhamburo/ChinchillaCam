@@ -8,7 +8,11 @@
 //! Every [`step`](DesktopSessionPipeline::step) advances the runtime by one slice and then feeds
 //! the aggregator from additive, side-channel accessors rather than re-deriving anything the
 //! runtime already owns:
-//! - arrivals come from `StepOutcome::received_video` plus `SessionRuntime::last_video_bytes_delivered`;
+//! - arrivals come from the runtime's lifetime whole-chunk counters
+//!   (`SessionRuntime::video_chunks_delivered`/`video_chunk_bytes_delivered`) by delta, so a
+//!   fragmented chunk counts once when its last fragment reassembles (task f2 of
+//!   `odd/tasks/review-followups.md`). An arrival is a chunk the receiver delivered to the sink,
+//!   even if the keyframe gate then drops it; such drops are also counted as dropped;
 //! - decoded frames come from the decoder's lifetime `frames_emitted` counter deltas;
 //! - drops come from the gated sink's `dropped_chunks`/`dropped_bytes` counter deltas;
 //! - phone metrics come from the latest `MetricsSnapshot` when the step received one.
@@ -73,6 +77,8 @@ where
     runtime: SessionRuntime<S, C, PipelineSink<D>>,
     metrics: DesktopMetricsAggregator,
     prev_frames_emitted: u64,
+    prev_chunks_delivered: u64,
+    prev_chunk_bytes_delivered: u64,
     prev_dropped_chunks: u64,
     prev_dropped_bytes: u64,
     last_now: Option<Instant>,
@@ -103,6 +109,8 @@ where
             runtime,
             metrics,
             prev_frames_emitted: 0,
+            prev_chunks_delivered: 0,
+            prev_chunk_bytes_delivered: 0,
             prev_dropped_chunks: 0,
             prev_dropped_bytes: 0,
             last_now: None,
@@ -115,10 +123,19 @@ where
         self.last_now = Some(now);
         let outcome = self.runtime.step(now)?;
 
-        if outcome.received_video {
-            self.metrics
-                .record_chunk_arrived(now, self.runtime.last_video_bytes_delivered());
+        // Whole chunks only: a fragment that does not complete a chunk leaves these unchanged.
+        // A step reads at most one frame, so at most one chunk arrives; the byte delta is
+        // attributed to the first new chunk so lifetime totals stay exact either way.
+        let chunks_now = self.runtime.video_chunks_delivered();
+        let chunk_bytes_now = self.runtime.video_chunk_bytes_delivered();
+        let chunks_arrived = chunks_now.saturating_sub(self.prev_chunks_delivered);
+        let mut bytes_arrived = chunk_bytes_now.saturating_sub(self.prev_chunk_bytes_delivered);
+        for _ in 0..chunks_arrived {
+            self.metrics.record_chunk_arrived(now, bytes_arrived);
+            bytes_arrived = 0;
         }
+        self.prev_chunks_delivered = chunks_now;
+        self.prev_chunk_bytes_delivered = chunk_bytes_now;
         if outcome.received_keepalive {
             self.metrics.record_keepalive(now);
         }
@@ -170,6 +187,12 @@ where
     pub fn metrics(&mut self, now: Instant) -> DesktopMetricsSnapshot {
         self.last_now = Some(now);
         self.metrics.snapshot(now)
+    }
+
+    /// Lifetime count of `VIDEO_CHUNK_FRAGMENT_V1` wire frames received, counted apart from the
+    /// whole-chunk arrivals reported in the metrics.
+    pub fn video_fragments_received(&self) -> u64 {
+        self.runtime.video_fragments_received()
     }
 
     /// Immutable access to the composed decoder.

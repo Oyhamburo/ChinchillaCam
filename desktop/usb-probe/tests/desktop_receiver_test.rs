@@ -530,6 +530,81 @@ fn desktop_receiver_session_strict_monotonic_happy_path_spans_type5_type8_type9(
     assert_eq!(fragment.payload(), &[0x00, 0x01, 0x67]);
 }
 
+/// Task f2 (`odd/tasks/review-followups.md`, contract section 4.2): the receiver counts whole
+/// chunks delivered to the sink (type 5, type 8, one per reassembled type-9 set), never partial
+/// fragments, and never a chunk the sink rejected.
+#[test]
+fn receiver_counts_whole_chunks_delivered_not_fragments() {
+    let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(
+        StaticFrameKindClassifier::known(EncodedVideoFrameKind::Delta),
+    );
+    let mut queue = BoundedEncodedVideoQueue::new(3).unwrap();
+
+    receiver
+        .receive(
+            &video_bulk_frame_with_sequence(0, 4_000, vec![0x41]),
+            &mut queue,
+        )
+        .unwrap();
+    receiver
+        .receive(
+            &video_v2_bulk_frame_with_sequence(1, VideoFrameKind::Key, 4_001, vec![0x65, 0x88]),
+            &mut queue,
+        )
+        .unwrap();
+    assert_eq!(receiver.chunks_delivered(), 2);
+    assert_eq!(receiver.chunk_bytes_delivered(), 3);
+
+    receiver
+        .receive(
+            &video_fragment_bulk_frame_with_sequence(
+                2,
+                "session-a",
+                VideoFrameKind::CodecConfig,
+                4_002,
+                0,
+                2,
+                3,
+                vec![0x00],
+            ),
+            &mut queue,
+        )
+        .unwrap();
+    assert_eq!(
+        receiver.chunks_delivered(),
+        2,
+        "a partial fragment is not a delivered chunk"
+    );
+
+    receiver
+        .receive(
+            &video_fragment_bulk_frame_with_sequence(
+                3,
+                "session-a",
+                VideoFrameKind::CodecConfig,
+                4_002,
+                1,
+                2,
+                3,
+                vec![0x01, 0x67],
+            ),
+            &mut queue,
+        )
+        .unwrap();
+    assert_eq!(receiver.chunks_delivered(), 3);
+    assert_eq!(receiver.chunk_bytes_delivered(), 6);
+
+    // The queue is full: the sink rejects the next chunk, which must not be counted.
+    assert!(receiver
+        .receive(
+            &video_v2_bulk_frame_with_sequence(4, VideoFrameKind::Delta, 4_003, vec![0x41]),
+            &mut queue,
+        )
+        .is_err());
+    assert_eq!(receiver.chunks_delivered(), 3);
+    assert_eq!(receiver.chunk_bytes_delivered(), 6);
+}
+
 #[test]
 fn desktop_receiver_session_type9_first_fragment_returns_ok_without_sink_push() {
     let mut receiver = usb_probe::DesktopVideoSessionReceiver::new(

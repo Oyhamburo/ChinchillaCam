@@ -201,6 +201,7 @@ where
     keepalives_received: u64,
     keepalives_sent: u64,
     video_frames_delivered: u64,
+    video_fragments_received: u64,
     last_video_bytes_delivered: u64,
 }
 
@@ -251,6 +252,7 @@ where
             keepalives_received: 0,
             keepalives_sent: 0,
             video_frames_delivered: 0,
+            video_fragments_received: 0,
             last_video_bytes_delivered: 0,
         })
     }
@@ -279,10 +281,31 @@ where
         self.video_frames_delivered
     }
 
+    /// Lifetime count of `VIDEO_CHUNK_FRAGMENT_V1` wire frames dispatched to the receiver,
+    /// counted apart from whole chunks (contract section 4.2 of `odd/tasks/review-followups.md`).
+    pub fn video_fragments_received(&self) -> u64 {
+        self.video_fragments_received
+    }
+
+    /// Lifetime count of whole encoded chunks the receiver pushed to the sink (one per
+    /// `VideoChunk`/`VideoChunkV2`, one per fully reassembled fragment set), including chunks the
+    /// sink accepted and then dropped under saturation. This, not
+    /// [`video_frames_delivered`](Self::video_frames_delivered), is the arrival count for metrics.
+    pub fn video_chunks_delivered(&self) -> u64 {
+        self.receiver.chunks_delivered()
+    }
+
+    /// Lifetime total of encoded payload bytes of the chunks counted by
+    /// [`video_chunks_delivered`](Self::video_chunks_delivered).
+    pub fn video_chunk_bytes_delivered(&self) -> u64 {
+        self.receiver.chunk_bytes_delivered()
+    }
+
     /// Encoded byte length (the frame's H.264 payload) of the most recently delivered video
     /// frame. Refreshed only when a step delivers a video frame, so callers read it on the same
-    /// step that saw `StepOutcome::received_video`; it is a minimal additive accessor used to
-    /// feed arrival-byte metrics without threading byte counts through the receiver.
+    /// step that saw `StepOutcome::received_video`. It is per wire frame (a fragment reports only
+    /// its fragment bytes); whole-chunk arrival bytes come from
+    /// [`video_chunk_bytes_delivered`](Self::video_chunk_bytes_delivered).
     pub fn last_video_bytes_delivered(&self) -> u64 {
         self.last_video_bytes_delivered
     }
@@ -418,6 +441,12 @@ where
                         )),
                     })?;
                 self.video_frames_delivered += 1;
+                if matches!(
+                    frame.payload(),
+                    SessionFramePayload::VideoChunkFragmentV1 { .. }
+                ) {
+                    self.video_fragments_received += 1;
+                }
                 outcome.received_video = true;
             }
             SessionFramePayload::MetricsSnapshot { .. } => {
