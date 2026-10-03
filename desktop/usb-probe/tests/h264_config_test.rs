@@ -92,7 +92,7 @@ fn h264_config_rejects_malformed_and_bounded_inputs() {
     );
 
     let mut oversized_sps = vec![0, 0, 1, 0x67];
-    oversized_sps.extend(std::iter::repeat(0x11).take(MAX_H264_PARAMETER_SET_BYTES));
+    oversized_sps.extend(std::iter::repeat_n(0x11, MAX_H264_PARAMETER_SET_BYTES));
     oversized_sps.extend_from_slice(&[0, 0, 1, 0x68, 0x22]);
     assert_eq!(
         parse_h264_config(H264InputFraming::AnnexB, &oversized_sps),

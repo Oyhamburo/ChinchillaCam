@@ -157,7 +157,10 @@ fn runtime_keeps_loopback_session_alive_with_keepalives() {
             runtime.video_frames_delivered() >= 1,
             "video must reach the sink"
         );
-        assert!(runtime.sink().len() >= 1, "video chunk must reach the sink");
+        assert!(
+            !runtime.sink().is_empty(),
+            "video chunk must reach the sink"
+        );
 
         // Let the phone stop sending before we close, so no phone write races our close_notify.
         run.store(false, Ordering::SeqCst);

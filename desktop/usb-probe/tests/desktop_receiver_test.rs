@@ -79,6 +79,7 @@ fn video_fragment_bulk_frame(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn video_fragment_bulk_frame_with_sequence(
     sequence: i32,
     session_id: &str,

@@ -30,6 +30,7 @@ fn video_v2_bulk_frame(
     .unwrap()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn video_fragment_bulk_frame(
     sequence: i32,
     session_id: &str,

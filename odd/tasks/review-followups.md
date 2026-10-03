@@ -43,7 +43,7 @@ Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --chec
    - Decisión: un arribo es un chunk que el receptor entregó al sink aunque el `KeyframeGatedSink` lo descarte después bajo saturación (ese descarte suma además en `dropped_chunks`). Documentado en el módulo del pipeline.
    - Evidencia TDD: RED observado como fallo de aserción — `arrival_fps_counts_reassembled_chunks_not_fragments` (3 chunks enteros, cada uno en 3 fragmentos de 2 bytes, sobre `LoopbackLanListener`) falló con `total_chunks` `left: 9, right: 3`. GREEN: pasa con `total_chunks` 3, `total_bytes` 18, `arrival_fps` `Some` y `video_fragments_received` 9. Triangulación: `receiver_counts_whole_chunks_delivered_not_fragments` (tipos 5/8/9; un fragmento parcial no cuenta; un chunk rechazado por el sink no cuenta) pasó a la primera (caracterización). Sin cambio de expectativas en tests existentes (`total_chunks` 5 del camino feliz sigue igual).
    - Verificación: test enfocado del pipeline 5 de 5 ejecuciones en verde; `cargo fmt -- --check` limpio; runner completo 298 tests, 0 fallos (296 + 2 nuevos).
-3. [ ] f3 — Lints de clippy en `trusted_phone_store.rs` y en archivos de tests tocados. ~50 líneas.
+3. [x] f3 — Lints de clippy en `trusted_phone_store.rs` y en archivos de tests tocados. ~50 líneas.
 
 ## Progreso
 
@@ -51,3 +51,5 @@ Plan creado el 2026-10-03.
 
 - f1 completada: endurecimiento de tests de loopback y del duplex en memoria, sin cambios de producción; 296 tests, 0 fallos.
 - f2 completada: `arrival_fps`/`total_chunks`/`total_bytes` cuentan chunks enteros entregados al sink (contadores del receptor por deltas) y los fragmentos se cuentan aparte (`video_fragments_received`); 298 tests, 0 fallos.
+f3 completada el 2026-10-03: `cargo clippy --fix` para las sugerencias automáticas (clone de `Copy`, byte strings, `is_multiple_of`, `as_chunks`, `repeat_n`, import sin uso) y ajustes manuales (doc de lista en `tls_session_frame_test.rs`, `allow(too_many_arguments)` en tres helpers de test). `cargo clippy --offline --all-targets -- -D warnings` limpio; suite 298/0. Sin cambios de comportamiento.
+Cierre del lado desktop (2026-10-03): `95e2b29` plan, `fbfd958` f1, `367b445` f2 y el commit de f3. Revisión nativa pendiente: el consentimiento venció 4 veces sin respuesta en la UI del host.

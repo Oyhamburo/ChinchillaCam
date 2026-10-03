@@ -1558,7 +1558,7 @@ impl FrameTransferBudget {
         mut self,
         read_transfer_len: usize,
     ) -> Result<Self, UsbProbeError> {
-        if read_transfer_len == 0 || read_transfer_len % BULK_READ_TRANSFER_GRANULE != 0 {
+        if read_transfer_len == 0 || !read_transfer_len.is_multiple_of(BULK_READ_TRANSFER_GRANULE) {
             return Err(UsbProbeError::InvalidBulkReadTransferLen(read_transfer_len));
         }
         self.read_transfer_len = read_transfer_len;

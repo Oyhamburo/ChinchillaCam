@@ -36,7 +36,9 @@ fn interop_helper_prints_frozen_three_line_contract_before_accept() {
 fn hex_decode(hex: &str) -> Vec<u8> {
     assert_eq!(hex.len() % 2, 0);
     hex.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|chunk| {
             let text = std::str::from_utf8(chunk).unwrap();
             u8::from_str_radix(text, 16).unwrap()

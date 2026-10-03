@@ -29,6 +29,7 @@ fn invalid_fragment_cases() -> Vec<SessionFrame> {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fragment_with(
     session_id: &str,
     chunk_index: i32,

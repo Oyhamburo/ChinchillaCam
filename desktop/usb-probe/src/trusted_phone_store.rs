@@ -446,13 +446,13 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(text: &str) -> Result<Vec<u8>, TrustedPhoneStoreError> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return Err(TrustedPhoneStoreError::CorruptStore(
             "hex public key length must be even".to_string(),
         ));
     }
     let mut bytes = Vec::with_capacity(text.len() / 2);
-    for pair in text.as_bytes().chunks_exact(2) {
+    for pair in text.as_bytes().as_chunks::<2>().0 {
         bytes.push((hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?);
     }
     Ok(bytes)

@@ -5,9 +5,9 @@
 //! can be scripted to fail.
 
 use usb_probe::{
-    DecodedFrameSink, DecodedVideoFrame, EncodedVideoChunk, EncodedVideoChunkLimits,
-    EncodedVideoFrameKind, FakeVideoDecoder, PixelFormat, PresentationTimestamp,
-    RecordingDecodedFrameSink, VideoDecoder, VideoDecoderError,
+    DecodedVideoFrame, EncodedVideoChunk, EncodedVideoChunkLimits, EncodedVideoFrameKind,
+    FakeVideoDecoder, PixelFormat, PresentationTimestamp, RecordingDecodedFrameSink, VideoDecoder,
+    VideoDecoderError,
 };
 
 fn chunk(kind: EncodedVideoFrameKind, pts_us: u64, payload: Vec<u8>) -> EncodedVideoChunk {

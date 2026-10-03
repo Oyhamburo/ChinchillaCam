@@ -460,14 +460,14 @@ fn session_frame_is_big_endian_payload_inside_little_endian_bulk_frame() {
 
     assert_eq!(&encoded_bulk[..8], &[0x04, 0x03, 0x02, 0x01, 27, 0, 0, 0]);
     assert_eq!(&encoded_bulk[8..], session_bytes.as_slice());
-    assert_eq!(&encoded_bulk[8..12], &[b'C', b'C', b'S', b'F']);
+    assert_eq!(&encoded_bulk[8..12], b"CCSF");
     assert_eq!(&encoded_bulk[14..18], &[0, 0, 0, 9]);
 }
 
 #[test]
 fn session_frame_rejects_header_and_size_errors_before_payload_allocation() {
     assert_eq!(
-        SessionFrameCodec::decode(&[b'C', b'C']),
+        SessionFrameCodec::decode(b"CC"),
         Err(SessionFrameDecodeError::TruncatedFrame("header"))
     );
     assert_eq!(
@@ -640,7 +640,7 @@ fn session_frame_rejects_duplicate_camera_control_argument_keys() {
 
 fn raw_frame(frame_type: u8, payload: Vec<u8>) -> Vec<u8> {
     bytes()
-        .raw(&[b'C', b'C', b'S', b'F'])
+        .raw(b"CCSF")
         .byte(1)
         .byte(frame_type)
         .int(1)

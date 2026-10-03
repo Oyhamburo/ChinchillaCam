@@ -318,8 +318,8 @@ fn encoded_frame_with_length_prefix(frame: &SessionFrame) -> Vec<u8> {
 /// `1..=1_048_576`). A single string/bytes field is length-prefixed with `u16` (max 65_535
 /// bytes), so no single field can reach the 1 MiB bound alone: this uses 16
 /// `CameraControlCommand` argument entries instead (15 at the maximum 65_535-byte value,
-/// plus one final entry sized to close the exact remaining gap: 16*2-byte keys + 15*65_535
-/// + 1*65_433 value bytes + 4 bytes per entry of length-prefix overhead + the 16-byte CCSF
+/// plus one final entry sized to close the exact remaining gap: 16*2-byte keys, 15*65_535
+/// plus 1*65_433 value bytes + 4 bytes per entry of length-prefix overhead + the 16-byte CCSF
 /// header + 1-byte session id + 1-byte command + 2-byte argument-count field == 1_048_576).
 /// The arithmetic is asserted against the real encoder's output above rather than trusted
 /// blindly.
