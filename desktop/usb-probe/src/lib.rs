@@ -12,6 +12,7 @@ mod pairing_proof_endpoint;
 mod pairing_proof_protocol;
 mod pairing_qr;
 mod pairing_qr_issuer;
+mod pairing_short_code;
 mod phone_client_cert_verifier;
 mod phone_connection;
 mod session_frame;
@@ -70,6 +71,7 @@ pub use pairing_qr_issuer::{
     IssuedPairingQr, OsPairingQrNonceGenerator, PairingQrIssuer, PairingQrIssuerError,
     PairingQrNonceGenerator,
 };
+pub use pairing_short_code::{pairing_short_code_v1, PairingShortCode, ShortCodeError};
 pub use phone_client_cert_verifier::{
     is_canonical_p256_spki, phone_id_for_spki, PhoneClientCertVerifier, TrustedPhoneLookup,
     TrustedPhoneLookupError, TrustedPhoneStatus,

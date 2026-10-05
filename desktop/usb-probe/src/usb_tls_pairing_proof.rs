@@ -115,10 +115,13 @@ impl PairedPhoneCandidate {
 
 /// The outcome of a completed pairing handshake and proof: the still-live TLS stream (so
 /// the caller can keep exchanging application data over the same session) and the phone
-/// candidate the same connection's peer certificate carried.
+/// candidate the same connection's peer certificate carried, plus the QR and challenge
+/// nonces of the phone's accepted CCP1 request (inputs of the SAS v1 pairing code, task d1).
 pub struct CompletedPairingProof<S: Read + Write> {
     pub tls: StreamOwned<ServerConnection, S>,
     pub candidate: PairedPhoneCandidate,
+    pub qr_nonce: Vec<u8>,
+    pub challenge_nonce: Vec<u8>,
 }
 
 impl UsbTlsPairingProofServer {
@@ -169,8 +172,15 @@ impl UsbTlsPairingProofServer {
         let mut tls = StreamOwned::new(connection, stream);
         let request = read_ccp1_request(&mut tls, deadline)?;
         validate_request(&request)?;
+        let qr_nonce = request.qr_nonce().to_vec();
+        let challenge_nonce = request.challenge_nonce().to_vec();
         consume_and_respond(&mut tls, issuer, request, deadline)?;
-        Ok(CompletedPairingProof { tls, candidate })
+        Ok(CompletedPairingProof {
+            tls,
+            candidate,
+            qr_nonce,
+            challenge_nonce,
+        })
     }
 
     pub fn connection(&self) -> &ServerConnection {

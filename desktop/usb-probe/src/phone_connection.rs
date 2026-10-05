@@ -31,11 +31,11 @@ use std::{
 use rustls::{ServerConnection, StreamOwned};
 
 use crate::{
-    complete_trusted_phone_handshake, phone_id_for_spki, read_session_frame, write_session_frame,
-    DesktopTlsIdentity, FileTrustedPhoneStore, PairedPhoneCandidate,
-    PairedPhoneCandidateConfirmError, PairingQrIssuer, PairingQrNonceGenerator, SessionFrame,
-    SessionFramePayload, TlsSessionFrameError, TrustedPhoneLookup, UsbTlsPairingProofError,
-    UsbTlsPairingProofServer,
+    complete_trusted_phone_handshake, pairing_short_code_v1, phone_id_for_spki, read_session_frame,
+    write_session_frame, DesktopTlsIdentity, FileTrustedPhoneStore, PairedPhoneCandidate,
+    PairedPhoneCandidateConfirmError, PairingQrIssuer, PairingQrNonceGenerator, PairingShortCode,
+    SessionFrame, SessionFramePayload, ShortCodeError, TlsSessionFrameError, TrustedPhoneLookup,
+    UsbTlsPairingProofError, UsbTlsPairingProofServer,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,13 +100,31 @@ impl fmt::Display for PhoneConnectionError {
 impl std::error::Error for PhoneConnectionError {}
 
 /// A pairing candidate whose TLS channel is retained live (contract section 4.2) until the
-/// caller explicitly [`confirm`](Self::confirm)s or [`reject`](Self::reject)s it.
+/// caller explicitly [`confirm`](Self::confirm)s or [`reject`](Self::reject)s it. It also
+/// keeps the QR and challenge nonces of the phone's CCP1 request so the caller can show the
+/// SAS v1 code ([`short_code`](Self::short_code)) before confirming.
 pub struct PendingPairedPhoneSession<S: Read + Write> {
     pub tls: StreamOwned<ServerConnection, S>,
     pub candidate: PairedPhoneCandidate,
+    pub qr_nonce: Vec<u8>,
+    pub challenge_nonce: Vec<u8>,
 }
 
 impl<S: Read + Write> PendingPairedPhoneSession<S> {
+    /// The SAS v1 code the user compares with the phone's screen: built from this desktop's
+    /// SPKI (`identity`), the candidate phone's SPKI and the two CCP1 nonces.
+    pub fn short_code(
+        &self,
+        identity: &DesktopTlsIdentity,
+    ) -> Result<PairingShortCode, ShortCodeError> {
+        pairing_short_code_v1(
+            identity.spki_der_p256(),
+            &self.candidate.spki,
+            &self.qr_nonce,
+            &self.challenge_nonce,
+        )
+    }
+
     /// Persists `self.candidate` via `PairedPhoneCandidate::confirm` (atomic, refuses
     /// revoked). On success, returns an authenticated session that RETAINS the same live
     /// TLS stream (contract section 4.5: it can now carry `HandshakeHello`/`HandshakeAccept`
@@ -184,6 +202,8 @@ where
     Ok(PendingPairedPhoneSession {
         tls: outcome.tls,
         candidate: outcome.candidate,
+        qr_nonce: outcome.qr_nonce,
+        challenge_nonce: outcome.challenge_nonce,
     })
 }
 

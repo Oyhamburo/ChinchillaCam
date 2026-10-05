@@ -50,7 +50,8 @@ TDD estricto con RED observado; commits de work unit ≤400 líneas con tests y 
 
 Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test --offline && PATH=$HOME/.cargo/bin:$PATH cargo clippy --offline --all-targets -- -D warnings`. Baseline: 298 tests, 0 fallos (HEAD `b9eb3ab`).
 
-1. [ ] d1 — SAS v1 + nonces en el candidato. RED: `short_code_matches_android_vector`. ~200 líneas.
+1. [x] d1 — SAS v1 + nonces en el candidato. RED: `short_code_matches_android_vector`. ~200 líneas.
+   - Evidencia d1: módulo `pairing_short_code` (`PairingShortCode`, `pairing_short_code_v1`, `ShortCodeError`); `CompletedPairingProof` y `PendingPairedPhoneSession` llevan `qr_nonce`/`challenge_nonce` capturados antes de consumir el pedido CCP1 (la reconexión no cambia); `PendingPairedPhoneSession::short_code(identity)`. RED observado: primero imports sin resolver, luego con stub `left: "000000" right: "841406"`; RED de `pending_pairing_exposes_short_code_matching_phone_inputs`: `no method named short_code`. GREEN: vector `841 406`, SPKIs invertidos `418 534`, ceros a la izquierda, entradas vacías rechazadas. Suite 303/0 (298 + 5), fmt y clippy limpios.
 2. [ ] d2 — HELLO/ACCEPT tras `confirm` (función compartida con la reconexión). RED: `confirmed_pairing_accepts_phone_hello`. ~300 líneas.
 3. [ ] d3 — `list`/`forget` del store y poda de nonces vencidos. RED: `forgotten_phone_is_not_listed_or_trusted`. ~250 líneas.
 4. [ ] d4 — `DesktopConnectionWorker` (pairing, reconexión, pipeline, eventos). RED: `pairing_then_session_reports_connected_and_metrics`. ~400 líneas (partir si excede).
@@ -60,3 +61,4 @@ Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --chec
 ## Progreso
 
 Plan creado el 2026-10-03 (HEAD `b9eb3ab`).
+- d1 completa: SAS v1 con vector compartido y código expuesto por el pairing pendiente; 303 tests, 0 fallos.

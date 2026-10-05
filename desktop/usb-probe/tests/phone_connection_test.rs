@@ -19,9 +19,9 @@ use rustls::{
     ClientConfig, ClientConnection, RootCertStore, StreamOwned,
 };
 use usb_probe::{
-    accept_phone_pairing_connection, accept_phone_reconnect_connection, phone_id_for_spki,
-    DesktopTlsIdentity, FileTrustedPhoneStore, FrameTransferBudget, FramedUsbStream,
-    PairingProofFrame, PairingProofRequest, PairingProofResponse, PairingQrIssuer,
+    accept_phone_pairing_connection, accept_phone_reconnect_connection, pairing_short_code_v1,
+    phone_id_for_spki, DesktopTlsIdentity, FileTrustedPhoneStore, FrameTransferBudget,
+    FramedUsbStream, PairingProofFrame, PairingProofRequest, PairingProofResponse, PairingQrIssuer,
     PairingQrIssuerError, PhoneConnectionError, SessionFrame, SessionFramePayload, SessionIdentity,
     TlsSessionFrameError, TrustedPhoneIdentity, UsbBulkIo, UsbProbeError, UsbTlsCiphertextStream,
 };
@@ -97,6 +97,46 @@ fn pairing_mode_holds_channel_until_confirm() {
         "store must hold the confirmed phone"
     );
     cleanup(store_path);
+}
+
+/// Task d1: the pending pairing exposes the SAS v1 code built from both SPKIs and the two
+/// nonces the phone actually sent in its CCP1 request.
+#[test]
+fn pending_pairing_exposes_short_code_matching_phone_inputs() {
+    let now = now_seconds();
+    let (identity, mut issuer, request) = proof_fixture(now, "desktop-01", vec![7; 32]);
+    let cert = identity.certificate_der().to_vec();
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Code Phone").unwrap();
+    let expected = pairing_short_code_v1(
+        identity.spki_der_p256(),
+        phone_identity.spki_der_p256(),
+        request.qr_nonce(),
+        request.challenge_nonce(),
+    )
+    .unwrap();
+    let (desktop_io, phone_io) = crossed_bulk_pair();
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            let pending = accept_phone_pairing_connection(
+                ciphertext_stream(desktop_io),
+                &identity,
+                &mut issuer,
+                Duration::from_millis(1500),
+            )
+            .map_err(|error| error.to_string())?;
+            let code = pending.short_code(&identity).map_err(|e| e.to_string());
+            pending.reject();
+            code
+        });
+
+        let mut tls = phone_tls_stream(phone_io, &cert, &phone_identity);
+        tls.write_all(&request_frame(&request)).unwrap();
+        tls.flush().unwrap();
+        read_ccp1_frame(&mut tls).unwrap();
+
+        assert_eq!(server.join().unwrap().unwrap(), expected);
+    });
 }
 
 #[test]
