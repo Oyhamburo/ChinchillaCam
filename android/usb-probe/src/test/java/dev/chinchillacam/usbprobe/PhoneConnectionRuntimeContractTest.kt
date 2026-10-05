@@ -39,6 +39,15 @@ class PhoneConnectionRuntimeContractTest {
         assertFalse("the runtime must not open sockets", Regex("""Socket""").containsMatchIn(source))
     }
 
+    @Test
+    fun cableDetachReachesTheControllerWithoutAnyActivity() {
+        assertContains("the detach receiver must be registered once, from build, with the application context", """registerAccessoryDetached\(context, controller\)""")
+        assertContains("build must receive the application context", """build\(context\.applicationContext \?: context\)""")
+        assertContains("the receiver must listen for accessory detach", """IntentFilter\(UsbManager\.ACTION_USB_ACCESSORY_DETACHED\)""")
+        assertContains("a detach must end the session in the controller", """controller\.accessoryDetached\(\)""")
+        assertContains("API 33+ registration must declare the receiver not exported", """registerReceiver\(receiver, filter, Context\.RECEIVER_NOT_EXPORTED\)""")
+    }
+
     private fun assertContains(message: String, pattern: String) {
         assertTrue(message, Regex(pattern).containsMatchIn(source))
     }

@@ -1,6 +1,7 @@
 package dev.chinchillacam.usbprobe
 
 import android.graphics.ImageFormat
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -25,11 +26,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * thread, one frame at a time (frames arriving while a decode is busy are dropped).
  * [onQrText] (first text with the pairing prefix) or [onError] is called at most once, on the
  * main thread, and then scanning stops by itself. Nothing is delivered after [close].
+ * The optional [previewTexture] gets the chosen frame size as its default buffer size; the
+ * preview `Surface` built over it is owned (and released) by the scanner.
  */
 class Camera2QrScanner(
     private val cameraManager: CameraManager,
     private val cameraId: String,
-    private val previewSurface: Surface?,
+    private val previewTexture: SurfaceTexture?,
     private val onQrText: (String) -> Unit,
     private val onError: (String) -> Unit,
 ) : Closeable {
@@ -49,6 +52,7 @@ class Camera2QrScanner(
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var reader: ImageReader? = null
+    private var previewSurface: Surface? = null
     private var openPending = false
 
     // Written by the camera thread only while decodeBusy is held, read by the decode thread.
@@ -87,6 +91,10 @@ class Camera2QrScanner(
         try {
             val characteristics = cameraManager.getCameraCharacteristics(cameraId)
             val size = chooseFrameSize(characteristics)
+            previewSurface = previewTexture?.let { texture ->
+                texture.setDefaultBufferSize(size.width, size.height)
+                Surface(texture)
+            }
             val continuousAf = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
                 ?.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE) == true
             val imageReader = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2)
@@ -111,6 +119,8 @@ class Camera2QrScanner(
             fail(OPEN_FAILED)
         } catch (_: IllegalArgumentException) {
             fail(OPEN_FAILED)
+        } catch (_: Surface.OutOfResourcesException) {
+            fail(OPEN_FAILED)
         }
     }
 
@@ -124,6 +134,7 @@ class Camera2QrScanner(
 
     /** Pre-API-28 session API on purpose: minSdk is 23. */
     private fun createSession(camera: CameraDevice, imageReader: ImageReader, continuousAf: Boolean, handler: Handler) {
+        val previewSurface = previewSurface
         val targets = listOfNotNull(imageReader.surface, previewSurface)
         try {
             @Suppress("DEPRECATION")
@@ -211,6 +222,8 @@ class Camera2QrScanner(
         device = null
         reader?.close()
         reader = null
+        previewSurface?.release()
+        previewSurface = null
         if (!openPending) Looper.myLooper()?.quitSafely()
     }
 

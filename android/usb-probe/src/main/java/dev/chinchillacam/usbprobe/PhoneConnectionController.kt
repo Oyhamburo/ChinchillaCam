@@ -91,6 +91,11 @@ class PhoneConnectionController(
         listeners += listener
     }
 
+    /** Stops notifying [listener] (same instance passed to [addListener]); a notification already running may still complete. */
+    fun removeListener(listener: (PhoneConnectionState) -> Unit) {
+        listeners -= listener
+    }
+
     /** Trusted (non-revoked) desktops to offer for [connect]. */
     fun trustedDesktops(): List<TrustedDesktopRecord> = store.list().filter { it.revokedAtEpochSeconds == null }
 

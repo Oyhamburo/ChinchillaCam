@@ -1,10 +1,14 @@
 package dev.chinchillacam.usbprobe
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.hardware.camera2.CameraManager
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
+import android.os.Build
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
@@ -67,7 +71,18 @@ object PhoneConnectionRuntime {
             worker = singleThread("phone-connection"),
             epochSecondsSource = clock,
         )
+        registerAccessoryDetached(context, controller)
         return Components(controller, identity, accessorySource)
+    }
+
+    /** Registered once with the application context, so a cable pull ends the session even with no activity alive. */
+    private fun registerAccessoryDetached(context: Context, controller: PhoneConnectionController) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == UsbManager.ACTION_USB_ACCESSORY_DETACHED) controller.accessoryDetached()
+            }
+        }
+        registerNotExportedReceiver(context, receiver, IntentFilter(UsbManager.ACTION_USB_ACCESSORY_DETACHED))
     }
 
     /** Same catalog adapter as [VisibleCameraForegroundService] and [UsbProbeActivity]. */
@@ -105,4 +120,16 @@ object PhoneConnectionRuntime {
     /** Same preference file and key as [UsbProbeActivity]'s camera selection (kept in sync by hand). */
     private const val CAMERA_PREFERENCES = "dev.chinchillacam.usbprobe.camera"
     private const val CAMERA_SELECTION_KEY = "selected_direct_camera_id"
+}
+
+/**
+ * Context-registered receiver reachable only by the system and this app (the explicit flag is
+ * required from API 33; earlier context receivers have no export flag).
+ */
+internal fun registerNotExportedReceiver(context: Context, receiver: BroadcastReceiver, filter: IntentFilter) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+    } else {
+        context.registerReceiver(receiver, filter)
+    }
 }

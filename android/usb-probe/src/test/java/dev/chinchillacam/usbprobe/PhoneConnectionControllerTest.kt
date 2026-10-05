@@ -219,6 +219,22 @@ class PhoneConnectionControllerTest {
         awaitState<PhoneConnectionState.Failed> { it.message == PhoneConnectionMessages.QR_EXPIRED }
     }
 
+    @Test
+    fun removedListenerIsNoLongerNotified() {
+        val kept = CopyOnWriteArrayList<PhoneConnectionState>()
+        val removed = CopyOnWriteArrayList<PhoneConnectionState>()
+        val removedListener: (PhoneConnectionState) -> Unit = { removed += it }
+        controller.addListener { kept += it }
+        controller.addListener(removedListener)
+        controller.removeListener(removedListener)
+
+        controller.qrScanned("CHINCHILLACAM-PAIR:v1:garbage")
+        awaitState<PhoneConnectionState.Failed>()
+        drainWorker()
+        assertEquals(listOf<PhoneConnectionState>(PhoneConnectionState.Failed(PhoneConnectionMessages.QR_INVALID)), kept)
+        assertTrue(removed.isEmpty())
+    }
+
     private fun workerThread(): Thread = worker.submit<Thread> { Thread.currentThread() }.get(5, TimeUnit.SECONDS)
 
     /** Waits until every operation already posted to the worker has run. */
