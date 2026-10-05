@@ -52,7 +52,13 @@ TDD estricto con RED observado (fuente: `odd/tasks/complete-webcam-product.md`).
 
 Runner: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug`. Baseline: 435 tests, 2 omitidos, 0 fallos (HEAD `bf7caae`).
 
-1. [ ] c1 — `PairingShortCode` (SAS v1) con vector fijo. RED: `shortCodeMatchesFixedVector`. ~150 líneas.
+1. [x] c1 — `PairingShortCode` (SAS v1) con vector fijo. RED: `shortCodeMatchesFixedVector`. ~150 líneas.
+
+   **Evidencia c1**
+   - Vector fijo (oráculo calculado aparte con Python): `desktopSpki` = 91 bytes `0x10 + i`; `phoneSpki` = 91 bytes `0x80 + i`; `qrNonce` = 16 bytes `0xA5`; `challengeNonce` = 32 bytes `0x5A`. Digest `7371dabe90866b11a3e505c78991d0fe7699818a70029299bfc6b8de7d306d91` → `841406` (`841 406`). Con los SPKI intercambiados → `418534`.
+   - RED (stub compilable que devuelve vacío): 4 tests, 4 fallos; `shortCodeMatchesFixedVector`: `org.junit.ComparisonFailure: expected:<[841406]> but was:<[]>`; `emptyInputIsRejected`: `expected java.lang.IllegalArgumentException to be thrown, but nothing was thrown`.
+   - GREEN: `PairingShortCodeTest` 4 tests, 0 fallos (`shortCodeMatchesFixedVector`, `swappingSpkiRolesChangesCode`, `leadingZerosArePadded` vía `fromValue(42)` → `000 042`, `emptyInputIsRejected`).
+   - Runner completo: BUILD SUCCESSFUL; 439 tests, 2 omitidos, 0 fallos (baseline 435 + 4); `assembleDebug` y `lintDebug` OK.
 2. [ ] c2 — `SessionHelloExchange` compartido + inicio de sesión tras pairing confirmado. RED: `confirmedPairingChannelStartsSessionAfterDesktopAccept`. ~300 líneas.
 3. [ ] c3 — `PhoneConnectionController` (pairing y conexión, estado observable, desconexión libera autoridad). RED: `scannedQrPairsConfirmsAndConnects`. ~400 líneas.
 4. [ ] c4 — Registro de sesión de proceso + service en modo sesión + adaptadores de producción de los puertos. RED: `serviceUsesSessionSinkFactoryWhenSessionActive`. ~300 líneas.
@@ -62,3 +68,4 @@ Runner: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gra
 ## Progreso
 
 Plan creado el 2026-10-03 (HEAD `bf7caae`).
+- c1 completada: `PairingShortCode` (SAS v1) con vector fijo; 439 tests, 2 omitidos, 0 fallos.
