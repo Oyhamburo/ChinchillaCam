@@ -4,6 +4,8 @@ plugins {
 }
 
 dependencies {
+    // QR decoding for pairing: pinned ZXing core (Apache-2.0, pure Java, no transitive deps).
+    implementation("com.google.zxing:core:3.3.3")
     testImplementation("junit:junit:4.13.2")
 }
 
