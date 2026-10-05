@@ -53,7 +53,7 @@ class PhoneConnectionControllerTest {
 
     @After
     fun tearDown() {
-        launcher.launches.forEach { runCatching { it.channel.close() } }
+        launcher.launches.forEach { runCatching { it.reconnected.channel.close() } }
         worker.shutdownNow()
         worker.awaitTermination(2, TimeUnit.SECONDS)
         source.finish()
@@ -70,7 +70,7 @@ class PhoneConnectionControllerTest {
 
         controller.confirmPairing()
         assertEquals(PhoneConnectionState.Connected("pc-1", "Studio"), awaitState<PhoneConnectionState.Connected>())
-        assertEquals(listOf("pc-1"), launcher.launches.map { it.desktopId })
+        assertEquals(listOf("pc-1"), launcher.launches.map { it.reconnected.desktopId })
         assertNotNull(store.lookup("pc-1"))
         assertEquals(ActiveDesktopAuthority.State.ActiveDesktop("pc-1"), authority.state)
     }
@@ -110,7 +110,7 @@ class PhoneConnectionControllerTest {
         controller.connect("pc-1")
 
         assertEquals(PhoneConnectionState.Connected("pc-1", "Studio"), awaitState<PhoneConnectionState.Connected>())
-        assertEquals(listOf("pc-1"), launcher.launches.map { it.desktopId })
+        assertEquals(listOf("pc-1"), launcher.launches.map { it.reconnected.desktopId })
         assertEquals(ActiveDesktopAuthority.State.ActiveDesktop("pc-1"), authority.state)
     }
 
@@ -127,11 +127,88 @@ class PhoneConnectionControllerTest {
     }
 
     @Test
+    fun sessionEndReturnsToIdleWithNoticeAndReleasesAuthority() {
+        seedTrust()
+        source.enqueue(Desktop.ReconnectAccept, Desktop.ReconnectAccept)
+        controller.connect("pc-1")
+        awaitState<PhoneConnectionState.Connected>()
+
+        thread { launcher.launches[0].onEnded(SessionEndNotice("La sesión terminó.")) }.join(1_000)
+        assertEquals(PhoneConnectionState.Idle("La sesión terminó."), awaitState<PhoneConnectionState.Idle>())
+        assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
+
+        controller.connect("pc-1")
+        awaitState<PhoneConnectionState.Connected>()
+        assertEquals(2, launcher.launches.size)
+        // A late end notice from the first session must not end the second one.
+        launcher.launches[0].onEnded(SessionEndNotice("tarde"))
+        drainWorker()
+        assertEquals(PhoneConnectionState.Connected("pc-1", "Studio"), controller.snapshot())
+        assertEquals(ActiveDesktopAuthority.State.ActiveDesktop("pc-1"), authority.state)
+    }
+
+    @Test
+    fun disconnectClosesHandleAndReleasesAuthority() {
+        seedTrust()
+        source.enqueue(Desktop.ReconnectAccept)
+        controller.connect("pc-1")
+        awaitState<PhoneConnectionState.Connected>()
+
+        controller.disconnect()
+        assertEquals(PhoneConnectionState.Idle(PhoneConnectionMessages.DISCONNECTED), awaitState<PhoneConnectionState.Idle>())
+        val launch = launcher.launches[0]
+        assertEquals("close() runs on the worker", workerThread(), launch.closedOn)
+        assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
+        launch.onEnded(SessionEndNotice("tarde"))
+        drainWorker()
+        assertEquals(PhoneConnectionState.Idle(PhoneConnectionMessages.DISCONNECTED), controller.snapshot())
+    }
+
+    @Test
+    fun forgetConnectedDesktopDisconnectsThenForgets() {
+        seedTrust()
+        source.enqueue(Desktop.ReconnectAccept)
+        controller.connect("pc-1")
+        awaitState<PhoneConnectionState.Connected>()
+
+        controller.forget("pc-1")
+        assertEquals(PhoneConnectionState.Idle(PhoneConnectionMessages.DISCONNECTED), awaitState<PhoneConnectionState.Idle>())
+        drainWorker()
+        assertEquals("the session closes before trust is removed", true, launcher.launches[0].trustedAtClose)
+        assertEquals(null, store.lookup("pc-1"))
+        assertTrue(controller.trustedDesktops().isEmpty())
+        assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
+    }
+
+    @Test
+    fun cableDetachedDuringConfirmationFails() {
+        source.enqueue(Desktop.PairOnly)
+        controller.qrScanned(qrText())
+        awaitState<PhoneConnectionState.ConfirmPairing>()
+
+        controller.accessoryDetached()
+        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.USB_DETACHED), awaitState<PhoneConnectionState.Failed>())
+        controller.confirmPairing()
+        drainWorker()
+        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.USB_DETACHED), controller.snapshot())
+        assertEquals(null, store.lookup("pc-1"))
+        assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
+        // tearDown() then proves the pairing channel was closed: the fake desktop only exits on close.
+    }
+
+    @Test
     fun invalidQrFails() {
         controller.qrScanned("CHINCHILLACAM-PAIR:v1:garbage")
         assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.QR_INVALID), awaitState<PhoneConnectionState.Failed>())
         controller.qrScanned(qrText(expiresAt = 900))
         awaitState<PhoneConnectionState.Failed> { it.message == PhoneConnectionMessages.QR_EXPIRED }
+    }
+
+    private fun workerThread(): Thread = worker.submit<Thread> { Thread.currentThread() }.get(5, TimeUnit.SECONDS)
+
+    /** Waits until every operation already posted to the worker has run. */
+    private fun drainWorker() {
+        workerThread()
     }
 
     private fun seedTrust() = store.save(
@@ -208,14 +285,26 @@ class PhoneConnectionControllerTest {
         }
     }
 
-    private class FakeSessionLauncher : SessionLauncher {
-        val launches = CopyOnWriteArrayList<UsbTrustedReconnectResult.Reconnected>()
+    private class Launch(val reconnected: UsbTrustedReconnectResult.Reconnected, val onEnded: (SessionEndNotice) -> Unit) {
+        @Volatile var closedOn: Thread? = null
+        @Volatile var trustedAtClose: Boolean? = null
+    }
+
+    private inner class FakeSessionLauncher : SessionLauncher {
+        val launches = CopyOnWriteArrayList<Launch>()
         @Volatile var failNext = false
 
-        override fun launch(reconnected: UsbTrustedReconnectResult.Reconnected): ActiveSessionHandle {
-            launches += reconnected
+        override fun launch(
+            reconnected: UsbTrustedReconnectResult.Reconnected,
+            onEnded: (SessionEndNotice) -> Unit,
+        ): ActiveSessionHandle {
+            val launch = Launch(reconnected, onEnded).also { launches += it }
             if (failNext) error("launch failed")
-            return ActiveSessionHandle { runCatching { reconnected.channel.close() } }
+            return ActiveSessionHandle {
+                launch.closedOn = Thread.currentThread()
+                launch.trustedAtClose = store.lookup(reconnected.desktopId) != null
+                runCatching { reconnected.channel.close() }
+            }
         }
     }
 

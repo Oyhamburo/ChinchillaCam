@@ -16,6 +16,9 @@ fun interface AccessoryTransportSource {
     fun open(): AccessoryTransportOpenResult
 }
 
+/** Why a launched session ended on its own; [message] is the Spanish text shown to the user. */
+data class SessionEndNotice(val message: String)
+
 /** A running session (camera, encoder, egress). [close] stops all of it; it may block, so it is only called off the main thread. */
 fun interface ActiveSessionHandle {
     fun close()
@@ -23,7 +26,8 @@ fun interface ActiveSessionHandle {
 
 /** Port that starts the session composition over an authenticated channel (production in c4). */
 fun interface SessionLauncher {
-    fun launch(reconnected: UsbTrustedReconnectResult.Reconnected): ActiveSessionHandle
+    /** [onEnded] may be invoked from any thread when the session ends without [ActiveSessionHandle.close]. */
+    fun launch(reconnected: UsbTrustedReconnectResult.Reconnected, onEnded: (SessionEndNotice) -> Unit): ActiveSessionHandle
 }
 
 sealed class AccessoryPurpose {
@@ -47,12 +51,10 @@ sealed class PhoneConnectionState {
  *
  * Threading: every operation is posted to [worker], which must be a serial executor that queues
  * (single thread in production; never the main thread). All mutable state is confined to it, and
- * listeners are invoked on it. Blocking steps (TLS, HELLO/ACCEPT) therefore run off the main thread,
- * and an operation queued behind one runs once it finishes. An operation that is not valid in the
- * current state is ignored.
- *
- * Scope c3a: pairing, connection and session launch. Releasing a `Connected` session (disconnect,
- * forget, cable detached, session ended) is task c3b.
+ * listeners are invoked on it. Blocking steps (TLS, HELLO/ACCEPT, [ActiveSessionHandle.close])
+ * therefore run off the main thread, and an operation queued behind one runs once it finishes. An
+ * operation that is not valid in the current state is ignored. Every way out of `Connected`
+ * (disconnect, forget, cable detached, session ended) releases [authority].
  *
  * Fail closed: once [UsbPairingFlow.confirm] has persisted and activated a desktop, any failure to
  * start its first session rolls back both the authority and the phone-side trust, so both sides
@@ -80,7 +82,6 @@ class PhoneConnectionController(
     // Worker-confined.
     private var pendingQr: PairingQrPayload? = null
     private var pendingId: String? = null
-    /** The launched session; released by c3b's disconnect/forget/detached/session-end. */
     private var session: LiveSession? = null
 
     fun snapshot(): PhoneConnectionState = state
@@ -149,6 +150,32 @@ class PhoneConnectionController(
         openFor(AccessoryPurpose.Connect(desktopId))
     }
 
+    /** Valid in `Connected`: closes the session and releases the authority. */
+    fun disconnect() = post { endSession(PhoneConnectionMessages.DISCONNECTED) }
+
+    /** Disconnects first if connected to [desktopId], then forgets it; listeners are re-notified so the list can refresh. */
+    fun forget(desktopId: String) = post {
+        if (session?.desktopId == desktopId) endSession(PhoneConnectionMessages.DISCONNECTED)
+        if (runCatching { store.forget(desktopId) }.isFailure) fail(PhoneConnectionMessages.FORGET_FAILED) else publish(state)
+    }
+
+    /**
+     * Ends a `Connected` session or cancels a `ConfirmPairing`. `AwaitingDesktopConfirmation` and
+     * `Connecting` only exist while the worker is blocked on the channel, which a detached cable
+     * fails on its own (handled like any other failure there).
+     */
+    fun accessoryDetached() = post {
+        when (state) {
+            is PhoneConnectionState.Connected -> endSession(PhoneConnectionMessages.USB_DETACHED)
+            is PhoneConnectionState.ConfirmPairing -> {
+                runCatching { pairingFlow.reject() }
+                clearPending()
+                fail(PhoneConnectionMessages.USB_DETACHED)
+            }
+            else -> Unit
+        }
+    }
+
     private fun openFor(purpose: AccessoryPurpose) {
         when (val opened = runCatching { accessorySource.open() }.getOrElse { AccessoryTransportOpenResult.Failed(it.toString()) }) {
             is AccessoryTransportOpenResult.Opened -> when (purpose) {
@@ -213,13 +240,36 @@ class PhoneConnectionController(
 
     private fun launchSession(reconnected: UsbTrustedReconnectResult.Reconnected, desktopName: String) {
         publish(PhoneConnectionState.Connecting(desktopName))
-        val handle = runCatching { sessionLauncher.launch(reconnected) }.getOrElse {
+        var launched: LiveSession? = null
+        val onEnded: (SessionEndNotice) -> Unit = { notice ->
+            // Posted, so it runs after `launched` is set even if launch() calls back synchronously.
+            runCatching { post { launched?.let { sessionEnded(it, notice) } } }
+        }
+        val handle = runCatching { sessionLauncher.launch(reconnected, onEnded) }.getOrElse {
             runCatching { reconnected.channel.close() }
             authority.stopActiveDesktop(reconnected.desktopId)
             return fail(PhoneConnectionMessages.SESSION_START_FAILED)
         }
-        session = LiveSession(reconnected.desktopId, handle)
+        launched = LiveSession(reconnected.desktopId, handle).also { session = it }
         publish(PhoneConnectionState.Connected(reconnected.desktopId, desktopName))
+    }
+
+    /** Only ends [live] if it is still the current session, so a late notice never ends a newer one. */
+    private fun sessionEnded(live: LiveSession, notice: SessionEndNotice) {
+        if (session !== live) return
+        session = null
+        // The session already ended; closing is idempotent and releases whatever it still holds.
+        runCatching { live.handle.close() }
+        authority.stopActiveDesktop(live.desktopId)
+        publish(PhoneConnectionState.Idle(notice.message))
+    }
+
+    private fun endSession(notice: String) {
+        val live = session ?: return
+        session = null
+        runCatching { live.handle.close() }
+        authority.stopActiveDesktop(live.desktopId)
+        publish(PhoneConnectionState.Idle(notice))
     }
 
     private fun rollBackPairing(desktopId: String) {

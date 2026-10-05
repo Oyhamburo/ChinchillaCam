@@ -7,6 +7,7 @@ object PhoneConnectionMessages {
     const val CONNECT_CABLE = "Conectá el cable USB a la computadora."
     const val USB_PERMISSION_DENIED = "Sin permiso para usar el USB. Volvé a conectar el cable y aceptá el permiso."
     const val USB_OPEN_FAILED = "No se pudo abrir la conexión USB."
+    const val USB_DETACHED = "Se desconectó el cable USB."
     const val PAIRING_FAILED = "No se pudo vincular con la computadora. Probá de nuevo."
     const val SECOND_ACTIVE_DESKTOP = "Ya hay otra computadora conectada."
     const val DESKTOP_REJECTED = "La computadora rechazó la conexión."
@@ -14,6 +15,8 @@ object PhoneConnectionMessages {
     const val DESKTOP_NOT_TRUSTED = "Esta computadora ya no es confiable. Vinculala de nuevo."
     const val CONNECTION_FAILED = "No se pudo conectar con la computadora."
     const val SESSION_START_FAILED = "No se pudo iniciar la transmisión."
+    const val FORGET_FAILED = "No se pudo olvidar la computadora."
+    const val DISCONNECTED = "Desconectado."
 
     /** Maps a typed session-start/reconnect rejection to its Spanish message. */
     fun forRejection(rejection: UsbTrustedReconnectResult.Rejected): String = when (rejection) {
