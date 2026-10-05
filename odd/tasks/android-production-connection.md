@@ -148,3 +148,17 @@ Plan creado el 2026-10-03 (HEAD `bf7caae`).
 - c5 completada: ZXing core 3.3.3 (Apache-2.0, sin transitivas), `QrLuminanceDecoder` (plano Y con stride → texto QR o `null`) y `Camera2QrScanner` delgado; 479 tests, 2 omitidos, 0 fallos. Sigue c6. Commit `bbac580`.
 - c6a completada: `ConnectionScreenPlanner` puro (textos y botones en español por estado, filas de PCs confiables, aviso de identidad regenerada) y `PhoneConnectionController.cancel()` desde `AwaitingAccessory`; 487 tests, 2 omitidos, 0 fallos. Sigue c6b (`ConnectionActivity` + manifest). Commit `97de3f4`.
 - c6b completada: `ConnectionActivity` launcher (render del plan, escáner con vista previa, permisos de cámara/USB, adjuntar accesorio), receiver de detach a nivel de proceso, `removeListener` y `UsbProbeActivity` como diagnóstico no exportado; 496 tests, 2 omitidos, 0 fallos.
+- c6b: commits `e291ad4` (controlador `removeListener`, receiver de detach, vista previa sobre `SurfaceTexture`, 71 líneas) y `45a6bed` (activity, manifest y contrato, 499 líneas: por encima de 400, declarado; la activity sola mide 382).
+
+Feature cerrada el 2026-10-03 en `45a6bed`: suite completa verificada por verificador independiente, 496 tests, 2 omitidos, 0 fallos; `assembleDebug` y `lintDebug` OK sin hallazgos en archivos nuevos. Revisión nativa: rango `bf7caae..45a6bed`.
+
+### Seguimientos
+
+- Desktop (paso 2): implementar SAS v1 con el mismo vector (`841 406`), mostrar el QR también como texto copiable, y leer `HANDSHAKE_HELLO`/responder `HANDSHAKE_ACCEPT` sobre el canal del pairing confirmado.
+- `onCameraControlCommand` ignorado hasta M7/T26 (controles de cámara).
+- Tras un `close()` del usuario el status store puede mostrar un `Error` espurio del encoder (la UI usa el estado del controlador).
+- Vista previa del escáner sin corrección de aspecto/rotación; continuaciones de permiso perdidas si la activity se recrea; diálogo "Olvidar" no se descarta en `onDestroy`.
+- Etiqueta de la aplicación sigue "ChinchillaCam USB Probe"; filtro de accesorio "USB Probe" (renombrado en T29); `UsbAccessoryPermissionReceiver` estático sólo para diagnóstico.
+- Preferencia de cámara duplicada a mano entre `PhoneConnectionRuntime` y `UsbProbeActivity`.
+- Identidad regenerada: sólo aviso; no se limpian las PCs confiables.
+- Sin validación física (M9): AOA real, broadcast de detach con `RECEIVER_NOT_EXPORTED`, cámara y escaneo.
