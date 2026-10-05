@@ -5,8 +5,10 @@
 //!
 //! Per connection the mode is chosen from the worker's own state (section 3.3): while a
 //! pairing QR is active the connection goes to the pairing step, otherwise to the trusted
-//! reconnect path, which starts a [`DesktopSessionPipeline`] after HELLO/ACCEPT. The pairing
-//! step (code, confirm/reject, `confirm_and_start`, QR refresh) is task d4b.
+//! reconnect path. The pairing step (task d4b) shows the SAS code, waits for the user's
+//! confirm/reject within a deadline and, on confirm, answers the phone's HELLO
+//! (`confirm_and_start`). Both paths then run the same [`DesktopSessionPipeline`] loop. While
+//! idle in pairing mode the QR is reissued shortly before it expires.
 
 use std::{
     io::{Read, Write},
@@ -19,13 +21,17 @@ use std::{
 };
 
 use crate::{
-    accept_phone_reconnect_connection, DecodedFrameCounter, DesktopMetricsSnapshot,
-    DesktopSessionPipeline, DesktopSessionPipelineError, DesktopTlsIdentity,
-    DesktopVideoSessionReceiver, FileTrustedPhoneStore, PairingQrIssuer, PairingQrIssuerError,
-    PairingShortCode, PhoneConnectionError, SessionEnd, SessionRuntimeConfig,
-    StaticFrameKindClassifier, TrustedPhoneStoreError, TrustedPhoneSummary, UsbProbeError,
-    VideoDecoder, DEFAULT_METRICS_WINDOW,
+    accept_phone_pairing_connection, accept_phone_reconnect_connection, AuthenticatedPhoneSession,
+    DecodedFrameCounter, DesktopMetricsSnapshot, DesktopSessionPipeline,
+    DesktopSessionPipelineError, DesktopTlsIdentity, DesktopVideoSessionReceiver,
+    FileTrustedPhoneStore, PairingQrIssuer, PairingQrIssuerError, PairingShortCode,
+    PendingPairedPhoneSession, PhoneConnectionError, SessionEnd, SessionRuntimeConfig,
+    ShortCodeError, StaticFrameKindClassifier, TrustedPhoneStoreError, TrustedPhoneSummary,
+    UsbProbeError, VideoDecoder, DEFAULT_METRICS_WINDOW,
 };
+
+/// The QR is reissued once fewer than this many seconds of validity remain.
+const QR_REFRESH_MARGIN_SECONDS: u64 = 5;
 
 /// Lets the worker arm the short idle read timeout once a session has started.
 pub trait IdleReadTimeoutControl {
@@ -49,7 +55,7 @@ pub trait PhoneLink: Send + 'static {
     fn poll_phone(&mut self) -> Result<Option<Self::Stream>, PhoneLinkError>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct DesktopWorkerConfig {
     /// Wait between link polls while no session runs.
     pub poll_interval: Duration,
@@ -61,6 +67,12 @@ pub struct DesktopWorkerConfig {
     pub metrics_window: Duration,
     /// How often a running session reports [`DesktopEvent::Metrics`].
     pub metrics_interval: Duration,
+    /// How long a pending pairing waits for `ConfirmPairing`/`RejectPairing`.
+    pub pairing_confirm_timeout: Duration,
+    /// Budget of the phone's HELLO after a confirmed pairing.
+    pub hello_timeout: Duration,
+    /// Wall clock in epoch seconds used to issue and refresh the pairing QR.
+    pub epoch_clock: fn() -> u64,
 }
 
 impl Default for DesktopWorkerConfig {
@@ -72,6 +84,9 @@ impl Default for DesktopWorkerConfig {
             session: SessionRuntimeConfig::default(),
             metrics_window: DEFAULT_METRICS_WINDOW,
             metrics_interval: Duration::from_secs(1),
+            pairing_confirm_timeout: Duration::from_secs(120),
+            hello_timeout: Duration::from_secs(120),
+            epoch_clock: system_epoch_seconds,
         }
     }
 }
@@ -110,8 +125,11 @@ pub enum DesktopSessionEndReason {
 pub enum DesktopConnectionFailure {
     /// The reconnect handshake or HELLO failed (for example, an unknown phone).
     Reconnect(PhoneConnectionError),
-    /// A phone connected while the pairing QR was active; replaced by the pairing step in d4b.
-    PairingUnavailable,
+    /// The pairing proof, the confirm or the HELLO after it failed.
+    Pairing(PhoneConnectionError),
+    /// Nobody confirmed or rejected the pending pairing in time.
+    PairingConfirmTimedOut,
+    ShortCode(ShortCodeError),
     Link(PhoneLinkError),
     Pipeline(DesktopSessionPipelineError),
     PairingQr(PairingQrIssuerError),
@@ -247,6 +265,7 @@ where
         self.emit_trusted_phones();
         (self.events)(DesktopEvent::WaitingForPhone);
         loop {
+            self.refresh_pairing_qr();
             let flow = match self.link.poll_phone() {
                 Ok(Some(stream)) => self.serve(stream),
                 Ok(None) => self.wait_for_command(),
@@ -302,7 +321,7 @@ where
     }
 
     fn start_pairing(&mut self) {
-        match self.issuer.issue_at(epoch_seconds()) {
+        match self.issuer.issue_at((self.config.epoch_clock)()) {
             Ok(issued) => {
                 let expires_at_epoch_seconds = issued.payload().expires_at_epoch_seconds();
                 self.pairing_expires_at = Some(expires_at_epoch_seconds);
@@ -311,35 +330,146 @@ where
                     expires_at_epoch_seconds,
                 });
             }
-            Err(error) => self.fail(DesktopConnectionFailure::PairingQr(error)),
+            Err(error) => {
+                self.pairing_expires_at = None;
+                self.fail(DesktopConnectionFailure::PairingQr(error));
+            }
+        }
+    }
+
+    fn refresh_pairing_qr(&mut self) {
+        if let Some(expires_at) = self.pairing_expires_at {
+            if (self.config.epoch_clock)() + QR_REFRESH_MARGIN_SECONDS >= expires_at {
+                self.start_pairing();
+            }
         }
     }
 
     fn serve(&mut self, stream: L::Stream) -> Flow {
-        if self.pairing_expires_at.is_some() {
-            return self.pairing_connection(stream);
-        }
-        (self.events)(DesktopEvent::Connecting);
-        let flow = self.reconnect_session(stream);
+        let flow = if self.pairing_expires_at.is_some() {
+            self.pairing_session(stream)
+        } else {
+            self.reconnect_session(stream)
+        };
         if flow != Flow::Stop {
             (self.events)(DesktopEvent::WaitingForPhone);
         }
         flow
     }
 
-    /// Trusted reconnect: TLS + HELLO/ACCEPT, idle read timeout, then the session pipeline
-    /// until it ends or a command closes it. Never returns [`Flow::EndSession`].
     fn reconnect_session(&mut self, stream: L::Stream) -> Flow {
+        (self.events)(DesktopEvent::Connecting);
         let lookup = self.store.clone();
         let timeout = self.config.handshake_timeout;
-        let mut session =
-            match accept_phone_reconnect_connection(stream, &self.identity, lookup, timeout) {
-                Ok(session) => session,
-                Err(error) => {
-                    self.fail(DesktopConnectionFailure::Reconnect(error));
+        match accept_phone_reconnect_connection(stream, &self.identity, lookup, timeout) {
+            Ok(session) => self.run_session(session),
+            Err(error) => {
+                self.fail(DesktopConnectionFailure::Reconnect(error));
+                Flow::Continue
+            }
+        }
+    }
+
+    /// Pairing proof, SAS code, then the user's decision within `pairing_confirm_timeout`.
+    /// A failed proof keeps pairing mode (the QR stays valid); any decision leaves it.
+    fn pairing_session(&mut self, stream: L::Stream) -> Flow {
+        let timeout = self.config.handshake_timeout;
+        let pending = match accept_phone_pairing_connection(
+            stream,
+            &self.identity,
+            &mut self.issuer,
+            timeout,
+        ) {
+            Ok(pending) => pending,
+            Err(error) => {
+                self.fail(DesktopConnectionFailure::Pairing(error));
+                return Flow::Continue;
+            }
+        };
+        match pending.short_code(&self.identity) {
+            Ok(code) => (self.events)(DesktopEvent::ConfirmCode {
+                phone_id: pending.candidate.phone_id.clone(),
+                code,
+            }),
+            Err(error) => {
+                pending.reject();
+                self.fail(DesktopConnectionFailure::ShortCode(error));
+                return Flow::Continue;
+            }
+        }
+        let deadline = Instant::now() + self.config.pairing_confirm_timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let command = match self.commands.recv_timeout(left) {
+                Ok(command) => command,
+                Err(RecvTimeoutError::Timeout) => {
+                    pending.reject();
+                    self.pairing_expires_at = None;
+                    self.fail(DesktopConnectionFailure::PairingConfirmTimedOut);
                     return Flow::Continue;
                 }
+                Err(RecvTimeoutError::Disconnected) => {
+                    pending.reject();
+                    return Flow::Stop;
+                }
             };
+            match command {
+                DesktopCommand::ConfirmPairing { label } => {
+                    return self.confirm_pairing(pending, &label);
+                }
+                DesktopCommand::RejectPairing | DesktopCommand::CancelPairing => {
+                    pending.reject();
+                    self.pairing_expires_at = None;
+                    (self.events)(DesktopEvent::PairingCancelled);
+                    return Flow::Continue;
+                }
+                DesktopCommand::Shutdown => {
+                    pending.reject();
+                    return Flow::Stop;
+                }
+                command @ DesktopCommand::ForgetPhone { .. } => {
+                    self.handle_command(command, None);
+                }
+                // No session to disconnect, and the pending pairing already used its QR.
+                DesktopCommand::Disconnect | DesktopCommand::StartPairing => {}
+            }
+        }
+    }
+
+    /// `confirm_and_start`; if the HELLO fails after the store trusted a new phone, the
+    /// trust is rolled back with `forget`, symmetric with the phone's own rollback.
+    fn confirm_pairing(
+        &mut self,
+        pending: PendingPairedPhoneSession<L::Stream>,
+        label: &str,
+    ) -> Flow {
+        self.pairing_expires_at = None;
+        let phone_id = pending.candidate.phone_id.clone();
+        let was_trusted = matches!(self.store.trusted_identity(&phone_id), Ok(Some(_)));
+        (self.events)(DesktopEvent::Connecting);
+        let timeout = self.config.hello_timeout;
+        match pending.confirm_and_start(label, &self.store, &self.identity, timeout) {
+            Ok(session) => {
+                self.emit_trusted_phones();
+                self.run_session(session)
+            }
+            Err(error) => {
+                let confirmed = !matches!(error, PhoneConnectionError::PairingConfirm(_));
+                self.fail(DesktopConnectionFailure::Pairing(error));
+                if confirmed && !was_trusted {
+                    if let Err(error) = self.store.forget(&phone_id) {
+                        self.fail(DesktopConnectionFailure::TrustedPhoneStore(error));
+                    }
+                    self.emit_trusted_phones();
+                }
+                Flow::Continue
+            }
+        }
+    }
+
+    /// Shared by both paths: idle read timeout, `Connected`, then the session pipeline until
+    /// it ends or a command closes it. Never returns [`Flow::EndSession`].
+    fn run_session(&mut self, mut session: AuthenticatedPhoneSession<L::Stream>) -> Flow {
         let idle = Some(self.config.idle_read_timeout);
         if let Err(error) = session.tls.sock.set_idle_read_timeout(idle) {
             self.fail(DesktopConnectionFailure::Link(PhoneLinkError::Usb(error)));
@@ -413,14 +543,6 @@ where
         }
     }
 
-    /// d4a placeholder for the pairing step: closes the channel and reports it. Task d4b
-    /// replaces it with pairing, short code, confirm/reject and `confirm_and_start`.
-    fn pairing_connection(&mut self, stream: L::Stream) -> Flow {
-        drop(stream);
-        self.fail(DesktopConnectionFailure::PairingUnavailable);
-        Flow::Continue
-    }
-
     fn emit_trusted_phones(&self) {
         match self.store.list() {
             Ok(phones) => (self.events)(DesktopEvent::TrustedPhones(phones)),
@@ -441,7 +563,7 @@ fn end_reason(end: SessionEnd) -> DesktopSessionEndReason {
     }
 }
 
-fn epoch_seconds() -> u64 {
+fn system_epoch_seconds() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())

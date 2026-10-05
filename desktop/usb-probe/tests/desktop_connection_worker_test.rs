@@ -2,33 +2,36 @@
 //! `DesktopConnectionWorker` drives the reconnect path end to end over the USB stack model
 //! (`FramedUsbStream` -> `UsbTlsCiphertextStream` -> rustls on a crossed transfer pipe), runs the
 //! session pipeline with a fake decoder, and reports typed events. The phone side is a rustls
-//! client on the other end of the pipe.
+//! client on the other end of the pipe. Task d4b adds the pairing step: QR, CCP1 proof, short
+//! code, confirm/reject/deadline, HELLO rollback and QR refresh.
 
 #[allow(dead_code)]
 mod common;
 
 use std::{
     collections::VecDeque,
-    io::{ErrorKind, Read},
+    io::{ErrorKind, Read, Write},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     thread,
     time::{Duration, Instant, SystemTime},
 };
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use common::usb_transfer_pipe::{crossed_transfer_pair, CrossedTransferBulkIo};
 use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
     ClientConfig, ClientConnection, RootCertStore, StreamOwned,
 };
 use usb_probe::{
-    phone_id_for_spki, read_session_frame, write_session_frame, DesktopCommand,
-    DesktopConnectionFailure, DesktopConnectionWorker, DesktopEvent, DesktopSessionEndReason,
-    DesktopTlsIdentity, DesktopWorkerConfig, DesktopWorkerHandle, DesktopWorkerSpawnError,
-    FakeVideoDecoder, FileTrustedPhoneStore, FrameTransferBudget, FramedUsbStream, PairingQrIssuer,
+    pairing_short_code_v1, phone_id_for_spki, read_session_frame, write_session_frame,
+    DesktopCommand, DesktopConnectionFailure, DesktopConnectionWorker, DesktopEvent,
+    DesktopSessionEndReason, DesktopTlsIdentity, DesktopWorkerConfig, DesktopWorkerHandle,
+    DesktopWorkerSpawnError, FakeVideoDecoder, FileTrustedPhoneStore, FrameTransferBudget,
+    FramedUsbStream, PairingProofFrame, PairingProofRequest, PairingQrIssuer, PhoneConnectionError,
     PhoneLink, PhoneLinkError, RecordingDecodedFrameSink, SessionFrame, SessionFramePayload,
     SessionRuntimeConfig, TrustedPhoneIdentity, UsbTlsCiphertextStream,
 };
@@ -36,6 +39,7 @@ use usb_probe::{
 const SESSION_ID: &str = "desktop-worker-usb";
 const HELLO_SEQUENCE: i32 = 1;
 const PHONE_LABEL: &str = "Reconnecting Phone";
+const PAIRED_LABEL: &str = "Teléfono de prueba";
 const FRAME_READ_TIMEOUT: Duration = Duration::from_millis(1000);
 const OP_TIMEOUT: Duration = Duration::from_millis(1500);
 const EVENT_TIMEOUT: Duration = Duration::from_secs(8);
@@ -43,6 +47,7 @@ const PHONE_SEND_INTERVAL: Duration = Duration::from_millis(30);
 
 type UsbStream = UsbTlsCiphertextStream<CrossedTransferBulkIo>;
 type PhoneStream = StreamOwned<ClientConnection, UsbStream>;
+type Receiver = mpsc::Receiver<DesktopEvent>;
 
 /// A link whose streams the test pushes; `poll_phone` hands out one per poll.
 #[derive(Clone, Default)]
@@ -254,6 +259,191 @@ fn assert_command_ends_session(name: &str, command: impl Fn(&Fixture) -> Desktop
     fixture.cleanup();
 }
 
+#[test]
+fn pairing_confirm_starts_session_and_trusts_phone() {
+    let fixture = Fixture::new("pairing-confirm");
+    let (worker, events, link) = fixture.spawn();
+    let request = start_pairing(&worker, &events);
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Pairing Phone").unwrap();
+    let phone_id = phone_id_for_spki(phone_identity.spki_der_p256());
+    let code = pairing_short_code_v1(
+        fixture.desktop_identity.spki_der_p256(),
+        phone_identity.spki_der_p256(),
+        request.qr_nonce(),
+        request.challenge_nonce(),
+    )
+    .unwrap();
+    let hello_id = phone_id.clone();
+    let phone = fixture.spawn_phone(
+        link.connect_phone(),
+        phone_identity,
+        Some(request),
+        move |phone| {
+            let accept = phone_hello(phone, &hello_id);
+            assert!(matches!(
+                accept.payload(),
+                SessionFramePayload::HandshakeAccept { .. }
+            ));
+            for (sequence, payload) in (HELLO_SEQUENCE + 1..).zip(scripted_phone_payloads()) {
+                send_phone_frame(phone, sequence, payload);
+                thread::sleep(PHONE_SEND_INTERVAL);
+            }
+            phone.conn.send_close_notify();
+            phone.conn.complete_io(&mut phone.sock).unwrap();
+        },
+    );
+
+    let seen = expect_event(&events, |e| matches!(e, DesktopEvent::ConfirmCode { .. }));
+    let expected = DesktopEvent::ConfirmCode {
+        phone_id: phone_id.clone(),
+        code,
+    };
+    assert_eq!(seen.last(), Some(&expected));
+    worker.send(DesktopCommand::ConfirmPairing {
+        label: PAIRED_LABEL.to_string(),
+    });
+    let seen = expect_event(&events, |e| matches!(e, DesktopEvent::SessionEnded(_)));
+    phone.join().unwrap();
+    assert!(seen
+        .iter()
+        .any(|e| matches!(e, DesktopEvent::TrustedPhones(phones)
+        if phones.iter().any(|p| p.phone_id == phone_id && p.label == PAIRED_LABEL))));
+    let connected = DesktopEvent::Connected {
+        phone_id,
+        label: Some(PAIRED_LABEL.to_string()),
+    };
+    assert!(seen.contains(&connected), "{seen:?}");
+    assert!(seen
+        .iter()
+        .any(|e| matches!(e, DesktopEvent::Metrics(m) if m.total_chunks > 0)));
+    assert!(worker.shutdown());
+    fixture.cleanup();
+}
+
+#[test]
+fn pairing_reject_closes_channel_and_leaves_pairing_mode() {
+    assert_pairing_abandoned(
+        "pairing-reject",
+        test_config(),
+        Some(DesktopCommand::RejectPairing),
+    );
+}
+
+#[test]
+fn pairing_confirm_deadline_rejects() {
+    let config = DesktopWorkerConfig {
+        pairing_confirm_timeout: Duration::from_millis(300),
+        ..test_config()
+    };
+    assert_pairing_abandoned("pairing-deadline", config, None);
+}
+
+/// Without `command` the confirmation deadline must expire on its own.
+fn assert_pairing_abandoned(
+    name: &str,
+    config: DesktopWorkerConfig,
+    command: Option<DesktopCommand>,
+) {
+    let fixture = Fixture::new(name);
+    let (worker, events, link) = fixture.spawn_config(config);
+    let request = start_pairing(&worker, &events);
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Pairing Phone").unwrap();
+    let phone = fixture.spawn_phone(
+        link.connect_phone(),
+        phone_identity,
+        Some(request),
+        |phone| {
+            assert!(drain_until_close(phone), "phone must observe the close");
+        },
+    );
+    expect_event(&events, |e| matches!(e, DesktopEvent::ConfirmCode { .. }));
+    let expected = match command {
+        Some(command) => {
+            worker.send(command);
+            DesktopEvent::PairingCancelled
+        }
+        None => DesktopEvent::ConnectionFailed(DesktopConnectionFailure::PairingConfirmTimedOut),
+    };
+    let seen = expect_event(&events, |e| *e == expected);
+    phone.join().unwrap();
+    assert!(
+        !seen
+            .iter()
+            .any(|e| matches!(e, DesktopEvent::Connected { .. })),
+        "{seen:?}"
+    );
+    assert_reconnects(&fixture, &link, &events);
+    assert!(worker.shutdown());
+    fixture.cleanup();
+}
+
+#[test]
+fn hello_failure_after_confirm_forgets_phone() {
+    let fixture = Fixture::new("pairing-hello-failure");
+    let (worker, events, link) = fixture.spawn();
+    let request = start_pairing(&worker, &events);
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Pairing Phone").unwrap();
+    let phone_id = phone_id_for_spki(phone_identity.spki_der_p256());
+    let phone = fixture.spawn_phone(
+        link.connect_phone(),
+        phone_identity,
+        Some(request),
+        |phone| {
+            let reply = phone_hello(phone, "not-this-phone");
+            assert!(matches!(
+                reply.payload(),
+                SessionFramePayload::HandshakeReject { .. }
+            ));
+        },
+    );
+    expect_event(&events, |e| matches!(e, DesktopEvent::ConfirmCode { .. }));
+    worker.send(DesktopCommand::ConfirmPairing {
+        label: PAIRED_LABEL.to_string(),
+    });
+    let failed = DesktopEvent::ConnectionFailed(DesktopConnectionFailure::Pairing(
+        PhoneConnectionError::HelloDeviceIdMismatch,
+    ));
+    expect_event(&events, |e| *e == failed);
+    let seen = expect_event(&events, |e| matches!(e, DesktopEvent::TrustedPhones(_)));
+    phone.join().unwrap();
+    assert!(
+        matches!(seen.last(), Some(DesktopEvent::TrustedPhones(phones))
+        if phones.iter().all(|p| p.phone_id != phone_id))
+    );
+    let store = FileTrustedPhoneStore::new(&fixture.store_path);
+    assert_eq!(store.trusted_identity(&phone_id).unwrap(), None);
+    assert_reconnects(&fixture, &link, &events);
+    assert!(worker.shutdown());
+    fixture.cleanup();
+}
+
+static TEST_EPOCH: AtomicU64 = AtomicU64::new(1_000_000);
+
+fn test_epoch() -> u64 {
+    TEST_EPOCH.load(Ordering::SeqCst)
+}
+
+#[test]
+fn pairing_qr_refreshes_before_expiry() {
+    let fixture = Fixture::new("pairing-qr-refresh");
+    let config = DesktopWorkerConfig {
+        epoch_clock: test_epoch,
+        ..test_config()
+    };
+    let (worker, events, _link) = fixture.spawn_config(config);
+    worker.send(DesktopCommand::StartPairing);
+    assert_eq!(next_qr_expiry(&events), 1_000_120);
+
+    // One second before the refresh margin nothing is reissued (that QR would expire at
+    // 1_000_234); at the margin the next QR expires at 1_000_235.
+    TEST_EPOCH.store(1_000_114, Ordering::SeqCst);
+    thread::sleep(Duration::from_millis(150));
+    TEST_EPOCH.store(1_000_115, Ordering::SeqCst);
+    assert_eq!(next_qr_expiry(&events), 1_000_235);
+    assert!(worker.shutdown());
+    fixture.cleanup();
+}
+
 // --- Harness ---------------------------------------------------------------------------
 
 fn test_config() -> DesktopWorkerConfig {
@@ -269,6 +459,7 @@ fn test_config() -> DesktopWorkerConfig {
         },
         metrics_window: Duration::from_secs(5),
         metrics_interval: Duration::from_millis(50),
+        ..DesktopWorkerConfig::default()
     }
 }
 
@@ -306,11 +497,18 @@ impl Fixture {
         phone_id_for_spki(self.phone_identity.spki_der_p256())
     }
 
-    fn spawn(&self) -> (DesktopWorkerHandle, mpsc::Receiver<DesktopEvent>, FakeLink) {
+    fn spawn(&self) -> (DesktopWorkerHandle, Receiver, FakeLink) {
+        self.spawn_config(test_config())
+    }
+
+    fn spawn_config(
+        &self,
+        config: DesktopWorkerConfig,
+    ) -> (DesktopWorkerHandle, Receiver, FakeLink) {
         let (sender, events) = mpsc::channel();
         let link = FakeLink::default();
         let worker = self
-            .spawn_on(test_config(), link.clone(), sender)
+            .spawn_on(config, link.clone(), sender)
             .expect("worker spawns");
         (worker, events, link)
     }
@@ -354,31 +552,43 @@ impl Fixture {
         io: CrossedTransferBulkIo,
         script: impl FnOnce(&mut PhoneStream, i32) + Send + 'static,
     ) -> thread::JoinHandle<()> {
-        let cert = self.desktop_identity.certificate_der().to_vec();
-        let phone_identity = self.phone_identity.clone();
-        thread::spawn(move || {
-            let mut stream = usb_stream(io);
-            let mut client = tls_client(&cert, &phone_identity);
-            while client.is_handshaking() {
-                client.complete_io(&mut stream).unwrap();
-            }
-            let mut phone = StreamOwned::new(client, stream);
-            let hello = SessionFrame::new(
-                HELLO_SEQUENCE,
-                SESSION_ID,
-                SessionFramePayload::HandshakeHello {
-                    device_id: phone_id_for_spki(phone_identity.spki_der_p256()),
-                    app_name: "ChinchillaCam".to_string(),
-                    capabilities: vec!["video".to_string()],
-                },
-            );
-            write_session_frame(&mut phone, &hello).unwrap();
-            let accept = read_session_frame(&mut phone, Instant::now() + OP_TIMEOUT).unwrap();
+        let phone_id = self.phone_id();
+        self.spawn_phone(io, self.phone_identity.clone(), None, move |phone| {
+            let accept = phone_hello(phone, &phone_id);
             assert!(matches!(
                 accept.payload(),
                 SessionFramePayload::HandshakeAccept { .. }
             ));
-            script(&mut phone, HELLO_SEQUENCE + 1);
+            script(phone, HELLO_SEQUENCE + 1);
+        })
+    }
+
+    /// Runs the phone side: TLS, the CCP1 pairing proof when `pairing` is set, then `script`.
+    fn spawn_phone(
+        &self,
+        io: CrossedTransferBulkIo,
+        identity: DesktopTlsIdentity,
+        pairing: Option<PairingProofRequest>,
+        script: impl FnOnce(&mut PhoneStream) + Send + 'static,
+    ) -> thread::JoinHandle<()> {
+        let cert = self.desktop_identity.certificate_der().to_vec();
+        thread::spawn(move || {
+            let mut stream = usb_stream(io);
+            let mut client = tls_client(&cert, &identity);
+            while client.is_handshaking() {
+                client.complete_io(&mut stream).unwrap();
+            }
+            let mut phone = StreamOwned::new(client, stream);
+            if let Some(request) = pairing {
+                let frame = PairingProofFrame::request(request).encode().unwrap();
+                phone.write_all(&frame).unwrap();
+                phone.flush().unwrap();
+                let mut header = [0; 10];
+                phone.read_exact(&mut header).unwrap();
+                let len = u32::from_be_bytes(header[6..10].try_into().unwrap()) as usize;
+                phone.read_exact(&mut vec![0; len]).unwrap();
+            }
+            script(&mut phone);
         })
     }
 
@@ -389,10 +599,7 @@ impl Fixture {
 }
 
 /// Collects events until `matches` accepts one (returned last), panicking after a bound.
-fn expect_event(
-    events: &mpsc::Receiver<DesktopEvent>,
-    matches: impl Fn(&DesktopEvent) -> bool,
-) -> Vec<DesktopEvent> {
+fn expect_event(events: &Receiver, matches: impl Fn(&DesktopEvent) -> bool) -> Vec<DesktopEvent> {
     let deadline = Instant::now() + EVENT_TIMEOUT;
     let mut seen = Vec::new();
     loop {
@@ -408,6 +615,53 @@ fn expect_event(
             Err(error) => panic!("expected event not seen ({error:?}); saw {seen:?}"),
         }
     }
+}
+
+fn phone_hello(phone: &mut PhoneStream, device_id: &str) -> SessionFrame {
+    let hello = SessionFramePayload::HandshakeHello {
+        device_id: device_id.to_string(),
+        app_name: "ChinchillaCam".to_string(),
+        capabilities: vec!["video".to_string()],
+    };
+    send_phone_frame(phone, HELLO_SEQUENCE, hello);
+    read_session_frame(phone, Instant::now() + OP_TIMEOUT).unwrap()
+}
+
+/// Sends `StartPairing` and builds the phone's CCP1 request from the emitted QR text.
+fn start_pairing(worker: &DesktopWorkerHandle, events: &Receiver) -> PairingProofRequest {
+    worker.send(DesktopCommand::StartPairing);
+    let seen = expect_event(events, |e| matches!(e, DesktopEvent::PairingQr { .. }));
+    let Some(DesktopEvent::PairingQr { text, .. }) = seen.last() else {
+        unreachable!()
+    };
+    let field = |name: &str| {
+        let body = text.strip_prefix("CHINCHILLACAM-PAIR:v1:").unwrap();
+        let prefix = format!("{name}=");
+        body.split('&')
+            .find_map(|pair| pair.strip_prefix(prefix.as_str()))
+            .unwrap()
+            .to_string()
+    };
+    let nonce = URL_SAFE_NO_PAD.decode(field("nonce")).unwrap();
+    PairingProofRequest::new(&field("desktopId"), nonce, vec![3; 32], "pair-session").unwrap()
+}
+
+fn next_qr_expiry(events: &Receiver) -> u64 {
+    let seen = expect_event(events, |e| matches!(e, DesktopEvent::PairingQr { .. }));
+    match seen.last() {
+        Some(DesktopEvent::PairingQr {
+            expires_at_epoch_seconds,
+            ..
+        }) => *expires_at_epoch_seconds,
+        _ => unreachable!(),
+    }
+}
+
+/// The worker is back in reconnect mode: the trusted phone reconnects.
+fn assert_reconnects(fixture: &Fixture, link: &FakeLink, events: &Receiver) {
+    let phone = fixture.phone_thread(link.connect_phone(), |_, _| {});
+    expect_event(events, |e| matches!(e, DesktopEvent::Connected { .. }));
+    phone.join().unwrap();
 }
 
 fn scripted_phone_payloads() -> Vec<SessionFramePayload> {
