@@ -25,46 +25,43 @@ class VisibleCameraForegroundService : Service() {
     }
     private val cameraCallbackHandler: Handler by lazy { Handler(cameraCallbackThread.looper) }
     private val startExecutor: ExecutorService by lazy { Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "visible-camera-service-start") } }
-    private val pipelineOwner: VisibleCameraForegroundServicePipelineOwner by lazy {
-        VisibleCameraForegroundServicePipelineOwner(
-            pipeline = ControllerVisibleCameraServicePipeline(
-                controller = VisibleCameraPipelineController(
-                    launcher = AndroidVisibleCameraPipelineLauncher(
-                        cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager,
-                        handler = cameraCallbackHandler,
-                    ),
-                    encoderConfig = H264EncoderConfig(width = 1280, height = 720, bitrate = 2_000_000, frameRate = 30, iFrameIntervalSeconds = 2),
+    // Main-thread confined. [sessionToken] is set while the pipeline runs for an ActiveSessionRegistry entry.
+    private var pipelineOwner: VisibleCameraForegroundServicePipelineOwner? = null
+    private var sessionToken: Long? = null
+
+    private fun newPipelineOwner(sinkFactory: (() -> EncodedVideoEgressSink)?) = VisibleCameraForegroundServicePipelineOwner(
+        pipeline = ControllerVisibleCameraServicePipeline(
+            controller = VisibleCameraPipelineController(
+                launcher = AndroidVisibleCameraPipelineLauncher(
+                    cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager,
+                    handler = cameraCallbackHandler,
                 ),
+                encoderConfig = H264EncoderConfig(width = 1280, height = 720, bitrate = 2_000_000, frameRate = 30, iFrameIntervalSeconds = 2),
+                encodedVideoSinkFactory = sinkFactory,
             ),
-            drainLoop = ThreadedVisibleCameraServiceDrainLoop(),
-            onPipelineFailureStop = { mainHandler.post { stopForegroundAndSelfPreservingStatus() } },
-        )
-    }
+        ),
+        drainLoop = ThreadedVisibleCameraServiceDrainLoop(),
+        onPipelineFailureStop = { mainHandler.post { stopForegroundAndSelfPreservingStatus() } },
+    )
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> {
-                val request = VisibleCameraServiceStartRequest.fromIntent(intent)
-                VisibleCameraForegroundServiceCommandRunner(
-                    owner = pipelineOwner,
-                    scheduler = startExecutor,
-                    foreground = object : VisibleCameraForegroundStarter {
-                        override fun startForegroundForVisibleCamera() {
-                            startForeground(NOTIFICATION_ID, buildNotification())
-                        }
-                    },
-                    stopService = { mainHandler.post { stopForegroundAndSelf() } },
-                ).handleStart(
-                    request = request,
-                    cameraPermissionGranted = currentCameraPermissionGranted(),
-                    snapshotProvider = { currentCameraCatalogSnapshot() },
-                )
+            ACTION_START, ACTION_START_SESSION -> {
+                val sessionMode = intent.action == ACTION_START_SESSION
+                when (val resolution = ServicePipelineSinkResolver.resolve(sessionMode, ActiveSessionRegistry)) {
+                    is ServicePipelineSinkResolution.NoSession -> {
+                        VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = resolution.message))
+                        stopForegroundAndSelfPreservingStatus()
+                    }
+                    ServicePipelineSinkResolution.Diagnostic -> startPipeline(intent, ownerFor(null), VisibleCameraForegroundServiceNotificationSpec.default())
+                    is ServicePipelineSinkResolution.Session -> startPipeline(intent, ownerFor(resolution), VisibleCameraForegroundServiceNotificationSpec.session())
+                }
             }
             ACTION_STOP -> {
                 VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
-                pipelineOwner.handleStopCommand()
+                pipelineOwner?.handleStopCommand()
                 VisibleCameraServiceStatusStore.clearStopped()
                 stopForegroundAndSelf()
             }
@@ -77,12 +74,59 @@ class VisibleCameraForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        pipelineOwner.handleDestroy()
+        val errorMessage = currentErrorMessage()
+        pipelineOwner?.handleDestroy()
+        endSessionMode(errorMessage)
         VisibleCameraServiceStatusStore.clearStopped()
         startExecutor.shutdownNow()
         cameraCallbackThread.quitSafely()
         super.onDestroy()
     }
+
+    private fun startPipeline(intent: Intent, owner: VisibleCameraForegroundServicePipelineOwner, notification: VisibleCameraForegroundServiceNotificationSpec) {
+        VisibleCameraForegroundServiceCommandRunner(
+            owner = owner,
+            scheduler = startExecutor,
+            foreground = object : VisibleCameraForegroundStarter {
+                override fun startForegroundForVisibleCamera() {
+                    startForeground(NOTIFICATION_ID, buildNotification(notification))
+                }
+            },
+            stopService = {
+                mainHandler.post {
+                    endSessionMode(currentErrorMessage())
+                    stopForegroundAndSelf()
+                }
+            },
+        ).handleStart(
+            request = VisibleCameraServiceStartRequest.fromIntent(intent),
+            cameraPermissionGranted = currentCameraPermissionGranted(),
+            snapshotProvider = { currentCameraCatalogSnapshot() },
+        )
+    }
+
+    /** Diagnostic starts keep reusing their owner; any switch of mode or session replaces it with one wired to the new sink. */
+    private fun ownerFor(session: ServicePipelineSinkResolution.Session?): VisibleCameraForegroundServicePipelineOwner {
+        val previous = pipelineOwner
+        if (previous != null && session?.token == sessionToken) return previous
+        previous?.handleStopCommand()
+        endSessionMode(null)
+        sessionToken = session?.token
+        return newPipelineOwner(session?.sinkFactory).also { pipelineOwner = it }
+    }
+
+    /**
+     * Ends the session this service runs for, once. After the launcher's own close the registry no
+     * longer holds the token, so the notice is dropped there.
+     */
+    private fun endSessionMode(message: String?) {
+        val token = sessionToken ?: return
+        sessionToken = null
+        ActiveSessionRegistry.notifyServiceStopped(token, message)
+    }
+
+    private fun currentErrorMessage(): String? = VisibleCameraServiceStatusStore.snapshot()
+        .takeIf { it.state == VisibleCameraServiceState.Error }?.message
 
     private fun currentCameraPermissionGranted(): Boolean = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
         true
@@ -103,16 +147,15 @@ class VisibleCameraForegroundService : Service() {
 
     private fun stopForegroundAndSelf() {
         VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
-        pipelineOwner.handleStopCommand()
+        pipelineOwner?.handleStopCommand()
         VisibleCameraServiceStatusStore.clearStopped()
         @Suppress("DEPRECATION")
         stopForeground(true)
         stopSelf()
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(spec: VisibleCameraForegroundServiceNotificationSpec): Notification {
         ensureNotificationChannel()
-        val spec = VisibleCameraForegroundServiceNotificationSpec.default()
         val stopIntent = Intent(this, VisibleCameraForegroundService::class.java).apply { action = ACTION_STOP }
         val stopPendingIntent = PendingIntent.getService(
             this,
@@ -146,6 +189,9 @@ class VisibleCameraForegroundService : Service() {
     companion object {
         const val ACTION_START = "dev.chinchillacam.usbprobe.action.START_VISIBLE_CAMERA"
         const val ACTION_STOP = "dev.chinchillacam.usbprobe.action.STOP_VISIBLE_CAMERA"
+
+        /** Session mode: the pipeline sends video through the [ActiveSessionRegistry] entry. */
+        const val ACTION_START_SESSION = "dev.chinchillacam.usbprobe.action.START_SESSION_CAMERA"
         private const val CHANNEL_ID = "visible_camera_local_test"
         private const val CHANNEL_NAME = "Prueba local visible de cámara"
         private const val NOTIFICATION_ID = 1001
@@ -166,6 +212,7 @@ class VisibleCameraForegroundService : Service() {
             putExtra(EXTRA_SELECTED_CAMERA_ID, spec.selectedCameraId)
             putExtra(EXTRA_VISIBLE_START_REQUESTED, spec.visibleStartRequested)
         }
+        fun sessionStartIntent(context: Context, cameraId: String): Intent = startIntent(context, cameraId).apply { action = ACTION_START_SESSION }
         fun stopIntent(context: Context): Intent = serviceIntent(context).apply { action = ACTION_STOP }
         fun restartMode(): Int = START_NOT_STICKY
     }
@@ -202,7 +249,8 @@ data class VisibleCameraServiceStartRequest(
 ) {
     companion object {
         fun fromIntent(intent: Intent?): VisibleCameraServiceStartRequest? {
-            if (intent?.action != VisibleCameraForegroundService.ACTION_START) return null
+            val action = intent?.action
+            if (action != VisibleCameraForegroundService.ACTION_START && action != VisibleCameraForegroundService.ACTION_START_SESSION) return null
             return VisibleCameraServiceStartRequest(
                 selectedCameraId = intent.getStringExtra(VisibleCameraForegroundService.EXTRA_SELECTED_CAMERA_ID),
                 visibleStartRequested = intent.getBooleanExtra(VisibleCameraForegroundService.EXTRA_VISIBLE_START_REQUESTED, false),
@@ -696,6 +744,12 @@ data class VisibleCameraForegroundServiceNotificationSpec(
         fun default(): VisibleCameraForegroundServiceNotificationSpec = VisibleCameraForegroundServiceNotificationSpec(
             title = "Prueba local visible de cámara",
             text = "Prueba local visible: el video codificado se descarta en memoria; no transmite y no graba.",
+            stopActionTitle = "Detener",
+        )
+
+        fun session(): VisibleCameraForegroundServiceNotificationSpec = VisibleCameraForegroundServiceNotificationSpec(
+            title = "Cámara conectada a la computadora",
+            text = "La cámara se envía a la computadora por USB.",
             stopActionTitle = "Detener",
         )
     }

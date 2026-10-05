@@ -17,6 +17,25 @@ class VisibleCameraForegroundServiceContractTest {
     }
 
     @Test
+    fun sessionModeWiresRegistrySinkAndNotifiesWhenTheServiceStops() {
+        val source = File("src/main/java/dev/chinchillacam/usbprobe/VisibleCameraForegroundService.kt").readText()
+        assertTrue(
+            "session mode must resolve the sink factory from ActiveSessionRegistry",
+            Regex("""ServicePipelineSinkResolver\.resolve\([^)]*ActiveSessionRegistry""").containsMatchIn(source),
+        )
+        assertTrue(
+            "the session sink factory must reach the pipeline controller",
+            Regex("""encodedVideoSinkFactory\s*=\s*sinkFactory""").containsMatchIn(source),
+        )
+        assertTrue(
+            "a stopping session-mode service must notify the registry",
+            Regex("""ActiveSessionRegistry\.notifyServiceStopped\(""").containsMatchIn(source),
+        )
+        val onDestroy = source.substringAfter("override fun onDestroy()").substringBefore("super.onDestroy()")
+        assertTrue("onDestroy must end the session mode", onDestroy.contains("endSessionMode("))
+    }
+
+    @Test
     fun manifestDeclaresCameraForegroundServiceContract() {
         val manifest = File("src/main/AndroidManifest.xml").readText()
 
