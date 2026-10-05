@@ -10,8 +10,10 @@
         android:label="ChinchillaCam USB Probe"
         android:supportsRtl="true">
         <activity
-            android:name=".UsbProbeActivity"
-            android:exported="true">
+            android:name=".ConnectionActivity"
+            android:exported="true"
+            android:label="ChinchillaCam"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -23,6 +25,11 @@
                 android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
                 android:resource="@xml/accessory_filter" />
         </activity>
+
+        <!-- Diagnostics only: opened from ConnectionActivity. -->
+        <activity
+            android:name=".UsbProbeActivity"
+            android:exported="false" />
 
         <service
             android:name=".VisibleCameraForegroundService"
