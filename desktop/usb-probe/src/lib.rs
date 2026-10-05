@@ -1,3 +1,4 @@
+mod desktop_connection_worker;
 mod desktop_metrics;
 mod desktop_receiver;
 mod desktop_session_pipeline;
@@ -28,6 +29,11 @@ mod video_fragment_reassembler;
 #[cfg(target_os = "macos")]
 mod videotoolbox_decoder;
 
+pub use desktop_connection_worker::{
+    DesktopCommand, DesktopConnectionFailure, DesktopConnectionWorker, DesktopEvent,
+    DesktopSessionEndReason, DesktopWorkerConfig, DesktopWorkerHandle, DesktopWorkerSpawnError,
+    IdleReadTimeoutControl, PhoneLink, PhoneLinkError,
+};
 pub use desktop_metrics::{
     DesktopMetricsAggregator, DesktopMetricsError, DesktopMetricsSnapshot, PhoneReportedMetrics,
     DEFAULT_METRICS_WINDOW,

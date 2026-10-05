@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::time::Duration;
 
-use crate::{FramedUsbStream, UsbBulkIo, UsbProbeError};
+use crate::{FramedUsbStream, IdleReadTimeoutControl, UsbBulkIo, UsbProbeError};
 
 pub const USB_TLS_CIPHERTEXT_STREAM_ID: u32 = 0x0102_0305;
 pub const USB_TLS_CIPHERTEXT_MAX_CHUNK_BYTES: usize = 32_768;
@@ -92,6 +92,18 @@ where
             copied += 1;
         }
         copied
+    }
+}
+
+impl<I> IdleReadTimeoutControl for UsbTlsCiphertextStream<I>
+where
+    I: UsbBulkIo,
+{
+    fn set_idle_read_timeout(
+        &mut self,
+        idle_read_timeout: Option<Duration>,
+    ) -> Result<(), UsbProbeError> {
+        UsbTlsCiphertextStream::set_idle_read_timeout(self, idle_read_timeout)
     }
 }
 
