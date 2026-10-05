@@ -121,7 +121,8 @@ class SessionEgressBinding private constructor(
  * session source (contract `session-pipeline-wiring.md` §4.6, decision 4: USB production source and
  * pairing UI are out of scope). It is built in ONE step by [start], which starts its own binding with
  * the composition's own end handler, so neither side needs a holder for the other
- * (`android-followups.md` §4.3). It only exposes the seams the service would use:
+ * (`android-followups.md` §4.3). [ServiceSessionLauncher] is its production caller. It only exposes
+ * the seams the service uses:
  *
  * - [encodedVideoSinkFactory] is handed to [VisibleCameraPipelineController] as its egress factory.
  * - On any session end other than [SessionEnd.LocalClose] (already handed off the runtime thread by
@@ -142,12 +143,12 @@ class SessionEgressServicePipelineComposition private constructor(
     companion object {
         /**
          * Starts the binding from [reconnected] with this composition's end handler and returns the
-         * composition that owns it. [requestPipelineFailureStop] runs on the [endExecutor] thread,
-         * never on the runtime thread.
+         * composition that owns it. [requestPipelineFailureStop] receives the Spanish message just
+         * published as `Error`; it runs on the [endExecutor] thread, never on the runtime thread.
          */
         fun start(
             reconnected: UsbTrustedReconnectResult.Reconnected,
-            requestPipelineFailureStop: () -> Unit,
+            requestPipelineFailureStop: (message: String) -> Unit,
             endExecutor: Executor,
             onCameraControlCommand: (SessionPayload.CameraControlCommand) -> Unit,
             config: SessionRuntimeConfig = SessionRuntimeConfig(),
@@ -167,11 +168,11 @@ class SessionEgressServicePipelineComposition private constructor(
         }
 
         /** Publishes the visible error and requests the same failure stop p1 wires through the owner. */
-        private fun publishErrorAndRequestStop(message: String, requestPipelineFailureStop: () -> Unit) {
+        private fun publishErrorAndRequestStop(message: String, requestPipelineFailureStop: (String) -> Unit) {
             VisibleCameraServiceStatusStore.publish(
                 VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = message),
             )
-            requestPipelineFailureStop()
+            requestPipelineFailureStop(message)
         }
     }
 }
