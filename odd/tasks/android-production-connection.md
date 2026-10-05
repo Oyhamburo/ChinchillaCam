@@ -59,7 +59,14 @@ Runner: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gra
    - RED (stub compilable que devuelve vacío): 4 tests, 4 fallos; `shortCodeMatchesFixedVector`: `org.junit.ComparisonFailure: expected:<[841406]> but was:<[]>`; `emptyInputIsRejected`: `expected java.lang.IllegalArgumentException to be thrown, but nothing was thrown`.
    - GREEN: `PairingShortCodeTest` 4 tests, 0 fallos (`shortCodeMatchesFixedVector`, `swappingSpkiRolesChangesCode`, `leadingZerosArePadded` vía `fromValue(42)` → `000 042`, `emptyInputIsRejected`).
    - Runner completo: BUILD SUCCESSFUL; 439 tests, 2 omitidos, 0 fallos (baseline 435 + 4); `assembleDebug` y `lintDebug` OK.
-2. [ ] c2 — `SessionHelloExchange` compartido + inicio de sesión tras pairing confirmado. RED: `confirmedPairingChannelStartsSessionAfterDesktopAccept`. ~300 líneas.
+2. [x] c2 — `SessionHelloExchange` compartido + inicio de sesión tras pairing confirmado. RED: `confirmedPairingChannelStartsSessionAfterDesktopAccept`. ~300 líneas.
+
+   **Evidencia c2**
+   - RED (fallo de compilación contra tipos ausentes): `PairedSessionStarterTest.kt:33:41 Unresolved reference: PairedSessionStartResult` (más 60:42, 79:26, 89:21) y `PairedSessionStarterTest.kt:155:22 Unresolved reference: PairedSessionStarter`.
+   - GREEN: `PairedSessionStarterTest` 3 tests, 0 fallos (`confirmedPairingChannelStartsSessionAfterDesktopAccept`, `desktopRejectClosesChannel`, `silentDesktopTimesOutAndClosesChannel`); `UsbTrustedReconnectTest` 8 tests, 0 fallos, sin cambios. Set focalizado corrido 3× con `--rerun-tasks`: estable.
+   - Runner completo: BUILD SUCCESSFUL; 442 tests, 2 omitidos, 0 fallos (439 + 3); `assembleDebug` y `lintDebug` OK.
+   - Diseño: `SessionHelloExchange` (internal) recibe `phoneId` y `helloTimeoutMillis` y usa ese único valor como idle budget y como plazo de frame del adapter del hello, así que los 120 s por defecto no quedan recortados por los 5 s/6 s por defecto de `TlsSessionFrameIoAdapter` (el transporte no tiene timeout propio). Resultado: `Accepted`, `Rejected` (reutiliza `DesktopRejected`, `UnexpectedFrame`, `InvalidHandshakeAccept`, `TimedOut`) o `Failed(detail)`; `UsbTrustedReconnect` mapea `Failed` a `TlsRejected` como antes. `PairedSessionStarter(phoneTlsIdentity, helloTimeoutMillis = 120_000, sessionFrameAdapter)` devuelve `Started(Reconnected)`, `Rejected(rejection)` o `ExchangeFailed(desktopId, detail)`; no toca `ActiveDesktopAuthority` y cierra el canal ante cualquier rechazo (el llamador libera la autoridad). El test del desktop mudo verifica que gobierna el plazo configurado (300 ms), muy por debajo de los defaults del adapter.
+   - Desvíos: no hay test con espera > 5 s (sería lento); el plazo largo se cubre leyendo el camino de código. Sin reloj inyectado: no hace falta. Las corridas 3× usaron `--rerun-tasks` para evitar UP-TO-DATE.
 3. [ ] c3 — `PhoneConnectionController` (pairing y conexión, estado observable, desconexión libera autoridad). RED: `scannedQrPairsConfirmsAndConnects`. ~400 líneas.
 4. [ ] c4 — Registro de sesión de proceso + service en modo sesión + adaptadores de producción de los puertos. RED: `serviceUsesSessionSinkFactoryWhenSessionActive`. ~300 líneas.
 5. [ ] c5 — ZXing + `QrLuminanceDecoder` + escáner Camera2. RED: `decodesGeneratedPairingQr`. ~250 líneas.
@@ -68,4 +75,5 @@ Runner: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gra
 ## Progreso
 
 Plan creado el 2026-10-03 (HEAD `bf7caae`).
-- c1 completada: `PairingShortCode` (SAS v1) con vector fijo; 439 tests, 2 omitidos, 0 fallos.
+- c1 completada: `PairingShortCode` (SAS v1) con vector fijo; 439 tests, 2 omitidos, 0 fallos. Commit `45cc119`.
+- c2 completada: `SessionHelloExchange` compartido y `PairedSessionStarter` (HELLO/ACCEPT sobre el canal confirmado, plazo por defecto 120 s); 442 tests, 2 omitidos, 0 fallos.

@@ -1,8 +1,5 @@
 package dev.chinchillacam.usbprobe
 
-import java.util.UUID
-import java.util.concurrent.TimeUnit
-
 /**
  * Outcome of [UsbTrustedReconnect.reconnect]. [Reconnected.channel] is the live, authenticated TLS
  * channel and [Reconnected.frameAdapter] is ready to frame further [SessionFrame]s over it for the
@@ -87,15 +84,8 @@ class UsbTrustedReconnect(
     /** The phone's own trust fingerprint, hex-encoded -- the `phone_id` the desktop authenticates `HANDSHAKE_HELLO.deviceId` against. */
     private val phoneId: String = PairingTrustFingerprint.fromTrustMaterial(phoneTlsIdentity.subjectPublicKeyInfoDer).hex
 
-    /**
-     * Bounded strictly by [helloTimeoutMillis], independent of [sessionFrameAdapter]'s own (typically
-     * more generous) session-traffic timeout. Passes its own idle budget too (task l2,
-     * `session-liveness` §4.1): [TlsSessionFrameIoAdapter]'s default idle budget (6s) would otherwise
-     * outlast a short [helloTimeoutMillis] (e.g. the 300ms used by
-     * [UsbTrustedReconnectTest.reconnectTimesOutWithoutAccept]), so both phases of the hello read
-     * share the same single [helloTimeoutMillis] deadline, matching this class's pre-l2 behavior.
-     */
-    private val helloFrameAdapter = TlsSessionFrameIoAdapter(readTimeoutMillis = helloTimeoutMillis, idleBudgetMillis = helloTimeoutMillis)
+    /** Shared HELLO/ACCEPT exchange, bounded strictly by [helloTimeoutMillis] (see [SessionHelloExchange]). */
+    private val helloExchange = SessionHelloExchange(phoneId, helloTimeoutMillis)
 
     /**
      * Reconnects over an [AccessoryIoSession] (USB). Wraps it in a [UsbAccessoryTlsCiphertextTransport]
@@ -149,12 +139,16 @@ class UsbTrustedReconnect(
             is SslEngineUsbTlsHandshakeResult.Authenticated -> handshake.channel
         }
 
-        val accepted = when (val outcome = exchangeHandshakeHello(desktopId, channel)) {
-            is HelloExchange.Rejected -> {
+        val accepted = when (val outcome = helloExchange.exchange(desktopId, channel)) {
+            is SessionHelloExchange.Outcome.Rejected -> {
                 runCatching { channel.close() }
                 return outcome.rejection
             }
-            is HelloExchange.Accepted -> outcome
+            is SessionHelloExchange.Outcome.Failed -> {
+                runCatching { channel.close() }
+                return UsbTrustedReconnectResult.Rejected.TlsRejected(desktopId, outcome.detail)
+            }
+            is SessionHelloExchange.Outcome.Accepted -> outcome
         }
 
         return try {
@@ -179,92 +173,13 @@ class UsbTrustedReconnect(
         } catch (error: Exception) {
             // Activation happens after the channel is already open (step 4): a thrown exception must
             // not leak it (task l1, `session-liveness` §2) -- close it and report a typed rejection,
-            // matching exchangeHandshakeHello's own catch-and-classify style above.
+            // matching SessionHelloExchange's own catch-and-classify style.
             runCatching { channel.close() }
             UsbTrustedReconnectResult.Rejected.ActivationFailed(desktopId, error)
         }
     }
 
-    private fun exchangeHandshakeHello(
-        desktopId: String,
-        channel: SslEngineUsbTlsEstablishedChannel,
-    ): HelloExchange {
-        val helloSequence = 0
-        val sessionId = UUID.randomUUID().toString()
-        val hello = SessionFrame(
-            sequence = helloSequence,
-            sessionId = sessionId,
-            payload = SessionPayload.HandshakeHello(deviceId = phoneId, appName = APP_NAME, capabilities = emptyList()),
-        )
-        val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(helloTimeoutMillis)
-        val response = try {
-            helloFrameAdapter.write(channel, hello)
-            helloFrameAdapter.read(channel)
-        } catch (error: Exception) {
-            // helloFrameAdapter already closed the channel on this failure (see
-            // TlsSessionFrameIoAdapter); classify by wall clock rather than by message text so a
-            // genuine deadline (TimedOut) is distinguishable from an early close/EOF/invalid frame.
-            // The adapter's bounded read can return a few milliseconds before this deadline because
-            // its remaining time is truncated to whole milliseconds, so a small tolerance keeps a
-            // genuine timeout from being reported as a TLS rejection.
-            return HelloExchange.Rejected(
-                if (System.nanoTime() >= deadlineNanos - HELLO_DEADLINE_TOLERANCE_NANOS) {
-                    UsbTrustedReconnectResult.Rejected.TimedOut(desktopId)
-                } else {
-                    UsbTrustedReconnectResult.Rejected.TlsRejected(desktopId, error.message ?: "hello exchange failed")
-                },
-            )
-        }
-        return classifyHelloResponse(desktopId, sessionId, helloSequence, response)
-    }
-
-    private fun classifyHelloResponse(
-        desktopId: String,
-        sessionId: String,
-        helloSequence: Int,
-        response: SessionFrame,
-    ): HelloExchange =
-        when (val payload = response.payload) {
-            is SessionPayload.HandshakeAccept -> {
-                // Contract §4.1: the ACCEPT uses hello.seq + 1 and carries the HELLO's sessionId.
-                val expectedAcceptSequence = helloSequence + 1
-                when {
-                    response.sessionId != sessionId -> HelloExchange.Rejected(
-                        UsbTrustedReconnectResult.Rejected.InvalidHandshakeAccept(
-                            desktopId,
-                            "accept sessionId ${response.sessionId} does not match hello sessionId $sessionId",
-                        ),
-                    )
-                    response.sequence != expectedAcceptSequence -> HelloExchange.Rejected(
-                        UsbTrustedReconnectResult.Rejected.InvalidHandshakeAccept(
-                            desktopId,
-                            "accept sequence ${response.sequence} is not hello.seq + 1 ($expectedAcceptSequence)",
-                        ),
-                    )
-                    else -> HelloExchange.Accepted(
-                        sessionId = sessionId,
-                        nextOutboundSequence = helloSequence + 1,
-                        nextInboundSequence = response.sequence + 1,
-                    )
-                }
-            }
-            is SessionPayload.HandshakeReject -> HelloExchange.Rejected(
-                UsbTrustedReconnectResult.Rejected.DesktopRejected(desktopId, payload.reasonCode, payload.message),
-            )
-            else -> HelloExchange.Rejected(UsbTrustedReconnectResult.Rejected.UnexpectedFrame(desktopId, response.type))
-        }
-
-    /** Result of the `HANDSHAKE_HELLO`/`HANDSHAKE_ACCEPT` exchange: the validated session identity, or a typed rejection. */
-    private sealed class HelloExchange {
-        data class Accepted(val sessionId: String, val nextOutboundSequence: Int, val nextInboundSequence: Int) : HelloExchange()
-        data class Rejected(val rejection: UsbTrustedReconnectResult.Rejected) : HelloExchange()
-    }
-
     private companion object {
         const val DEFAULT_HELLO_TIMEOUT_MILLIS: Long = 5_000
-        const val APP_NAME: String = "ChinchillaCam"
-
-        /** Granularity margin for classifying a hello read failure as a deadline timeout. */
-        val HELLO_DEADLINE_TOLERANCE_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(25)
     }
 }
