@@ -1,0 +1,251 @@
+package dev.chinchillacam.usbprobe
+
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executor
+
+/** Outcome of [AccessoryTransportSource.open]. */
+sealed class AccessoryTransportOpenResult {
+    data class Opened(val transport: TlsCiphertextTransport) : AccessoryTransportOpenResult()
+    object NotAttached : AccessoryTransportOpenResult()
+    object PermissionDenied : AccessoryTransportOpenResult()
+    data class Failed(val detail: String) : AccessoryTransportOpenResult()
+}
+
+/** Port that opens a fresh ciphertext transport over the attached accessory (production adapter over `UsbManager` in c4). */
+fun interface AccessoryTransportSource {
+    fun open(): AccessoryTransportOpenResult
+}
+
+/** A running session (camera, encoder, egress). [close] stops all of it; it may block, so it is only called off the main thread. */
+fun interface ActiveSessionHandle {
+    fun close()
+}
+
+/** Port that starts the session composition over an authenticated channel (production in c4). */
+fun interface SessionLauncher {
+    fun launch(reconnected: UsbTrustedReconnectResult.Reconnected): ActiveSessionHandle
+}
+
+sealed class AccessoryPurpose {
+    object Pairing : AccessoryPurpose()
+    data class Connect(val desktopId: String) : AccessoryPurpose()
+}
+
+sealed class PhoneConnectionState {
+    data class Idle(val notice: String? = null) : PhoneConnectionState()
+    data class AwaitingAccessory(val purpose: AccessoryPurpose) : PhoneConnectionState()
+    data class ConfirmPairing(val desktopName: String, val shortCode: PairingShortCode) : PhoneConnectionState()
+    data class AwaitingDesktopConfirmation(val desktopName: String) : PhoneConnectionState()
+    data class Connecting(val desktopName: String) : PhoneConnectionState()
+    data class Connected(val desktopId: String, val desktopName: String) : PhoneConnectionState()
+    data class Failed(val message: String) : PhoneConnectionState()
+}
+
+/**
+ * Process-level owner of pairing and connection (task c3, `android-production-connection` §4.3).
+ * Pure domain: every collaborator is injected and no Android type is referenced.
+ *
+ * Threading: every operation is posted to [worker], which must be a serial executor that queues
+ * (single thread in production; never the main thread). All mutable state is confined to it, and
+ * listeners are invoked on it. Blocking steps (TLS, HELLO/ACCEPT) therefore run off the main thread,
+ * and an operation queued behind one runs once it finishes. An operation that is not valid in the
+ * current state is ignored.
+ *
+ * Scope c3a: pairing, connection and session launch. Releasing a `Connected` session (disconnect,
+ * forget, cable detached, session ended) is task c3b.
+ *
+ * Fail closed: once [UsbPairingFlow.confirm] has persisted and activated a desktop, any failure to
+ * start its first session rolls back both the authority and the phone-side trust, so both sides
+ * agree that nothing was paired.
+ */
+class PhoneConnectionController(
+    private val accessorySource: AccessoryTransportSource,
+    private val pairingFlow: UsbPairingFlow,
+    private val pairedSessionStarter: PairedSessionStarter,
+    private val reconnect: UsbTrustedReconnect,
+    private val store: TrustedDesktopStore,
+    private val authority: ActiveDesktopAuthority,
+    phoneSpki: ByteArray,
+    private val sessionLauncher: SessionLauncher,
+    private val worker: Executor,
+    private val epochSecondsSource: EpochSecondsSource,
+) {
+    private class LiveSession(val desktopId: String, val handle: ActiveSessionHandle)
+
+    private val phoneSpki = phoneSpki.copyOf()
+    private val listeners = CopyOnWriteArrayList<(PhoneConnectionState) -> Unit>()
+
+    @Volatile private var state: PhoneConnectionState = PhoneConnectionState.Idle()
+
+    // Worker-confined.
+    private var pendingQr: PairingQrPayload? = null
+    private var pendingId: String? = null
+    /** The launched session; released by c3b's disconnect/forget/detached/session-end. */
+    private var session: LiveSession? = null
+
+    fun snapshot(): PhoneConnectionState = state
+
+    /** [listener] is called on the worker thread after every state change. */
+    fun addListener(listener: (PhoneConnectionState) -> Unit) {
+        listeners += listener
+    }
+
+    /** Trusted (non-revoked) desktops to offer for [connect]. */
+    fun trustedDesktops(): List<TrustedDesktopRecord> = store.list().filter { it.revokedAtEpochSeconds == null }
+
+    /** Valid from `Idle`/`Failed`. */
+    fun qrScanned(text: String) = post {
+        if (!isIdle()) return@post
+        val qr = PairingQrPayloadCodec.decode(text, epochSecondsSource.nowEpochSeconds()).getOrElse { error ->
+            fail(if (error is PairingQrPayloadDecodeError.Expired) PhoneConnectionMessages.QR_EXPIRED else PhoneConnectionMessages.QR_INVALID)
+            return@post
+        }
+        pendingQr = qr
+        openFor(AccessoryPurpose.Pairing)
+    }
+
+    /** Resumes an `AwaitingAccessory` pairing or connection. */
+    fun accessoryAttached() = post {
+        val awaiting = state as? PhoneConnectionState.AwaitingAccessory ?: return@post
+        openFor(awaiting.purpose)
+    }
+
+    /** Valid in `ConfirmPairing`. */
+    fun confirmPairing() = post {
+        val confirming = state as? PhoneConnectionState.ConfirmPairing ?: return@post
+        val id = pendingId ?: return@post
+        clearPending()
+        val outcome = runCatching { pairingFlow.confirm(id, store, authority) }.getOrElse {
+            fail(PhoneConnectionMessages.PAIRING_FAILED)
+            return@post
+        }
+        val channel = outcome.channel
+        when (val result = outcome.result) {
+            is PendingPairingConfirmResult.Activated -> if (channel == null) {
+                rollBackPairing(result.desktopId)
+                return@post fail(PhoneConnectionMessages.PAIRING_FAILED)
+            } else {
+                startFirstSession(result.desktopId, confirming.desktopName, channel)
+            }
+            is PendingPairingConfirmResult.TrustedButInactive -> {
+                runCatching { store.forget(result.desktopId) }
+                fail(PhoneConnectionMessages.SECOND_ACTIVE_DESKTOP)
+            }
+            is PendingPairingConfirmResult.Rejected -> fail(PhoneConnectionMessages.PAIRING_FAILED)
+        }
+    }
+
+    /** Valid in `ConfirmPairing`. */
+    fun rejectPairing() = post {
+        if (state !is PhoneConnectionState.ConfirmPairing) return@post
+        runCatching { pairingFlow.reject() }
+        clearPending()
+        publish(PhoneConnectionState.Idle())
+    }
+
+    /** Valid from `Idle`/`Failed`. */
+    fun connect(desktopId: String) = post {
+        if (!isIdle()) return@post
+        openFor(AccessoryPurpose.Connect(desktopId))
+    }
+
+    private fun openFor(purpose: AccessoryPurpose) {
+        when (val opened = runCatching { accessorySource.open() }.getOrElse { AccessoryTransportOpenResult.Failed(it.toString()) }) {
+            is AccessoryTransportOpenResult.Opened -> when (purpose) {
+                AccessoryPurpose.Pairing -> startPairing(opened.transport)
+                is AccessoryPurpose.Connect -> reconnectTo(purpose.desktopId, opened.transport)
+            }
+            AccessoryTransportOpenResult.NotAttached -> publish(PhoneConnectionState.AwaitingAccessory(purpose))
+            AccessoryTransportOpenResult.PermissionDenied -> abandon(PhoneConnectionMessages.USB_PERMISSION_DENIED)
+            is AccessoryTransportOpenResult.Failed -> abandon(PhoneConnectionMessages.USB_OPEN_FAILED)
+        }
+    }
+
+    private fun startPairing(transport: TlsCiphertextTransport) {
+        val qr = pendingQr ?: run {
+            runCatching { transport.close() }
+            return
+        }
+        val started = runCatching { pairingFlow.start(qr, transport).result }.getOrNull()
+        val summary = (started as? PendingPairingStartResult.PendingConfirmation)?.summary
+        if (summary == null) {
+            // Rejections before the proof step leave the transport with us; closing twice is harmless.
+            runCatching { transport.close() }
+            val expired = started is PendingPairingStartResult.Rejected.Expired
+            return abandon(if (expired) PhoneConnectionMessages.QR_EXPIRED else PhoneConnectionMessages.PAIRING_FAILED)
+        }
+        pendingId = summary.pendingId
+        val shortCode = PairingShortCode.derive(qr.trustMaterial, phoneSpki, summary.qrNonce, summary.challengeNonce)
+        publish(PhoneConnectionState.ConfirmPairing(summary.desktopName, shortCode))
+    }
+
+    private fun startFirstSession(desktopId: String, desktopName: String, channel: SslEngineUsbTlsEstablishedChannel) {
+        publish(PhoneConnectionState.AwaitingDesktopConfirmation(desktopName))
+        val started = runCatching { pairedSessionStarter.start(desktopId, channel) }.getOrElse {
+            runCatching { channel.close() }
+            PairedSessionStartResult.ExchangeFailed(desktopId, it.toString())
+        }
+        when (started) {
+            is PairedSessionStartResult.Started -> launchSession(started.reconnected, desktopName)
+            is PairedSessionStartResult.Rejected -> {
+                rollBackPairing(desktopId)
+                fail(PhoneConnectionMessages.forRejection(started.rejection))
+            }
+            is PairedSessionStartResult.ExchangeFailed -> {
+                rollBackPairing(desktopId)
+                fail(PhoneConnectionMessages.PAIRING_FAILED)
+            }
+        }
+    }
+
+    private fun reconnectTo(desktopId: String, transport: TlsCiphertextTransport) {
+        val desktopName = runCatching { store.lookup(desktopId)?.desktopName }.getOrNull() ?: desktopId
+        publish(PhoneConnectionState.Connecting(desktopName))
+        val result = runCatching { reconnect.reconnect(desktopId, transport, store, authority) }.getOrElse {
+            runCatching { transport.close() }
+            return fail(PhoneConnectionMessages.CONNECTION_FAILED)
+        }
+        when (result) {
+            is UsbTrustedReconnectResult.Reconnected -> launchSession(result, desktopName)
+            is UsbTrustedReconnectResult.Rejected -> fail(PhoneConnectionMessages.forRejection(result))
+        }
+    }
+
+    private fun launchSession(reconnected: UsbTrustedReconnectResult.Reconnected, desktopName: String) {
+        publish(PhoneConnectionState.Connecting(desktopName))
+        val handle = runCatching { sessionLauncher.launch(reconnected) }.getOrElse {
+            runCatching { reconnected.channel.close() }
+            authority.stopActiveDesktop(reconnected.desktopId)
+            return fail(PhoneConnectionMessages.SESSION_START_FAILED)
+        }
+        session = LiveSession(reconnected.desktopId, handle)
+        publish(PhoneConnectionState.Connected(reconnected.desktopId, desktopName))
+    }
+
+    private fun rollBackPairing(desktopId: String) {
+        authority.stopActiveDesktop(desktopId)
+        runCatching { store.forget(desktopId) }
+    }
+
+    /** Fails a pairing/connection attempt that never got a pending, dropping any kept QR. */
+    private fun abandon(message: String) {
+        clearPending()
+        fail(message)
+    }
+
+    private fun clearPending() {
+        pendingQr = null
+        pendingId = null
+    }
+
+    private fun isIdle(): Boolean = state is PhoneConnectionState.Idle || state is PhoneConnectionState.Failed
+
+    private fun fail(message: String) = publish(PhoneConnectionState.Failed(message))
+
+    private fun publish(next: PhoneConnectionState) {
+        state = next
+        listeners.forEach { listener -> runCatching { listener(next) } }
+    }
+
+    private fun post(action: () -> Unit) = worker.execute(action)
+}
