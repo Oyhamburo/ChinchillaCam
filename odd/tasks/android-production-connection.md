@@ -162,3 +162,9 @@ Feature cerrada el 2026-10-03 en `45a6bed`: suite completa verificada por verifi
 - Preferencia de cámara duplicada a mano entre `PhoneConnectionRuntime` y `UsbProbeActivity`.
 - Identidad regenerada: sólo aviso; no se limpian las PCs confiables.
 - Sin validación física (M9): AOA real, broadcast de detach con `RECEIVER_NOT_EXPORTED`, cámara y escaneo.
+
+### Revisión nativa (2026-10-03)
+
+- Rango completo `bf7caae..45a6bed`: START rechazado en preflight con `lens_context_budget_exceeded` (sin autoridad creada).
+- Tramo final `97de3f4..HEAD` (c6b): START devolvió `consent-binding-stale` (binding vencido sin respuesta) y, en el mismo envelope, `managed_assets_outdated` pese a haber corrido `gentle-ai sync --agent pi` del binario del paquete. No se relanzó en loop (decisión del usuario).
+- Tramos pendientes para revisar por separado (el rango comprometido siempre termina en HEAD, así que los tramos intermedios requieren un worktree en su commit final): `bf7caae..ca0690a` (c1–c2), `ca0690a..1267abf` (c3), `1267abf..04cb1d4` (c4), `04cb1d4..97de3f4` (c5–c6a), `97de3f4..45a6bed` (c6b).
