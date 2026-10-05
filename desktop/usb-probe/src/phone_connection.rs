@@ -66,6 +66,9 @@ pub enum PhoneConnectionError {
     /// session's next inbound/outbound sequence (`h + 1` / `h + 2`, contract section 4.1)
     /// would overflow. Carries the rejected `h`. Fails closed before replying.
     SessionSequenceOverflow(i32),
+    /// `confirm_and_start` (task d2): persisting the pairing candidate failed (revoked, or
+    /// a store error); the channel was closed and no HELLO was read.
+    PairingConfirm(PairedPhoneCandidateConfirmError),
 }
 
 impl fmt::Display for PhoneConnectionError {
@@ -75,24 +78,26 @@ impl fmt::Display for PhoneConnectionError {
             Self::Reconnect(error) => {
                 write!(formatter, "phone reconnect connection error: {error}")
             }
-            Self::UnexpectedFirstFrame => write!(
-                formatter,
-                "reconnected phone's first frame was not HandshakeHello"
-            ),
+            Self::UnexpectedFirstFrame => {
+                write!(formatter, "phone's first frame was not HandshakeHello")
+            }
             Self::InvalidHello(error) => {
-                write!(formatter, "reconnected phone HandshakeHello error: {error}")
+                write!(formatter, "phone HandshakeHello error: {error}")
             }
             Self::AcceptWriteFailed(error) => {
                 write!(formatter, "writing HandshakeAccept failed: {error}")
             }
             Self::HelloDeviceIdMismatch => write!(
                 formatter,
-                "reconnected phone's HandshakeHello device_id did not match its TLS-authenticated phone_id"
+                "phone's HandshakeHello device_id did not match its TLS-authenticated phone_id"
             ),
             Self::SessionSequenceOverflow(sequence) => write!(
                 formatter,
                 "HandshakeHello sequence {sequence} is too close to i32::MAX for the session's next inbound/outbound sequence"
             ),
+            Self::PairingConfirm(error) => {
+                write!(formatter, "confirming the paired phone failed: {error}")
+            }
         }
     }
 }
@@ -130,6 +135,9 @@ impl<S: Read + Write> PendingPairedPhoneSession<S> {
     /// TLS stream (contract section 4.5: it can now carry `HandshakeHello`/`HandshakeAccept`
     /// for this same connection). On failure (revoked, or a store error), the channel is
     /// closed instead and the typed error is returned.
+    ///
+    /// This does NOT start a session (`session: None`); use
+    /// [`confirm_and_start`](Self::confirm_and_start) for the HELLO/ACCEPT exchange.
     pub fn confirm(
         self,
         label: &str,
@@ -146,6 +154,36 @@ impl<S: Read + Write> PendingPairedPhoneSession<S> {
                 Err(error)
             }
         }
+    }
+
+    /// Task d2 (`odd/tasks/desktop-production-app.md` section 4.2): [`confirm`](Self::confirm)s
+    /// the candidate, then -- on the same channel -- reads the phone's `HandshakeHello` and
+    /// replies `HandshakeAccept`, using the exact HELLO/ACCEPT step of the reconnect path
+    /// (same validation, sequences, rejects and close behavior). `hello_timeout` is timed
+    /// from after the confirm, so a slow store write never eats into it. Returns a session
+    /// with `session: Some(..)`, ready for `SessionRuntime`.
+    ///
+    /// A confirm failure is mapped to [`PhoneConnectionError::PairingConfirm`] (channel
+    /// closed by `confirm`). A HELLO failure after a successful confirm closes the channel
+    /// but leaves the phone TRUSTED in `store`: the phone rolls back its own trust, and
+    /// removing it on the desktop side is a follow-up (the store gains `forget` in task d3).
+    pub fn confirm_and_start(
+        self,
+        label: &str,
+        store: &FileTrustedPhoneStore,
+        identity: &DesktopTlsIdentity,
+        hello_timeout: Duration,
+    ) -> Result<AuthenticatedPhoneSession<S>, PhoneConnectionError> {
+        let confirmed = self
+            .confirm(label, store)
+            .map_err(PhoneConnectionError::PairingConfirm)?;
+        complete_hello_accept(
+            confirmed.tls,
+            identity,
+            confirmed.phone_id,
+            hello_timeout,
+            "paired phone accepted",
+        )
     }
 
     /// Closes the channel (best-effort TLS `close_notify`, then drop) without persisting
@@ -171,10 +209,9 @@ pub struct SessionIdentity {
 /// trusted phone's successful reconnection handshake + `HandshakeHello`/`HandshakeAccept`
 /// exchange) and still holds its live TLS stream, ready for `SessionFrame` traffic.
 ///
-/// `session` is `Some` only for the reconnect path, which establishes a session identity
-/// through HELLO/ACCEPT (contract section 4.1). The pairing-`confirm` path has no HELLO, so
-/// it carries `None`: a runtime session with a live sequence counter requires the reconnect
-/// path (contract section 8 lists pairing-initiated sessions without HELLO as out of scope).
+/// `session` is `Some` for the paths that establish a session identity through HELLO/ACCEPT
+/// (contract section 4.1): the reconnect path and `confirm_and_start` (task d2). Plain
+/// pairing `confirm` has no HELLO, so it carries `None`, which `SessionRuntime` rejects.
 pub struct AuthenticatedPhoneSession<S: Read + Write> {
     pub tls: StreamOwned<ServerConnection, S>,
     pub phone_id: String,
@@ -224,11 +261,33 @@ where
 {
     let handshake = complete_trusted_phone_handshake(identity, lookup, stream, timeout)
         .map_err(PhoneConnectionError::Reconnect)?;
-    let mut tls = handshake.tls;
+    complete_hello_accept(
+        handshake.tls,
+        identity,
+        handshake.phone_id,
+        timeout,
+        "trusted phone reconnected",
+    )
+}
 
+/// The HELLO/ACCEPT step shared by the reconnect path and `confirm_and_start` (task d2):
+/// reads exactly one `SessionFrame` within `timeout`; a `HandshakeHello` whose `device_id`
+/// equals the TLS-authenticated `phone_id` gets a `HandshakeAccept` (carrying
+/// `accept_message`) and an authenticated session; anything else fails closed (see
+/// `PhoneConnectionError`).
+fn complete_hello_accept<S>(
+    mut tls: StreamOwned<ServerConnection, S>,
+    identity: &DesktopTlsIdentity,
+    phone_id: String,
+    timeout: Duration,
+    accept_message: &str,
+) -> Result<AuthenticatedPhoneSession<S>, PhoneConnectionError>
+where
+    S: Read + Write,
+{
     // A fresh `timeout`-length budget for the HELLO/ACCEPT exchange specifically, timed
-    // from NOW (after the handshake already completed) rather than from before the
-    // handshake -- otherwise a slow handshake would silently eat into this budget.
+    // from NOW (after the handshake or confirm already completed) rather than from before
+    // it -- otherwise a slow handshake would silently eat into this budget.
     let deadline =
         Instant::now()
             .checked_add(timeout)
@@ -271,11 +330,11 @@ where
 
     // Contract section 4.4 addendum (task s2b, agreed with the Android side): a
     // `HandshakeHello`'s `device_id` must equal the `phone_id` THIS connection's TLS
-    // client certificate authenticated (`handshake.phone_id`, re-derived from the
-    // connection itself -- see `complete_trusted_phone_handshake`'s own doc comment). A
-    // trusted certificate only vouches for its own `phone_id`, never for whatever
-    // `device_id` the application-layer HELLO happens to claim.
-    if device_id != handshake.phone_id {
+    // client certificate authenticated (`phone_id`, re-derived from the connection itself
+    // -- see `complete_trusted_phone_handshake`'s own doc comment and
+    // `PairedPhoneCandidate`). A certificate only vouches for its own `phone_id`, never
+    // for whatever `device_id` the application-layer HELLO happens to claim.
+    if device_id != phone_id {
         let reject = SessionFrame::new(
             hello.sequence().saturating_add(1),
             hello.session_id().to_string(),
@@ -319,7 +378,7 @@ where
         hello.session_id().to_string(),
         SessionFramePayload::HandshakeAccept {
             desktop_id: phone_id_for_spki(identity.spki_der_p256()),
-            message: "trusted phone reconnected".to_string(),
+            message: accept_message.to_string(),
         },
     );
     if let Err(error) = write_session_frame(&mut tls, &accept) {
@@ -329,7 +388,7 @@ where
 
     Ok(AuthenticatedPhoneSession {
         tls,
-        phone_id: handshake.phone_id,
+        phone_id,
         session: Some(SessionIdentity {
             session_id: hello.session_id().to_string(),
             next_inbound_sequence,

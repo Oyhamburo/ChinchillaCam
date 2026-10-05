@@ -21,9 +21,10 @@ use rustls::{
 use usb_probe::{
     accept_phone_pairing_connection, accept_phone_reconnect_connection, pairing_short_code_v1,
     phone_id_for_spki, DesktopTlsIdentity, FileTrustedPhoneStore, FrameTransferBudget,
-    FramedUsbStream, PairingProofFrame, PairingProofRequest, PairingProofResponse, PairingQrIssuer,
-    PairingQrIssuerError, PhoneConnectionError, SessionFrame, SessionFramePayload, SessionIdentity,
-    TlsSessionFrameError, TrustedPhoneIdentity, UsbBulkIo, UsbProbeError, UsbTlsCiphertextStream,
+    FramedUsbStream, PairedPhoneCandidateConfirmError, PairingProofFrame, PairingProofRequest,
+    PairingProofResponse, PairingQrIssuer, PairingQrIssuerError, PhoneConnectionError,
+    SessionFrame, SessionFramePayload, SessionIdentity, TlsSessionFrameError, TrustedPhoneIdentity,
+    UsbBulkIo, UsbProbeError, UsbTlsCiphertextStream,
 };
 
 #[test]
@@ -552,6 +553,253 @@ fn reconnect_mode_rejects_unparseable_first_frame_as_invalid_hello() {
     });
 
     cleanup(store_path);
+}
+
+/// Task d2 RED (`odd/tasks/desktop-production-app.md` section 4.2): right after its own
+/// confirm the phone sends `HandshakeHello` on the same channel; `confirm_and_start` must
+/// persist the phone, answer `HandshakeAccept` and return a session identity exactly like
+/// the reconnect path does.
+#[test]
+fn confirmed_pairing_accepts_phone_hello() {
+    let (identity, mut issuer, request) = proof_fixture(now_seconds(), "desktop-01", vec![7; 32]);
+    let cert = identity.certificate_der().to_vec();
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Paired Phone").unwrap();
+    let phone_id = phone_id_for_spki(phone_identity.spki_der_p256());
+    let expected_desktop_id = phone_id_for_spki(identity.spki_der_p256());
+    let (desktop_io, phone_io) = crossed_bulk_pair();
+    let store_path = unique_store_path("confirmed-pairing-accepts-hello");
+    let store = FileTrustedPhoneStore::new(&store_path);
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            let pending = accept_phone_pairing_connection(
+                ciphertext_stream(desktop_io),
+                &identity,
+                &mut issuer,
+                Duration::from_millis(1500),
+            )
+            .map_err(|error| error.to_string())?;
+            let session = pending
+                .confirm_and_start(
+                    "Paired Phone",
+                    &store,
+                    &identity,
+                    Duration::from_millis(1500),
+                )
+                .map_err(|error| error.to_string())?;
+            Ok::<_, String>((session.phone_id, session.session))
+        });
+
+        let mut phone_tls = paired_phone_tls(phone_io, &cert, &phone_identity, &request);
+        usb_probe::write_session_frame(&mut phone_tls, &hello_frame(0, "pair-session", &phone_id))
+            .unwrap();
+        let accept = usb_probe::read_session_frame(&mut phone_tls, test_deadline()).unwrap();
+        match accept.payload() {
+            SessionFramePayload::HandshakeAccept { desktop_id, .. } => {
+                assert_eq!(desktop_id, &expected_desktop_id);
+            }
+            other => panic!("expected HandshakeAccept, got {other:?}"),
+        }
+        assert_eq!(accept.sequence(), 1, "ACCEPT uses hello.sequence() + 1");
+        assert_eq!(accept.session_id(), "pair-session");
+
+        let (returned_phone_id, session) = server.join().unwrap().unwrap();
+        assert_eq!(returned_phone_id, phone_id);
+        assert_eq!(
+            session,
+            Some(SessionIdentity {
+                session_id: "pair-session".to_string(),
+                next_inbound_sequence: 1,
+                next_outbound_sequence: 2,
+            })
+        );
+    });
+
+    assert!(store.trusted_identity(&phone_id).unwrap().is_some());
+    cleanup(store_path);
+}
+
+#[test]
+fn confirmed_pairing_rejects_foreign_hello_device_id() {
+    let (identity, mut issuer, request) = proof_fixture(now_seconds(), "desktop-01", vec![7; 32]);
+    let cert = identity.certificate_der().to_vec();
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Paired Phone").unwrap();
+    let phone_id = phone_id_for_spki(phone_identity.spki_der_p256());
+    let (desktop_io, phone_io) = crossed_bulk_pair();
+    let store_path = unique_store_path("confirmed-pairing-foreign-hello");
+    let store = FileTrustedPhoneStore::new(&store_path);
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            accept_phone_pairing_connection(
+                ciphertext_stream(desktop_io),
+                &identity,
+                &mut issuer,
+                Duration::from_millis(1500),
+            )
+            .unwrap()
+            .confirm_and_start(
+                "Paired Phone",
+                &store,
+                &identity,
+                Duration::from_millis(1500),
+            )
+            .map(|session| session.phone_id)
+        });
+
+        let mut phone_tls = paired_phone_tls(phone_io, &cert, &phone_identity, &request);
+        let foreign = format!("{phone_id}-not-mine");
+        usb_probe::write_session_frame(&mut phone_tls, &hello_frame(0, "pair-session", &foreign))
+            .unwrap();
+        let reject = usb_probe::read_session_frame(&mut phone_tls, test_deadline()).unwrap();
+        match reject.payload() {
+            SessionFramePayload::HandshakeReject { reason_code, .. } => {
+                assert_eq!(reason_code, "device_id_mismatch");
+            }
+            other => panic!("expected HandshakeReject, got {other:?}"),
+        }
+
+        assert_eq!(
+            server.join().unwrap(),
+            Err(PhoneConnectionError::HelloDeviceIdMismatch)
+        );
+    });
+
+    cleanup(store_path);
+}
+
+#[test]
+fn confirmed_pairing_hello_deadline_expires() {
+    let (identity, mut issuer, request) = proof_fixture(now_seconds(), "desktop-01", vec![7; 32]);
+    let cert = identity.certificate_der().to_vec();
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Silent Phone").unwrap();
+    let (desktop_io, phone_io) = crossed_bulk_pair();
+    let store_path = unique_store_path("confirmed-pairing-hello-deadline");
+    let store = FileTrustedPhoneStore::new(&store_path);
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            let pending = accept_phone_pairing_connection(
+                ciphertext_stream(desktop_io),
+                &identity,
+                &mut issuer,
+                Duration::from_millis(1500),
+            )
+            .unwrap();
+            let started = Instant::now();
+            let result = pending
+                .confirm_and_start(
+                    "Silent Phone",
+                    &store,
+                    &identity,
+                    Duration::from_millis(300),
+                )
+                .map(|session| session.phone_id);
+            (result, started.elapsed())
+        });
+
+        // The phone completes the pairing proof but never sends HandshakeHello. This fake
+        // transport surfaces the stall as an I/O error after its own 1500 ms bulk budget
+        // (real USB maps it to `TimedOut`, which `read_session_frame` turns into `Timeout`
+        // at the deadline); either way the wait is bounded and fails closed.
+        let _phone_tls = paired_phone_tls(phone_io, &cert, &phone_identity, &request);
+
+        let (result, elapsed) = server.join().unwrap();
+        assert!(
+            matches!(result, Err(PhoneConnectionError::InvalidHello(_))),
+            "expected Err(InvalidHello), got {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "HELLO wait must stay bounded, took {elapsed:?}"
+        );
+    });
+
+    cleanup(store_path);
+}
+
+#[test]
+fn confirm_and_start_maps_revoked_phone_and_closes_channel() {
+    let (identity, mut issuer, request) = proof_fixture(now_seconds(), "desktop-01", vec![7; 32]);
+    let cert = identity.certificate_der().to_vec();
+    let phone_identity = DesktopTlsIdentity::generate_ephemeral("Revoked Phone").unwrap();
+    let phone_id = phone_id_for_spki(phone_identity.spki_der_p256());
+    let (desktop_io, phone_io) = crossed_bulk_pair();
+    let store_path = unique_store_path("confirm-and-start-revoked");
+    let store = FileTrustedPhoneStore::new(&store_path);
+    store
+        .trust(
+            TrustedPhoneIdentity::new(
+                phone_id.clone(),
+                "Revoked Phone",
+                phone_identity.spki_der_p256().to_vec(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(store.revoke(&phone_id).unwrap());
+
+    thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            accept_phone_pairing_connection(
+                ciphertext_stream(desktop_io),
+                &identity,
+                &mut issuer,
+                Duration::from_millis(1500),
+            )
+            .unwrap()
+            .confirm_and_start(
+                "Revoked Phone",
+                &store,
+                &identity,
+                Duration::from_millis(1500),
+            )
+            .map(|session| session.phone_id)
+        });
+
+        let mut phone_tls = paired_phone_tls(phone_io, &cert, &phone_identity, &request);
+        assert_eq!(
+            server.join().unwrap(),
+            Err(PhoneConnectionError::PairingConfirm(
+                PairedPhoneCandidateConfirmError::PhoneRevoked
+            ))
+        );
+        let mut probe = [0u8; 1];
+        let observed_close = match phone_tls.read(&mut probe) {
+            Ok(0) => true,
+            Err(error) => error.kind() == io::ErrorKind::UnexpectedEof,
+            Ok(_) => false,
+        };
+        assert!(observed_close, "expected the channel to be closed");
+    });
+
+    cleanup(store_path);
+}
+
+/// Phone side of a successful pairing proof: TLS handshake, CCP1 request, OK response.
+fn paired_phone_tls(
+    phone_io: CrossedBulkIo,
+    cert: &[u8],
+    phone_identity: &DesktopTlsIdentity,
+    request: &PairingProofRequest,
+) -> StreamOwned<ClientConnection, UsbTlsCiphertextStream<CrossedBulkIo>> {
+    let mut tls = phone_tls_stream(phone_io, cert, phone_identity);
+    tls.write_all(&request_frame(request)).unwrap();
+    tls.flush().unwrap();
+    read_ccp1_frame(&mut tls).unwrap();
+    tls
+}
+
+fn hello_frame(sequence: i32, session_id: &str, device_id: &str) -> SessionFrame {
+    SessionFrame::new(
+        sequence,
+        session_id,
+        SessionFramePayload::HandshakeHello {
+            device_id: device_id.to_string(),
+            app_name: "ChinchillaCam".to_string(),
+            capabilities: vec!["video".to_string()],
+        },
+    )
 }
 
 fn test_deadline() -> Instant {
