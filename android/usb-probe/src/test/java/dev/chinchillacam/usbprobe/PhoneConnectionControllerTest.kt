@@ -90,6 +90,21 @@ class PhoneConnectionControllerTest {
     }
 
     @Test
+    fun cancelWhileAwaitingAccessoryReturnsToIdle() {
+        source.attached = false
+        controller.qrScanned(qrText())
+        awaitState<PhoneConnectionState.AwaitingAccessory>()
+
+        controller.cancel()
+        assertEquals(PhoneConnectionState.Idle(), awaitState<PhoneConnectionState.Idle>())
+        // The pending QR is gone: a later cable attach neither pairs nor opens the accessory.
+        source.attached = true
+        controller.accessoryAttached()
+        drainWorker()
+        assertEquals(PhoneConnectionState.Idle(), controller.snapshot())
+    }
+
+    @Test
     fun desktopRejectingFirstSessionRollsBackTrustAndAuthority() {
         source.enqueue(Desktop.PairThenReject)
         controller.qrScanned(qrText())

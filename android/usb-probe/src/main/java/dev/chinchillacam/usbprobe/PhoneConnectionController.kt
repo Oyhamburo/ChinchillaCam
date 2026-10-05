@@ -144,6 +144,13 @@ class PhoneConnectionController(
         publish(PhoneConnectionState.Idle())
     }
 
+    /** Valid in `AwaitingAccessory`: drops any pending QR so a later cable attach does nothing. */
+    fun cancel() = post {
+        if (state !is PhoneConnectionState.AwaitingAccessory) return@post
+        clearPending()
+        publish(PhoneConnectionState.Idle())
+    }
+
     /** Valid from `Idle`/`Failed`. */
     fun connect(desktopId: String) = post {
         if (!isIdle()) return@post
