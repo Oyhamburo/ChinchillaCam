@@ -122,12 +122,42 @@ fn rejects_invalid_configuration_and_caps_outstanding_nonces() {
     )
     .unwrap();
     for second in 0..64 {
-        issuer.issue_at(second).unwrap();
+        issuer.issue_at(second / 2).unwrap();
     }
     assert_eq!(
-        issuer.issue_at(64),
+        issuer.issue_at(59),
         Err(PairingQrIssuerError::TooManyOutstandingNonces)
     );
+}
+
+#[test]
+fn expired_unused_nonces_do_not_exhaust_issuance() {
+    let identity = DesktopTlsIdentity::generate_ephemeral("Studio Desktop").unwrap();
+    let mut issuer = PairingQrIssuer::with_test_rng(
+        "desktop-01",
+        "Studio Desktop",
+        identity,
+        60,
+        TestRng::new(1),
+    )
+    .unwrap();
+    let mut nonces = Vec::new();
+    for _ in 0..64 {
+        nonces.push(issuer.issue_at(1_000).unwrap().payload().nonce().to_vec());
+    }
+    assert_eq!(
+        issuer.issue_at(1_059),
+        Err(PairingQrIssuerError::TooManyOutstandingNonces)
+    );
+
+    let fresh = issuer.issue_at(1_061).unwrap().payload().nonce().to_vec();
+
+    assert!(issuer
+        .consume_issued_nonce("desktop-01", &nonces[0], 1_061)
+        .is_err());
+    issuer
+        .consume_issued_nonce("desktop-01", &fresh, 1_062)
+        .unwrap();
 }
 
 struct ConstantRng;

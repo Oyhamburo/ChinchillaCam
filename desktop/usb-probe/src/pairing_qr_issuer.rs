@@ -110,6 +110,10 @@ impl<R: PairingQrNonceGenerator> PairingQrIssuer<R> {
         &mut self,
         now_epoch_seconds: u64,
     ) -> Result<IssuedPairingQr, PairingQrIssuerError> {
+        // Expired nonces can never be consumed again, so they must not count toward the
+        // outstanding limit; a later consume of a pruned nonce still fails (UnknownNonce).
+        self.outstanding
+            .retain(|issued| issued.expires_at > now_epoch_seconds);
         if self.outstanding.len() >= MAX_OUTSTANDING_NONCES {
             return Err(PairingQrIssuerError::TooManyOutstandingNonces);
         }

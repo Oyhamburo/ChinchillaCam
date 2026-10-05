@@ -77,6 +77,15 @@ pub enum PhoneTrustSnapshot {
     Unknown,
 }
 
+/// One phone as reported by `FileTrustedPhoneStore::list`: identity and state only, never
+/// the stored public key material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedPhoneSummary {
+    pub phone_id: String,
+    pub label: String,
+    pub revoked: bool,
+}
+
 /// Outcome of `FileTrustedPhoneStore::trust_unless_revoked`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustUnlessRevoked {
@@ -194,6 +203,38 @@ impl FileTrustedPhoneStore {
             self.save_records(&records)?;
         }
         Ok(changed)
+    }
+
+    /// Removes every record for `phone_id` (trusted or revoked) under the write lock and
+    /// with the same atomic temp-file + rename write as `trust`/`revoke`. Afterwards the
+    /// phone is unknown, so it can be paired again. Returns false if it was absent.
+    pub fn forget(&self, phone_id: &str) -> Result<bool, TrustedPhoneStoreError> {
+        validate_lookup_id(phone_id)?;
+        let _lock = self.acquire_write_lock()?;
+        let mut records = self.load_records()?;
+        self.write_coordinator.after_records_loaded(&self.path)?;
+        let before = records.len();
+        records.retain(|record| record.identity.phone_id != phone_id);
+        if records.len() == before {
+            return Ok(false);
+        }
+        self.save_records(&records)?;
+        Ok(true)
+    }
+
+    /// Lists every stored phone from one loaded snapshot, sorted by label then phone_id.
+    pub fn list(&self) -> Result<Vec<TrustedPhoneSummary>, TrustedPhoneStoreError> {
+        let mut phones: Vec<TrustedPhoneSummary> = self
+            .load_records()?
+            .into_iter()
+            .map(|record| TrustedPhoneSummary {
+                phone_id: record.identity.phone_id,
+                label: record.identity.label,
+                revoked: record.revoked,
+            })
+            .collect();
+        phones.sort_by(|a, b| (&a.label, &a.phone_id).cmp(&(&b.label, &b.phone_id)));
+        Ok(phones)
     }
 
     pub fn is_revoked(&self, phone_id: &str) -> Result<bool, TrustedPhoneStoreError> {

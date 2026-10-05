@@ -8,7 +8,7 @@ use std::{
 
 use usb_probe::{
     FileTrustedPhoneStore, TrustUnlessRevoked, TrustedPhoneIdentity, TrustedPhoneStoreError,
-    TrustedPhoneStoreWriteCoordinator,
+    TrustedPhoneStoreWriteCoordinator, TrustedPhoneSummary,
 };
 
 #[test]
@@ -221,6 +221,98 @@ fn trust_unless_revoked_refuses_when_revocation_completes_while_call_is_pending(
 }
 
 #[test]
+fn forgotten_phone_is_not_listed_or_trusted() {
+    let path = unique_store_path("forget");
+    let store = FileTrustedPhoneStore::new(&path);
+    store
+        .trust(TrustedPhoneIdentity::new("phone-a", "Phone A", vec![1, 2]).unwrap())
+        .unwrap();
+    store
+        .trust(TrustedPhoneIdentity::new("phone-b", "Phone B", vec![3, 4]).unwrap())
+        .unwrap();
+
+    assert!(store.forget("phone-a").unwrap());
+
+    let reopened = FileTrustedPhoneStore::new(&path);
+    assert_eq!(reopened.trusted_identity("phone-a").unwrap(), None);
+    assert!(!reopened.is_revoked("phone-a").unwrap());
+    assert_eq!(
+        reopened.list().unwrap(),
+        vec![summary("phone-b", "Phone B", false)]
+    );
+    cleanup(path);
+}
+
+#[test]
+fn list_reports_labels_and_revocation_sorted() {
+    let path = unique_store_path("list");
+    let store = FileTrustedPhoneStore::new(&path);
+    assert_eq!(store.list().unwrap(), Vec::new());
+    store
+        .trust(TrustedPhoneIdentity::new("phone-z", "Zeta", vec![1]).unwrap())
+        .unwrap();
+    store
+        .trust(TrustedPhoneIdentity::new("phone-2", "Alpha", vec![2]).unwrap())
+        .unwrap();
+    store
+        .trust(TrustedPhoneIdentity::new("phone-1", "Alpha", vec![3]).unwrap())
+        .unwrap();
+    store.revoke("phone-z").unwrap();
+
+    assert_eq!(
+        store.list().unwrap(),
+        vec![
+            summary("phone-1", "Alpha", false),
+            summary("phone-2", "Alpha", false),
+            summary("phone-z", "Zeta", true),
+        ]
+    );
+    cleanup(path);
+}
+
+#[test]
+fn forget_missing_phone_returns_false() {
+    let path = unique_store_path("forget-missing");
+    let store = FileTrustedPhoneStore::new(&path);
+    assert!(!store.forget("phone-missing").unwrap());
+    store
+        .trust(TrustedPhoneIdentity::new("phone-kept", "Kept", vec![5]).unwrap())
+        .unwrap();
+    let before = fs::read_to_string(&path).unwrap();
+
+    assert!(!store.forget("phone-missing").unwrap());
+
+    assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    assert!(matches!(
+        store.forget("bad\tid"),
+        Err(TrustedPhoneStoreError::InvalidIdentity(_))
+    ));
+    cleanup(path);
+}
+
+#[test]
+fn forgotten_revoked_phone_can_be_trusted_again() {
+    let path = unique_store_path("forget-revoked");
+    let store = FileTrustedPhoneStore::new(&path);
+    store
+        .trust(TrustedPhoneIdentity::new("phone-r", "Old", vec![7]).unwrap())
+        .unwrap();
+    store.revoke("phone-r").unwrap();
+
+    assert!(store.forget("phone-r").unwrap());
+    assert!(!store.is_revoked("phone-r").unwrap());
+    assert_eq!(store.list().unwrap(), Vec::new());
+
+    let identity = TrustedPhoneIdentity::new("phone-r", "New", vec![8]).unwrap();
+    assert_eq!(
+        store.trust_unless_revoked(identity.clone()).unwrap(),
+        TrustUnlessRevoked::Trusted
+    );
+    assert_eq!(store.trusted_identity("phone-r").unwrap(), Some(identity));
+    cleanup(path);
+}
+
+#[test]
 fn trusted_phone_store_rejects_oversized_persistent_file_before_parse() {
     let path = unique_store_path("too-large");
     let file = fs::File::create(&path).unwrap();
@@ -249,6 +341,14 @@ fn trusted_phone_store_rejects_corrupt_persistent_file() {
         .unwrap_err();
     assert!(matches!(err, TrustedPhoneStoreError::CorruptStore(_)));
     cleanup(path);
+}
+
+fn summary(phone_id: &str, label: &str, revoked: bool) -> TrustedPhoneSummary {
+    TrustedPhoneSummary {
+        phone_id: phone_id.to_string(),
+        label: label.to_string(),
+        revoked,
+    }
 }
 
 fn assert_invalid(phone_id: &str, label: &str, public_key: Vec<u8>) {

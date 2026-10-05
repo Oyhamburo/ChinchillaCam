@@ -101,7 +101,7 @@ pub use tls_session_frame::{
 };
 pub use trusted_phone_store::{
     FileTrustedPhoneStore, TrustUnlessRevoked, TrustedPhoneIdentity, TrustedPhoneStoreError,
-    TrustedPhoneStoreWriteCoordinator,
+    TrustedPhoneStoreWriteCoordinator, TrustedPhoneSummary,
 };
 pub use usb_tls_ciphertext_stream::{
     UsbTlsCiphertextStream, USB_TLS_CIPHERTEXT_MAX_CHUNK_BYTES,

@@ -166,7 +166,8 @@ impl<S: Read + Write> PendingPairedPhoneSession<S> {
     /// A confirm failure is mapped to [`PhoneConnectionError::PairingConfirm`] (channel
     /// closed by `confirm`). A HELLO failure after a successful confirm closes the channel
     /// but leaves the phone TRUSTED in `store`: the phone rolls back its own trust, and
-    /// removing it on the desktop side is a follow-up (the store gains `forget` in task d3).
+    /// the caller can remove it on the desktop side with `FileTrustedPhoneStore::forget`
+    /// (task d3); there is no automatic rollback here.
     pub fn confirm_and_start(
         self,
         label: &str,
