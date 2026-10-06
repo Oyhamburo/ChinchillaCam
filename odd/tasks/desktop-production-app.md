@@ -78,3 +78,15 @@ Plan creado el 2026-10-03 (HEAD `b9eb3ab`).
 - d5 completa: detección selectiva, AOA/claim y espera de los primeros bytes antes del worker; RED por mutación tras recuperar trabajo parcial; 10 tests nuevos del enlace, incluidos TLS/reconexión y métricas con USB falso; suite 334/0, fmt y clippy limpios. Sin prueba con hardware físico; rutas de configuración en d6. Tamaño: ~791 líneas (321 de producción, 470 de test), por encima del tope de 400 (desvío declarado: un solo módulo cuyo sondeo depende de detección, backend y `PeekedStream`). Commit `6ff043b`.
 - d6a completa: RED por mutación en rutas (límite y permisos) y modelo de vista (código, métricas y aviso `PeerDead`); app 9/0, lib 334/0, fmt y clippy limpios tras `cargo fetch` del orquestador. ~583 líneas de app + Cargo.lock (2816 líneas), a partir en dos commits por el orquestador. Commits: `1c88d28` (crate, `Cargo.lock`, rutas) y el siguiente (modelo de vista y mensajes). Commits `1c88d28`, `c551bd0`. Ajuste del orquestador con RED observado (`failures_keep_the_pairing_qr_but_end_pending_flows`, el QR desaparecía ante un error de USB aunque el worker seguía en modo pairing): `ConnectionFailed` ya no saca la vista del QR; 10 tests de la app.
 - d6b completa: QR real con patrón y escala, mapeo total de acciones, bootstrap privado/estable y ventana `eframe` cableada a USB, worker y decoder VideoToolbox; RED por imports ausentes, app 16/0 y lib 334/0, fmt/clippy/build offline limpios, sin ejecutar ventana ni conectar hardware. Separación natural de commits: QR/comandos/bootstrap/tests y ventana/main/doc. Commits: `7688680` (QR, comandos y arranque del worker de producción, 409 líneas) y el siguiente (ventana egui y `main`, ~200 líneas). Seguimientos: la fábrica del decoder usa `expect` (si no se puede crear el hilo, el worker cae); la ventana no tiene scroll; sin lanzamiento de la GUI ni USB físico (M9).
+
+Feature cerrada el 2026-10-03 en `68a88e8`: verificador independiente — `usb-probe` 334 tests, 0 fallos; `desktop/app` 16 tests, 0 fallos; `fmt --check` y `clippy -D warnings` limpios en ambos crates; `cargo build --offline --bin chinchillacam` OK. Sin lanzar la GUI ni probar USB físico.
+
+### Seguimientos
+
+- Paso 3: consumir los frames decodificados (hoy se descartan en un hilo `decoded-frame-drain`) para la salida hacia OBS en macOS.
+- Interop real teléfono↔desktop (SAS, HELLO post-pairing, AOA) sólo con hardware (M9); el vector SAS compartido es la única verificación cruzada.
+- La fábrica del decoder usa `expect`; la ventana no tiene scroll; el nombre de la etiqueta del teléfono al confirmar es fijo ("Teléfono").
+- Desajuste de modo: si el teléfono intenta reconectar mientras se muestra el QR, falla con aviso y hay que reintentar.
+- Errores de enlace USB se muestran como aviso; sin reintento visible más allá del backoff de 2 s.
+- Windows: identidad, decoder Media Foundation y cámara virtual (paso 5).
+- Tamaños: d4a (~934), d5 (~791) por encima de 400, declarados.
