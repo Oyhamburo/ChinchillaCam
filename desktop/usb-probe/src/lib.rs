@@ -22,6 +22,7 @@ mod session_runtime;
 mod threaded_video_decoder;
 mod tls_session_frame;
 mod trusted_phone_store;
+mod usb_phone_link;
 mod usb_tls_ciphertext_stream;
 mod usb_tls_pairing_proof;
 mod video_decoder;
@@ -108,6 +109,11 @@ pub use tls_session_frame::{
 pub use trusted_phone_store::{
     FileTrustedPhoneStore, TrustUnlessRevoked, TrustedPhoneIdentity, TrustedPhoneStoreError,
     TrustedPhoneStoreWriteCoordinator, TrustedPhoneSummary,
+};
+pub use usb_phone_link::{
+    chinchillacam_accessory_identity, parse_usb_device_override, select_phone_candidate,
+    usb_device_override_from_env, PeekedStream, PhoneCandidate, RusbPhoneBackend, UsbPhoneBackend,
+    UsbPhoneLink, UsbPhoneLinkConfig, SAMSUNG_VENDOR_ID, USB_DEVICE_OVERRIDE_ENV,
 };
 pub use usb_tls_ciphertext_stream::{
     UsbTlsCiphertextStream, USB_TLS_CIPHERTEXT_MAX_CHUNK_BYTES,

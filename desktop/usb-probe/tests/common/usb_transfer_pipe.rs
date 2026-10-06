@@ -17,7 +17,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Condvar, Mutex,
     },
     time::{Duration, Instant},
@@ -31,12 +31,20 @@ pub struct UsbTransferPipe {
     transfers: Mutex<VecDeque<Vec<u8>>>,
     ready: Condvar,
     read_timeouts: AtomicUsize,
+    disconnected: AtomicBool,
 }
 
 impl UsbTransferPipe {
     /// Queues `bytes` as one transfer (also usable to inject raw, partial bulk frames).
     pub fn push_transfer(&self, bytes: &[u8]) {
         self.transfers.lock().unwrap().push_back(bytes.to_vec());
+        self.ready.notify_all();
+    }
+
+    /// Models an unplugged device: once queued transfers are drained, reads fail at once with
+    /// rusb's `NoDevice` text.
+    pub fn disconnect(&self) {
+        self.disconnected.store(true, Ordering::SeqCst);
         self.ready.notify_all();
     }
 
@@ -49,6 +57,11 @@ impl UsbTransferPipe {
         let deadline = Instant::now() + timeout;
         let mut transfers = self.transfers.lock().unwrap();
         while transfers.is_empty() {
+            if self.disconnected.load(Ordering::SeqCst) {
+                return Err(UsbProbeError::UsbBulkTransferFailed(
+                    rusb::Error::NoDevice.to_string(),
+                ));
+            }
             let now = Instant::now();
             if now >= deadline {
                 self.read_timeouts.fetch_add(1, Ordering::SeqCst);
