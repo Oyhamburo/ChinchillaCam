@@ -4,3 +4,4 @@ pub mod messages;
 pub mod paths;
 pub mod qr_image;
 pub mod view_model;
+pub mod window;
