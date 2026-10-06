@@ -90,3 +90,8 @@ Feature cerrada el 2026-10-03 en `68a88e8`: verificador independiente — `usb-p
 - Errores de enlace USB se muestran como aviso; sin reintento visible más allá del backoff de 2 s.
 - Windows: identidad, decoder Media Foundation y cámara virtual (paso 5).
 - Tamaños: d4a (~934), d5 (~791) por encima de 400, declarados.
+
+### Revisión nativa (2026-10-03)
+
+- Tramo final `7688680..HEAD` (ventana): tras correr `gentle-ai sync --agent pi` del binario del paquete, inspect quedó `fresh_target_ready` para ese tramo, pero START devolvió de inmediato `consent-binding-stale` ("vencido tras 10 minutos sin respuesta") y su envelope apunta a otro objetivo (todo el branch desde `32d0401`), no al tramo inspeccionado. Mismo comportamiento que en Android (memoria #8065): parece un bug del facade. No se relanzó en loop.
+- Tramos pendientes: `b9eb3ab..f9d43ce` (d1), `f9d43ce..6c76744` (d2), `6c76744..59f73ca` (d3), `59f73ca..6fe21ce` (d4a), `6fe21ce..3806435` (d4b), `3806435..6ff043b` (d5), `6ff043b..c551bd0` (d6a), `c551bd0..68a88e8` (d6b).
