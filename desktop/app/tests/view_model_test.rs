@@ -1,11 +1,207 @@
 use chinchillacam_app::view_model::{AppAction, AppState};
 use std::time::{Duration, Instant};
 use usb_probe::{
-    pairing_short_code_v1, DesktopConnectionFailure as Failure, DesktopEvent as Event,
-    DesktopMetricsSnapshot, DesktopSessionEndReason as End, PairedPhoneCandidateConfirmError,
-    PairingQrIssuerError, PhoneConnectionError, PhoneLinkError, SessionEnd, ShortCodeError,
-    TrustedPhoneStoreError, TrustedPhoneSummary, UsbProbeError, UsbTlsPairingProofError,
+    pairing_short_code_v1,
+    quality_control::{
+        CameraOption, CameraSelection, FpsOption, QualityError, QualityMode, QualityState,
+        ResolutionOption,
+    },
+    DesktopConnectionFailure as Failure, DesktopEvent as Event, DesktopMetricsSnapshot,
+    DesktopSessionEndReason as End, PairedPhoneCandidateConfirmError, PairingQrIssuerError,
+    PhoneConnectionError, PhoneLinkError, SessionEnd, ShortCodeError, TrustedPhoneStoreError,
+    TrustedPhoneSummary, UsbProbeError, UsbTlsPairingProofError,
 };
+
+fn quality_fixture() -> QualityState {
+    QualityState {
+        req: None,
+        error: None,
+        mode: QualityMode::Manual,
+        selected_camera: CameraSelection::Id("0".into()),
+        cameras: vec![
+            CameraOption {
+                id: "0".into(),
+                label: "Trasera 1".into(),
+            },
+            CameraOption {
+                id: "1".into(),
+                label: "Frontal 1".into(),
+            },
+        ],
+        resolutions: vec![
+            ResolutionOption {
+                width: 1920,
+                height: 1080,
+                enabled: true,
+                reason: None,
+            },
+            ResolutionOption {
+                width: 1280,
+                height: 720,
+                enabled: true,
+                reason: None,
+            },
+            ResolutionOption {
+                width: 960,
+                height: 540,
+                enabled: false,
+                reason: Some("No disponible".into()),
+            },
+            ResolutionOption {
+                width: 640,
+                height: 480,
+                enabled: true,
+                reason: None,
+            },
+        ],
+        frame_rates: vec![
+            FpsOption {
+                fps: 30,
+                enabled: true,
+                reason: None,
+            },
+            FpsOption {
+                fps: 24,
+                enabled: true,
+                reason: None,
+            },
+            FpsOption {
+                fps: 15,
+                enabled: false,
+                reason: Some("No disponible".into()),
+            },
+        ],
+        applied_width: 1280,
+        applied_height: 720,
+        applied_fps: 30,
+        summary: "Trasera 1 · 1280 × 720 · 30 FPS".into(),
+    }
+}
+
+#[test]
+fn connected_view_shows_remote_quality_options() {
+    let mut state = AppState::default();
+    assert!(state.view(0).quality.is_none());
+    state.apply(Event::Connected {
+        phone_id: "id".into(),
+        label: None,
+    });
+    assert!(state.view(0).quality.is_none()); // Old phone: no quality subscription.
+    state.apply(Event::QualityState(quality_fixture()));
+    let quality = state.view(0).quality.unwrap();
+    assert_eq!(quality.summary, "Trasera 1 · 1280 × 720 · 30 FPS");
+    assert!(!quality.automatic);
+    assert_eq!(
+        quality
+            .cameras
+            .iter()
+            .map(|c| (c.label.as_str(), c.selected))
+            .collect::<Vec<_>>(),
+        vec![
+            ("Automático", false),
+            ("Trasera 1", true),
+            ("Frontal 1", false)
+        ]
+    );
+    assert_eq!(
+        quality
+            .resolutions
+            .iter()
+            .map(|r| (r.label.as_str(), r.enabled, r.applied))
+            .collect::<Vec<_>>(),
+        vec![
+            ("1920 × 1080", true, false),
+            ("1280 × 720", true, true),
+            ("960 × 540", false, false),
+            ("640 × 480", true, false)
+        ]
+    );
+    assert_eq!(
+        quality.resolutions[2].reason.as_deref(),
+        Some("No disponible")
+    );
+    assert_eq!(
+        quality
+            .frame_rates
+            .iter()
+            .map(|f| (f.label.as_str(), f.enabled, f.applied))
+            .collect::<Vec<_>>(),
+        vec![
+            ("30 FPS", true, true),
+            ("24 FPS", true, false),
+            ("15 FPS", false, false)
+        ]
+    );
+    assert_eq!(
+        quality.frame_rates[2].reason.as_deref(),
+        Some("No disponible")
+    );
+    assert_eq!(quality.error, None);
+    assert!(!quality.pending);
+}
+
+#[test]
+fn quality_clears_on_connection_transitions_and_pending_on_next_state() {
+    let mut state = AppState::default();
+    state.apply(Event::Connected {
+        phone_id: "id".into(),
+        label: None,
+    });
+    state.apply(Event::QualityState(quality_fixture()));
+    state.mark_quality_pending();
+    assert!(state.view(0).quality.unwrap().pending);
+    state.apply(Event::QualityState(quality_fixture()));
+    assert!(!state.view(0).quality.unwrap().pending);
+    for transition in [
+        Event::WaitingForPhone,
+        Event::SessionEnded(End::LocalClose),
+        Event::ConnectionFailed(Failure::PairingConfirmTimedOut),
+        Event::Connected {
+            phone_id: "new".into(),
+            label: None,
+        },
+    ] {
+        state.apply(Event::Connected {
+            phone_id: "id".into(),
+            label: None,
+        });
+        state.apply(Event::QualityState(quality_fixture()));
+        state.mark_quality_pending();
+        assert!(state.view(0).quality.unwrap().pending);
+        state.apply(transition);
+        assert!(state.view(0).quality.is_none());
+    }
+}
+
+#[test]
+fn quality_errors_are_localized_and_auto_is_distinct_from_camera_auto() {
+    let mut state = AppState::default();
+    state.apply(Event::Connected {
+        phone_id: "id".into(),
+        label: None,
+    });
+    for (error, expected) in [
+        (
+            QualityError::Unsupported,
+            "El teléfono no admite esa opción.",
+        ),
+        (QualityError::Unavailable, "Esa cámara no está disponible."),
+        (
+            QualityError::Invalid,
+            "El teléfono no pudo aplicar el cambio.",
+        ),
+    ] {
+        let mut quality = quality_fixture();
+        quality.error = Some(error);
+        quality.mode = QualityMode::Auto;
+        quality.selected_camera = CameraSelection::Auto;
+        state.apply(Event::QualityState(quality));
+        let view = state.view(0).quality.unwrap();
+        assert_eq!(view.error.as_deref(), Some(expected));
+        assert!(view.automatic);
+        assert!(view.cameras[0].selected);
+    }
+}
 
 #[test]
 fn pairing_view_shows_qr_and_code() {

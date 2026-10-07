@@ -1,7 +1,10 @@
 use crate::messages::{connection_failure_notice, session_end_notice, UserNotice};
 use crate::video_watchdog::{VideoWarning, VideoWatchdog};
 use std::time::Instant;
-use usb_probe::{DesktopEvent, DesktopMetricsSnapshot, TrustedPhoneSummary};
+use usb_probe::{
+    quality_control::{CameraSelection, QualityError, QualityMode, QualityState},
+    DesktopEvent, DesktopMetricsSnapshot, TrustedPhoneSummary,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppAction {
@@ -56,6 +59,96 @@ impl From<DesktopMetricsSnapshot> for MetricsView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraChoice {
+    pub selection: CameraSelection,
+    pub label: String,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionChoice {
+    pub width: u32,
+    pub height: u32,
+    pub label: String,
+    pub enabled: bool,
+    pub reason: Option<String>,
+    pub applied: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FpsChoice {
+    pub fps: u32,
+    pub label: String,
+    pub enabled: bool,
+    pub reason: Option<String>,
+    pub applied: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualityView {
+    pub summary: String,
+    pub cameras: Vec<CameraChoice>,
+    pub resolutions: Vec<ResolutionChoice>,
+    pub frame_rates: Vec<FpsChoice>,
+    pub automatic: bool,
+    pub error: Option<String>,
+    pub pending: bool,
+}
+
+impl QualityView {
+    fn from_state(state: &QualityState, pending: bool) -> Self {
+        Self {
+            summary: state.summary.clone(),
+            cameras: std::iter::once(CameraChoice {
+                selection: CameraSelection::Auto,
+                label: "Automático".into(),
+                selected: state.selected_camera == CameraSelection::Auto,
+            })
+            .chain(state.cameras.iter().map(|camera| CameraChoice {
+                selection: CameraSelection::Id(camera.id.clone()),
+                label: camera.label.clone(),
+                selected: state.selected_camera == CameraSelection::Id(camera.id.clone()),
+            }))
+            .collect(),
+            resolutions: state
+                .resolutions
+                .iter()
+                .map(|resolution| ResolutionChoice {
+                    width: resolution.width,
+                    height: resolution.height,
+                    label: format!("{} × {}", resolution.width, resolution.height),
+                    enabled: resolution.enabled,
+                    reason: resolution.reason.clone(),
+                    applied: (resolution.width, resolution.height)
+                        == (state.applied_width, state.applied_height),
+                })
+                .collect(),
+            frame_rates: state
+                .frame_rates
+                .iter()
+                .map(|fps| FpsChoice {
+                    fps: fps.fps,
+                    label: format!("{} FPS", fps.fps),
+                    enabled: fps.enabled,
+                    reason: fps.reason.clone(),
+                    applied: fps.fps == state.applied_fps,
+                })
+                .collect(),
+            automatic: state.mode == QualityMode::Auto,
+            error: state.error.map(|error| {
+                match error {
+                    QualityError::Unsupported => "El teléfono no admite esa opción.",
+                    QualityError::Unavailable => "Esa cámara no está disponible.",
+                    QualityError::Invalid => "El teléfono no pudo aplicar el cambio.",
+                }
+                .into()
+            }),
+            pending,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppView {
     pub status: String,
     pub notice: Option<String>,
@@ -67,6 +160,7 @@ pub struct AppView {
     pub phones: Vec<PhoneRow>,
     pub empty_phones_text: String,
     pub metrics: Option<MetricsView>,
+    pub quality: Option<QualityView>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +181,8 @@ pub struct AppState {
     presenter_failed: bool,
     phones: Vec<TrustedPhoneSummary>,
     metrics: Option<DesktopMetricsSnapshot>,
+    quality: Option<QualityState>,
+    quality_pending: bool,
 }
 
 impl Default for AppState {
@@ -99,11 +195,32 @@ impl Default for AppState {
             presenter_failed: false,
             phones: Vec::new(),
             metrics: None,
+            quality: None,
+            quality_pending: false,
         }
     }
 }
 
 impl AppState {
+    pub fn quality_state(&self) -> Option<&QualityState> {
+        if matches!(self.phase, Phase::Connected { .. }) {
+            self.quality.as_ref()
+        } else {
+            None
+        }
+    }
+
+    pub fn mark_quality_pending(&mut self) {
+        if self.quality_state().is_some() {
+            self.quality_pending = true;
+        }
+    }
+
+    fn clear_quality(&mut self) {
+        self.quality = None;
+        self.quality_pending = false;
+    }
+
     pub fn confirm_label(&self) -> &'static str {
         "Teléfono"
     }
@@ -122,6 +239,7 @@ impl AppState {
             DesktopEvent::WaitingForPhone => {
                 self.phase = Phase::Waiting;
                 self.metrics = None;
+                self.clear_quality();
             }
             DesktopEvent::PairingQr {
                 text,
@@ -153,14 +271,20 @@ impl AppState {
                 self.presenter_failed = false;
                 self.phase = Phase::Connected { label };
                 self.metrics = None;
+                self.clear_quality();
                 self.notice = None;
             }
             DesktopEvent::Metrics(metrics) => self.metrics = Some(metrics),
-            // Quality controls are rendered in c4; keep the existing view unchanged for c3.
-            DesktopEvent::QualityState(_) => {}
+            DesktopEvent::QualityState(quality) => {
+                if matches!(self.phase, Phase::Connected { .. }) {
+                    self.quality = Some(quality);
+                    self.quality_pending = false;
+                }
+            }
             DesktopEvent::SessionEnded(reason) => {
                 self.phase = Phase::Waiting;
                 self.metrics = None;
+                self.clear_quality();
                 self.notice = Some(session_end_notice(&reason));
             }
             DesktopEvent::ConnectionFailed(failure) => {
@@ -170,6 +294,7 @@ impl AppState {
                     self.phase = Phase::Waiting;
                 }
                 self.metrics = None;
+                self.clear_quality();
                 let notice = connection_failure_notice(&failure);
                 if self.notice != Some(notice) {
                     self.notice = Some(notice);
@@ -258,6 +383,9 @@ impl AppState {
             } else {
                 None
             },
+            quality: self
+                .quality_state()
+                .map(|quality| QualityView::from_state(quality, self.quality_pending)),
         }
     }
 }
