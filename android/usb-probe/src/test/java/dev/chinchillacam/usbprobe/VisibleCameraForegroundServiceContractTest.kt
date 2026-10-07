@@ -17,6 +17,24 @@ class VisibleCameraForegroundServiceContractTest {
     }
 
     @Test
+    fun failureAlertSurvivesForegroundRemovalAndOpensConnectionScreen() {
+        val source = File("src/main/java/dev/chinchillacam/usbprobe/VisibleCameraForegroundService.kt").readText()
+        val stop = source.substringAfter("private fun stopForegroundAndSelfPreservingStatus()").substringBefore("private fun stopForegroundAndSelf()")
+        val notification = source.substringAfter("private fun postFailureNotification(").substringBefore("private fun cancelFailureNotification()")
+        assertTrue(stop.contains("VisibleCameraFailureStop("))
+        assertTrue(stop.contains("errorNotifier = ::postFailureNotification"))
+        assertTrue(notification.contains("Intent(this, ConnectionActivity::class.java)"))
+        assertTrue(notification.contains("PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT"))
+        assertTrue(notification.contains(".setOngoing(false).setAutoCancel(true)"))
+        assertTrue(notification.contains("notify(ERROR_NOTIFICATION_ID, notification)"))
+        assertTrue(notification.contains("runCatching {"))
+        assertTrue(source.contains("NotificationManager.IMPORTANCE_DEFAULT"))
+        assertTrue(source.contains("cancel(ERROR_NOTIFICATION_ID)"))
+        assertTrue("external session failures must alert in onDestroy", source.substringAfter("override fun onDestroy()")
+            .substringBefore("private fun startPipeline(").contains("errorNotifier = ::postFailureNotification"))
+    }
+
+    @Test
     fun sessionModeWiresRegistrySinkAndNotifiesWhenTheServiceStops() {
         val source = File("src/main/java/dev/chinchillacam/usbprobe/VisibleCameraForegroundService.kt").readText()
         assertTrue(

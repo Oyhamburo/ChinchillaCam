@@ -15,6 +15,7 @@ import android.graphics.Typeface
 import android.hardware.camera2.CameraManager
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -116,6 +117,7 @@ class ConnectionActivity : Activity() {
         resumed = true
         refreshCameraCatalog()
         render()
+        if (state !is PhoneConnectionState.AwaitingAccessory) requestErrorNotificationPermissionOnce()
         resumeAwaitingAccessory()
     }
 
@@ -222,6 +224,16 @@ class ConnectionActivity : Activity() {
             .setPositiveButton(FORGET) { _, _ -> bound.forget(row.desktopId) }
             .setNegativeButton(CANCEL, null)
             .show()
+    }
+
+    /** Ask once on entry, before pairing/connect; denial never waits on a callback or blocks the session. */
+    private fun requestErrorNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        val preferences = getSharedPreferences(CAMERA_PREFERENCES, Context.MODE_PRIVATE)
+        if (preferences.getBoolean(NOTIFICATION_PERMISSION_ASKED, false)) return
+        preferences.edit().putBoolean(NOTIFICATION_PERMISSION_ASKED, true).apply()
+        runCatching { requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATION_PERMISSION) }
     }
 
     private fun withCameraPermission(then: () -> Unit) {
@@ -474,6 +486,8 @@ class ConnectionActivity : Activity() {
         const val CAMERA_PREFERENCES = "dev.chinchillacam.usbprobe.camera"
         const val CAMERA_SELECTION_KEY = "selected_direct_camera_id"
         const val QUALITY_KEY = "quality_preference"
+        const val NOTIFICATION_PERMISSION_ASKED = "notification_permission_asked"
+        const val REQUEST_NOTIFICATION_PERMISSION = 3003
         const val REQUEST_CAMERA_PERMISSION = 3001
         const val REQUEST_USB_PERMISSION = 3002
         const val USB_PERMISSION_ACTION_SUFFIX = ".action.CONNECTION_USB_PERMISSION"

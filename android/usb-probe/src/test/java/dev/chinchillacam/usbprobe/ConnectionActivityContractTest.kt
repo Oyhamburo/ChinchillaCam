@@ -83,6 +83,20 @@ class ConnectionActivityContractTest {
     }
 
     @Test
+    fun notificationPermissionIsRequestedOnceOnAndroid13WithoutBlockingPairingOrConnection() {
+        assertTrue(manifest.contains("android.permission.POST_NOTIFICATIONS"))
+        val request = body("requestErrorNotificationPermissionOnce")
+        assertTrue(request.contains("Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU"))
+        assertTrue(request.contains("checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)"))
+        assertTrue(request.contains("requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS)"))
+        assertTrue(request.contains("getSharedPreferences("))
+        assertTrue("prompt before actions, without colliding with the camera or USB prompts", body("onResume").contains("requestErrorNotificationPermissionOnce()"))
+        assertFalse(body("onAction").contains("requestErrorNotificationPermissionOnce()"))
+        assertFalse(body("connectTo").contains("requestErrorNotificationPermissionOnce()"))
+        assertTrue("notification denial must never gate camera permissions", body("onRequestPermissionsResult").contains("requestCode != REQUEST_CAMERA_PERMISSION"))
+    }
+
+    @Test
     fun usbPermissionIsRequestedThroughANotExportedReceiver() {
         assertContains("the accessory awaiting permission must come from the runtime", """PhoneConnectionRuntime\.accessoryAwaitingPermission\(""")
         assertContains("the USB permission must be requested", """usbManager\.requestPermission\(""")

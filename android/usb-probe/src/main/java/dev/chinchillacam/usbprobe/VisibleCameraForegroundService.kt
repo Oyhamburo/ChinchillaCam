@@ -28,6 +28,7 @@ class VisibleCameraForegroundService : Service() {
     // Main-thread confined. [sessionToken] is set while the pipeline runs for an ActiveSessionRegistry entry.
     private var pipelineOwner: VisibleCameraForegroundServicePipelineOwner? = null
     private var sessionToken: Long? = null
+    private var failureNotificationPosted = false
 
     private fun newPipelineOwner(sinkFactory: (() -> EncodedVideoEgressSink)?) = VisibleCameraForegroundServicePipelineOwner(
         pipeline = ControllerVisibleCameraServicePipeline(
@@ -48,6 +49,13 @@ class VisibleCameraForegroundService : Service() {
             CameraQualityPlanner.plan(entry, preference)
         },
         onPipelineFailureStop = { mainHandler.post { stopForegroundAndSelfPreservingStatus() } },
+        onPipelineStarted = {
+            mainHandler.post {
+                if (sessionToken != null && VisibleCameraServiceStatusStore.snapshot().isActive) {
+                    cancelFailureNotification()
+                }
+            }
+        },
     )
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -93,9 +101,18 @@ class VisibleCameraForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        val status = VisibleCameraServiceStatusStore.snapshot()
+        val hadSession = sessionToken != null
         val errorMessage = currentErrorMessage()
         pipelineOwner?.handleDestroy()
         endSessionMode(errorMessage)
+        // Session egress may stop this service externally, without entering its failure callback.
+        if (hadSession && errorMessage != null && !failureNotificationPosted) {
+            VisibleCameraFailureStop(
+                stopForeground = { @Suppress("DEPRECATION") stopForeground(true) },
+                errorNotifier = ::postFailureNotification,
+            ).stop(status)
+        }
         VisibleCameraServiceStatusStore.clearStopped()
         startExecutor.shutdownNow()
         cameraCallbackThread.quitSafely()
@@ -161,9 +178,47 @@ class VisibleCameraForegroundService : Service() {
     }
 
     private fun stopForegroundAndSelfPreservingStatus() {
-        @Suppress("DEPRECATION")
-        stopForeground(true)
+        VisibleCameraFailureStop(
+            stopForeground = { @Suppress("DEPRECATION") stopForeground(true) },
+            errorNotifier = ::postFailureNotification,
+        ).stop(VisibleCameraServiceStatusStore.snapshot())
         stopSelf()
+    }
+
+    private fun postFailureNotification(spec: ErrorNotificationSpec) {
+        if (failureNotificationPosted) return
+        failureNotificationPosted = true
+        // Notifications can be disabled or denied on Android 13+: never disrupt camera teardown.
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return@runCatching
+            ensureErrorNotificationChannel()
+            val openIntent = Intent(this, ConnectionActivity::class.java)
+            val contentIntent = PendingIntent.getActivity(this, 0, openIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(this, ERROR_CHANNEL_ID)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(this)
+            }
+            val notification = builder.setSmallIcon(android.R.drawable.stat_notify_error)
+                .setContentTitle(spec.title).setContentText(spec.text)
+                .setStyle(Notification.BigTextStyle().bigText(spec.text))
+                .setContentIntent(contentIntent).setOngoing(false).setAutoCancel(true).build()
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(ERROR_NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun cancelFailureNotification() {
+        runCatching { (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(ERROR_NOTIFICATION_ID) }
+        failureNotificationPosted = false
+    }
+
+    private fun ensureErrorNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel(ERROR_CHANNEL_ID, "Errores", NotificationManager.IMPORTANCE_DEFAULT))
     }
 
     private fun stopForegroundAndSelf() {
@@ -217,6 +272,8 @@ class VisibleCameraForegroundService : Service() {
         private const val CHANNEL_ID = "visible_camera_local_test"
         private const val CHANNEL_NAME = "Prueba local visible de cámara"
         private const val NOTIFICATION_ID = 1001
+        private const val ERROR_NOTIFICATION_ID = 1002
+        private const val ERROR_CHANNEL_ID = "visible_camera_errors"
 
         const val EXTRA_SELECTED_CAMERA_ID = "dev.chinchillacam.usbprobe.extra.SELECTED_CAMERA_ID"
         const val EXTRA_VISIBLE_START_REQUESTED = "dev.chinchillacam.usbprobe.extra.VISIBLE_START_REQUESTED"
@@ -548,6 +605,7 @@ class VisibleCameraForegroundServicePipelineOwner(
     private val drainLoop: VisibleCameraServiceDrainLoop,
     private val policy: VisibleCameraForegroundServiceCommandPolicy = VisibleCameraForegroundServiceCommandPolicy(),
     private val onPipelineFailureStop: () -> Unit = {},
+    private val onPipelineStarted: () -> Unit = {},
     private val qualityPlanResolver: (String) -> QualityPlan = { CameraQualityPlanner.plan(null, QualityPreference.Automatic) },
 ) {
     val requiresActivityReference: Boolean = false
@@ -633,6 +691,7 @@ class VisibleCameraForegroundServicePipelineOwner(
                     },
                 ),
             )
+            onPipelineStarted()
             VisibleCameraServiceCommandOutcome.Started
         } else {
             val cause = pipeline.currentCause() ?: FailureCause.CameraOpenFailed

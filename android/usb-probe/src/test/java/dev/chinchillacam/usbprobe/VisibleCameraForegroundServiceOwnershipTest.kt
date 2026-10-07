@@ -8,6 +8,36 @@ import org.junit.Test
 
 class VisibleCameraForegroundServiceOwnershipTest {
     @Test
+    fun session_failure_posts_error_notification() {
+        val events = mutableListOf<String>()
+        val stop = VisibleCameraFailureStop(
+            stopForeground = { events += "foreground removed" },
+            errorNotifier = { spec ->
+                assertEquals("ChinchillaCam se detuvo", spec.title)
+                assertEquals(UserFailureCatalog.messageFor(FailureCause.SessionPeerDead), spec.text)
+                events += "error posted"
+            },
+        )
+
+        stop.stop(VisibleCameraServiceStatus(VisibleCameraServiceState.Error,
+            message = UserFailureCatalog.messageFor(FailureCause.SessionPeerDead), cause = FailureCause.SessionPeerDead))
+
+        assertEquals(listOf("foreground removed", "error posted"), events)
+    }
+
+    @Test
+    fun user_stop_does_not_post_error_notification() {
+        val posted = mutableListOf<ErrorNotificationSpec>()
+        val stop = VisibleCameraFailureStop(stopForeground = {}, errorNotifier = posted::add)
+
+        stop.stop(VisibleCameraServiceStatus(VisibleCameraServiceState.Stopped, message = "Servicio visible detenido."))
+        stop.stop(VisibleCameraServiceStatus(VisibleCameraServiceState.Error,
+            message = UserFailureCatalog.messageFor(FailureCause.SessionLocalClose), cause = FailureCause.SessionLocalClose))
+
+        assertTrue(posted.isEmpty())
+    }
+
+    @Test
     fun activityLifecycleDetachesOnlyWhenForegroundServiceOwnsPipeline() {
         assertEquals(
             VisibleCameraActivityLifecycleAction.DetachOnly,
