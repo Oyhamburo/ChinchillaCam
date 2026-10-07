@@ -141,22 +141,29 @@ impl<B: UsbPhoneBackend> UsbPhoneLink<B> {
     }
 
     /// Scans and either switches the candidate or opens a waiting accessory stream.
-    fn open_phone(&mut self) -> Result<(), UsbProbeError> {
-        let devices = self.backend.scan()?;
+    fn open_phone(&mut self) -> Result<(), PhoneLinkError> {
+        let devices = self.backend.scan().map_err(PhoneLinkError::Scan)?;
         match select_phone_candidate(&devices, self.config.device_override) {
-            None => Ok(()),
-            Some(PhoneCandidate::NeedsAccessorySwitch(device)) => {
-                self.backend.switch_to_accessory(&device)
-            }
+            None => Err(PhoneLinkError::NoPhoneFound),
+            Some(PhoneCandidate::NeedsAccessorySwitch(device)) => self
+                .backend
+                .switch_to_accessory(&device)
+                .map_err(PhoneLinkError::Switch),
             Some(PhoneCandidate::AccessoryMode(device)) => {
-                let io = self.backend.open_accessory(&device)?;
+                let io = self
+                    .backend
+                    .open_accessory(&device)
+                    .map_err(PhoneLinkError::Open)?;
                 let budget = FrameTransferBudget::new(
                     self.config.transfer_timeout,
                     USB_TLS_CIPHERTEXT_MAX_CHUNK_BYTES,
                     BULK_IO_ATTEMPTS,
-                )?;
+                )
+                .map_err(PhoneLinkError::Open)?;
                 let mut stream = UsbTlsCiphertextStream::new(FramedUsbStream::new(io, budget));
-                stream.set_idle_read_timeout(Some(self.config.first_bytes_wait))?;
+                stream
+                    .set_idle_read_timeout(Some(self.config.first_bytes_wait))
+                    .map_err(PhoneLinkError::Open)?;
                 self.waiting = Some(stream);
                 Ok(())
             }
@@ -200,8 +207,10 @@ impl<B: UsbPhoneBackend> PhoneLink for UsbPhoneLink<B> {
             }
             self.retry_at = None;
             if let Err(error) = self.open_phone() {
-                self.retry_at = Some(now + self.config.retry_backoff);
-                return Err(PhoneLinkError::Usb(error));
+                if error != PhoneLinkError::NoPhoneFound {
+                    self.retry_at = Some(now + self.config.retry_backoff);
+                }
+                return Err(error);
             }
         }
         Ok(self.take_if_phone_spoke())

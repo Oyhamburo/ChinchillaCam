@@ -44,6 +44,12 @@ pub trait IdleReadTimeoutControl {
 /// Why a phone link could not be polled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhoneLinkError {
+    /// No supported phone was present in the latest scan.
+    NoPhoneFound,
+    Scan(UsbProbeError),
+    Switch(UsbProbeError),
+    Open(UsbProbeError),
+    /// Other USB errors (also used by links that don't expose a stage).
     Usb(UsbProbeError),
 }
 

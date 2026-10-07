@@ -125,6 +125,8 @@ fn peeked_stream_serves_prefix_then_inner() {
 struct FakeUsb {
     devices: Vec<AoaObservedDevice>,
     scan_error: Option<UsbProbeError>,
+    switch_error: Option<UsbProbeError>,
+    open_error: Option<UsbProbeError>,
     calls: Vec<String>,
 }
 
@@ -150,6 +152,9 @@ impl UsbPhoneBackend for FakeBackend {
     fn switch_to_accessory(&mut self, device: &AoaObservedDevice) -> Result<(), UsbProbeError> {
         let mut usb = self.usb.lock().unwrap();
         usb.calls.push(format!("switch {}", device.identifier()));
+        if let Some(error) = &usb.switch_error {
+            return Err(error.clone());
+        }
         let location = device.physical_location().cloned();
         let accessory = DeviceIdentifier::VidPid {
             vendor_id: 0x18d1,
@@ -164,6 +169,9 @@ impl UsbPhoneBackend for FakeBackend {
     fn open_accessory(&mut self, device: &AoaObservedDevice) -> Result<Self::Io, UsbProbeError> {
         let mut usb = self.usb.lock().unwrap();
         usb.calls.push(format!("open {}", device.identifier()));
+        if let Some(error) = &usb.open_error {
+            return Err(error.clone());
+        }
         let (desktop, phone) = crossed_transfer_pair();
         let _ = self.phones.send(phone);
         Ok(desktop)
@@ -264,7 +272,7 @@ fn scan_failure_backs_off_and_reports_once() {
     harness.usb.lock().unwrap().scan_error = Some(error.clone());
     assert_eq!(
         harness.link.poll_phone().err(),
-        Some(PhoneLinkError::Usb(error.clone()))
+        Some(PhoneLinkError::Scan(error.clone()))
     );
     harness.poll_none();
     harness.poll_none();
@@ -273,9 +281,54 @@ fn scan_failure_backs_off_and_reports_once() {
     thread::sleep(BACKOFF + Duration::from_millis(30));
     assert_eq!(
         harness.link.poll_phone().err(),
-        Some(PhoneLinkError::Usb(error))
+        Some(PhoneLinkError::Scan(error))
     );
     assert_eq!(harness.calls(), ["scan", "scan"]);
+}
+
+#[test]
+fn missing_phone_is_reported_without_delaying_the_next_scan() {
+    let mut harness = Harness::new(vec![]);
+    assert_eq!(
+        harness.link.poll_phone().err(),
+        Some(PhoneLinkError::NoPhoneFound)
+    );
+    assert_eq!(
+        harness.link.poll_phone().err(),
+        Some(PhoneLinkError::NoPhoneFound),
+        "absence must not use the error backoff"
+    );
+    assert_eq!(harness.calls(), ["scan", "scan"]);
+}
+
+#[test]
+fn missing_phone_and_each_link_stage_report_distinct_causes() {
+    let mut missing = Harness::new(vec![]);
+    assert_eq!(
+        missing.link.poll_phone().err(),
+        Some(PhoneLinkError::NoPhoneFound)
+    );
+    assert_eq!(
+        missing.link.poll_phone().err(),
+        Some(PhoneLinkError::NoPhoneFound)
+    );
+    assert_eq!(missing.calls(), ["scan", "scan"]);
+
+    let mut switching = Harness::new(vec![device(0x04e8, 0x6860, 2)]);
+    let switch_error = UsbProbeError::UsbControlTransferFailed("denied".into());
+    switching.usb.lock().unwrap().switch_error = Some(switch_error.clone());
+    assert_eq!(
+        switching.link.poll_phone().err(),
+        Some(PhoneLinkError::Switch(switch_error))
+    );
+
+    let mut opening = Harness::new(vec![device(0x18d1, 0x2d00, 3)]);
+    let open_error = UsbProbeError::BulkInterfaceClaimFailed("busy".into());
+    opening.usb.lock().unwrap().open_error = Some(open_error.clone());
+    assert_eq!(
+        opening.link.poll_phone().err(),
+        Some(PhoneLinkError::Open(open_error))
+    );
 }
 
 #[test]
