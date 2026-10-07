@@ -234,6 +234,11 @@ impl eframe::App for ChinchillaCamWindow {
         }
         if let Some(message) = self.bootstrap_message.as_ref().or(view.notice.as_ref()) {
             ui.colored_label(ui.visuals().error_fg_color, message);
+            if self.bootstrap_message.is_none() {
+                if let Some(hint) = &view.hint {
+                    ui.label(hint);
+                }
+            }
         }
         if let Some(text) = &view.qr_text {
             if self

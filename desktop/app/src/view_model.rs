@@ -1,4 +1,4 @@
-use crate::messages::{connection_failure_notice, session_end_notice};
+use crate::messages::{connection_failure_notice, session_end_notice, UserNotice};
 use usb_probe::{DesktopEvent, DesktopMetricsSnapshot, TrustedPhoneSummary};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +57,7 @@ impl From<DesktopMetricsSnapshot> for MetricsView {
 pub struct AppView {
     pub status: String,
     pub notice: Option<String>,
+    pub hint: Option<String>,
     pub qr_text: Option<String>,
     pub qr_seconds_left: Option<u64>,
     pub confirm_code: Option<String>,
@@ -78,7 +79,7 @@ enum Phase {
 #[derive(Debug, Clone)]
 pub struct AppState {
     phase: Phase,
-    notice: Option<String>,
+    notice: Option<UserNotice>,
     phones: Vec<TrustedPhoneSummary>,
     metrics: Option<DesktopMetricsSnapshot>,
 }
@@ -139,7 +140,7 @@ impl AppState {
             DesktopEvent::SessionEnded(reason) => {
                 self.phase = Phase::Waiting;
                 self.metrics = None;
-                self.notice = Some(session_end_notice(&reason).into());
+                self.notice = Some(session_end_notice(&reason));
             }
             DesktopEvent::ConnectionFailed(failure) => {
                 // The worker stays in pairing mode after link errors and failed pairing
@@ -148,7 +149,10 @@ impl AppState {
                     self.phase = Phase::Waiting;
                 }
                 self.metrics = None;
-                self.notice = Some(connection_failure_notice(&failure).into());
+                let notice = connection_failure_notice(&failure);
+                if self.notice != Some(notice) {
+                    self.notice = Some(notice);
+                }
             }
         }
     }
@@ -193,7 +197,8 @@ impl AppState {
         };
         AppView {
             status,
-            notice: self.notice.clone(),
+            notice: self.notice.map(|notice| notice.message.into()),
+            hint: self.notice.and_then(|notice| notice.hint.map(Into::into)),
             qr_text,
             qr_seconds_left,
             confirm_code,
