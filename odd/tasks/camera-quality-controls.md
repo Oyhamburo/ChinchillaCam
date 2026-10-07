@@ -55,6 +55,20 @@ Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Andro
    - Evidencia q3: RED observado por referencias no resueltas a `Reconfigured` y `handleReconfigureCommand`; GREEN focalizado; runner completo 523 pruebas, 2 omitidas, 0 fallas; `assembleDebug`, `lintDebug` y `git diff --check` correctos. La parada y el reinicio afectan sólo al pipeline; si falla el nuevo arranque, se intenta recuperar el plan anterior.
 4. [x] q4 — UI de calidad en la pantalla de conexión (planner + activity + preferencia + envío de la reconfiguración). RED: `connected_screen_offers_supported_quality_options`. ~350 líneas.
    - Evidencia q4: RED observado por referencias no resueltas al planificador y al campo de calidad; GREEN focalizado; runner completo sin conexión 530 pruebas, 2 omitidas, 0 fallas; `assembleDebug` y `lintDebug` correctos. El catálogo se actualiza fuera del hilo principal al reanudar; las capacidades incompletas deshabilitan las opciones manuales y la reconfiguración sólo se envía durante una sesión conectada.
-5. [ ] q5 — cierre: suite completa, evidencia, `complete-webcam-product.md`, push.
+5. [x] q5 — cierre: suite completa, evidencia, `complete-webcam-product.md`, push.
+   - Evidencia q5: verificación independiente sobre `7f5aab5`: 530 tests, 2 omitidos, 0 fallas; `assembleDebug` y `lintDebug` aprobados. Revisión estática: la reconfiguración sólo termina la sesión si fallan el arranque nuevo y la vuelta atrás; los tokens de generación protegen `ACTION_STOP`, reconfiguraciones sucesivas y avisos viejos del drain; sin inversión de locks (el aviso del drain entra al owner después de soltar el lock del controlador); `quality_preference` llega al encoder y a `CONTROL_AE_TARGET_FPS_RANGE`; un `ACTION_RECONFIGURE` en frío no abre la cámara. Revisión nativa: `inspect` volvió a resolver la base en `32d0401` (rama completa; bug de la fachada #7977/#8065/#8125); no se hizo START.
 
 ## 8. Evidencia
+
+- Commits: `04ac6be` (q1, planificador y preferencia), `785fec7` (q2, rango de FPS y encoder desde el plan), `d157d25` (q3, reconfiguración en vivo), `7f5aab5` (q4, UI de calidad) y el commit de cierre.
+- Readback del orquestador: con capacidades incompletas (FPS o tamaños `Unknown`/`Unavailable`) el plan usa 720p30, así que la UI deshabilita toda elección manual con ese motivo (incorporado en q4).
+- Sin ejecutar: cámara física, cambio de cámara en Samsung, restricciones de arranque de servicios en segundo plano, ni el cambio de tamaño de punta a punta en la ventana de video del desktop (M9).
+
+## 9. Seguimientos
+
+- Trabajo en el hilo principal que ya existía antes de T26 (riesgo de ANR conocido): snapshot síncrono del catálogo en `ConnectionActivity.scanCameraId` cuando el caché todavía no llegó, lectura y escritura de `SharedPreferences` en handlers de UI, y paradas síncronas del pipeline en `ACTION_STOP`/`onDestroy` del servicio bajo el monitor del owner.
+- El resolver de calidad del servicio vuelve a tomar un snapshot del catálogo en lugar de reusar el del arranque.
+- Las interfaces `VisibleCameraPipelineLauncher`, `VisibleCameraServicePipeline` y `CameraCaptureSessionGateway` conservan sobrecargas de compatibilidad para los fakes; unificarlas.
+- Los botones de resolución y FPS no marcan la opción aplicada (sólo la línea de resumen la muestra).
+- Control remoto desde la PC (frame 7 `CAMERA_CONTROL_COMMAND` + capacidades anunciadas): unidad posterior.
+- Revisión nativa de `9c61018..7f5aab5` pendiente del arreglo de la fachada.
