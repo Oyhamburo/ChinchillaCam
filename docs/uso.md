@@ -71,6 +71,19 @@ Restricciones importantes:
 - si el paquete no está firmado o notarizado, macOS puede mostrar advertencias de seguridad o bloquear la apertura hasta que el usuario la autorice manualmente;
 - la automatización de OBS Studio y la experiencia final de cámara virtual son hipótesis no validadas.
 
+### Usar ChinchillaCam como cámara en macOS (OBS)
+
+> Estado: recorrido previsto; pendiente de validar en OBS y con hardware real (M9).
+
+1. Instala OBS Studio y abre ChinchillaCam en la computadora.
+2. Conecta el teléfono, inicia el video y pulsa **Mostrar video para OBS**. Mantén abierta la ventana **ChinchillaCam — Video**.
+3. En OBS, agrega una fuente **Captura de pantalla de macOS**. Elige el método **Captura de ventana** y la ventana **ChinchillaCam — Video**.
+4. Si OBS solicita permiso, concédelo en **Configuración del Sistema → Privacidad y seguridad → Grabación de pantalla** y reinicia OBS.
+5. Ajusta la fuente al lienzo de OBS y pulsa **Iniciar cámara virtual**.
+6. En la aplicación de videollamada o video, elige **OBS Virtual Camera** como cámara.
+
+No minimices la ventana de video (puede quedar detrás de otras ventanas); la ventana principal de ChinchillaCam sí puede minimizarse. La calidad de la captura depende del tamaño de la ventana de video. Este flujo no transmite audio y todavía no se ha validado con hardware real (M9).
+
 ## 3. Emparejamiento por QR
 
 El emparejamiento previsto ocurre una vez por computadora:

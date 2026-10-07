@@ -3,20 +3,115 @@ use crate::{
     commands::{command_for, forget_command},
     paths::AppPaths,
     qr_image::qr_rgba,
+    video_output::LatestVideoFrame,
+    video_view::{fit_size, initial_size},
     view_model::AppState,
 };
 use eframe::egui;
 use std::{
-    sync::mpsc::{self, Receiver},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver},
+        Arc, LazyLock, Mutex,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use usb_probe::{DesktopEvent, DesktopWorkerHandle};
+
+static VIDEO_VIEWPORT_ID: LazyLock<egui::ViewportId> =
+    LazyLock::new(|| egui::ViewportId::from_hash_of("chinchillacam-video"));
+
+struct VideoViewportState {
+    slot: LatestVideoFrame,
+    texture: Mutex<Option<(u64, egui::TextureHandle)>>,
+    initial_size: Mutex<Option<egui::Vec2>>,
+    close_requested: AtomicBool,
+}
+
+impl VideoViewportState {
+    fn remember_initial_size(&self, width: u32, height: u32) {
+        let mut size = self
+            .initial_size
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        size.get_or_insert_with(|| {
+            let (w, h) = initial_size(width, height);
+            egui::vec2(w, h)
+        });
+    }
+
+    fn render(&self, ui: &mut egui::Ui) {
+        if ui.input(|input| input.viewport().close_requested()) {
+            self.close_requested.store(true, Ordering::Release);
+            // The root may be minimized and skip its UI pass; close this viewport directly.
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+        }
+        let (sequence, frame) = self.slot.snapshot();
+        let texture = {
+            let mut cached = self.texture.lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(frame) = &frame {
+                self.remember_initial_size(frame.width, frame.height);
+                if cached.as_ref().map(|(sequence, _)| *sequence) != Some(sequence) {
+                    let image = egui::ColorImage::from_rgba_unmultiplied(
+                        [frame.width as usize, frame.height as usize],
+                        &frame.pixels,
+                    );
+                    if let Some((old_sequence, texture)) = cached.as_mut() {
+                        texture.set(image, egui::TextureOptions::LINEAR);
+                        *old_sequence = sequence;
+                    } else {
+                        *cached = Some((
+                            sequence,
+                            ui.ctx().load_texture(
+                                "chinchillacam-video",
+                                image,
+                                egui::TextureOptions::LINEAR,
+                            ),
+                        ));
+                    }
+                }
+            } else {
+                *cached = None;
+            }
+            cached.as_ref().map(|(_, texture)| texture.clone())
+        };
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(egui::Color32::BLACK)
+                    .inner_margin(0),
+            )
+            .show(ui, |ui| {
+                let available = ui.available_size();
+                ui.vertical_centered(|ui| {
+                    if let (Some(frame), Some(texture)) = (&frame, &texture) {
+                        let (w, h) = fit_size(
+                            frame.width as f32,
+                            frame.height as f32,
+                            available.x,
+                            available.y,
+                        );
+                        ui.add_space(((available.y - h) / 2.0).max(0.0));
+                        ui.add(egui::Image::new(texture).fit_to_exact_size(egui::vec2(w, h)));
+                    } else {
+                        ui.add_space((available.y / 2.0 - 12.0).max(0.0));
+                        ui.label(
+                            egui::RichText::new("Esperando video…").color(egui::Color32::WHITE),
+                        );
+                    }
+                });
+            });
+    }
+}
 
 pub struct ChinchillaCamWindow {
     state: AppState,
     events: Receiver<DesktopEvent>,
     handle: Option<DesktopWorkerHandle>,
     qr_texture: Option<(String, egui::TextureHandle)>,
+    video: Arc<VideoViewportState>,
+    show_video: bool,
     pending_forget: Option<String>,
     bootstrap_message: Option<String>,
 }
@@ -25,13 +120,28 @@ impl ChinchillaCamWindow {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (sender, events) = mpsc::channel();
         let ctx = cc.egui_ctx.clone();
+        let video = Arc::new(VideoViewportState {
+            slot: LatestVideoFrame::default(),
+            texture: Mutex::new(None),
+            initial_size: Mutex::new(None),
+            close_requested: AtomicBool::new(false),
+        });
         let result = AppPaths::macos_default()
             .map_err(|_| "No se pudo encontrar tu carpeta de usuario.".to_owned())
             .and_then(|paths| {
-                start_production_worker(&paths, move |event| {
-                    let _ = sender.send(event);
-                    ctx.request_repaint();
-                })
+                let video_ctx = ctx.clone();
+                start_production_worker(
+                    &paths,
+                    video.slot.clone(),
+                    move || {
+                        video_ctx.request_repaint_of(*VIDEO_VIEWPORT_ID);
+                        video_ctx.request_repaint_of(egui::ViewportId::ROOT);
+                    },
+                    move |event| {
+                        let _ = sender.send(event);
+                        ctx.request_repaint();
+                    },
+                )
                 .map_err(|error| error.user_message().to_owned())
             });
         let (handle, bootstrap_message) = match result {
@@ -43,8 +153,36 @@ impl ChinchillaCamWindow {
             events,
             handle,
             qr_texture: None,
+            video,
+            show_video: false,
             pending_forget: None,
             bootstrap_message,
+        }
+    }
+
+    fn show_video_viewport(&self, ctx: &egui::Context) {
+        if let Some(frame) = self.video.slot.snapshot().1 {
+            self.video.remember_initial_size(frame.width, frame.height);
+        }
+        let size = self
+            .video
+            .initial_size
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let builder = egui::ViewportBuilder::default()
+            .with_title("ChinchillaCam — Video")
+            .with_inner_size(size.unwrap_or(egui::vec2(640.0, 360.0)))
+            .with_min_inner_size(egui::vec2(320.0, 180.0));
+        drop(size);
+        let video = Arc::clone(&self.video);
+        ctx.show_viewport_deferred(*VIDEO_VIEWPORT_ID, builder, move |ui, _class| {
+            video.render(ui)
+        });
+    }
+
+    fn hide_closed_video(&mut self) {
+        if self.video.close_requested.swap(false, Ordering::AcqRel) {
+            self.show_video = false;
         }
     }
 
@@ -67,10 +205,12 @@ impl ChinchillaCamWindow {
 impl eframe::App for ChinchillaCamWindow {
     fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.hide_closed_video();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.hide_closed_video();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -79,6 +219,19 @@ impl eframe::App for ChinchillaCamWindow {
         ui.heading("ChinchillaCam");
         ui.separator();
         ui.label(&view.status);
+        if ui
+            .button(if self.show_video {
+                "Ocultar video"
+            } else {
+                "Mostrar video para OBS"
+            })
+            .clicked()
+        {
+            self.show_video = !self.show_video;
+        }
+        if self.show_video {
+            self.show_video_viewport(ui.ctx());
+        }
         if let Some(message) = self.bootstrap_message.as_ref().or(view.notice.as_ref()) {
             ui.colored_label(ui.visuals().error_fg_color, message);
         }
