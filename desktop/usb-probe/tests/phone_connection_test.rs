@@ -226,7 +226,7 @@ fn reconnect_mode_accepts_trusted_phone_hello() {
     let (desktop_io, phone_io) = crossed_bulk_pair();
 
     thread::scope(|scope| {
-        let server = scope.spawn(|| -> Result<String, String> {
+        let server = scope.spawn(|| -> Result<(String, Vec<String>, bool), String> {
             let session = accept_phone_reconnect_connection(
                 ciphertext_stream(desktop_io),
                 &identity,
@@ -234,7 +234,12 @@ fn reconnect_mode_accepts_trusted_phone_hello() {
                 Duration::from_millis(1500),
             )
             .map_err(|error| error.to_string())?;
-            Ok(session.phone_id)
+            let supports_quality = session.supports_quality_control();
+            Ok((
+                session.phone_id,
+                session.phone_capabilities,
+                supports_quality,
+            ))
         });
 
         let mut phone_tls = phone_tls_stream(phone_io, &cert, &phone_identity);
@@ -244,7 +249,10 @@ fn reconnect_mode_accepts_trusted_phone_hello() {
             SessionFramePayload::HandshakeHello {
                 device_id: phone_id.clone(),
                 app_name: "ChinchillaCam".to_string(),
-                capabilities: vec!["video".to_string()],
+                capabilities: std::iter::once("quality-control-v1".to_string())
+                    .chain(std::iter::once("x".repeat(65)))
+                    .chain((0..40).map(|i| format!("other-{i}")))
+                    .collect(),
             },
         );
         usb_probe::write_session_frame(&mut phone_tls, &hello).unwrap();
@@ -262,8 +270,12 @@ fn reconnect_mode_accepts_trusted_phone_hello() {
         );
         assert_eq!(accept.session_id(), "session-01");
 
-        let returned_phone_id = server.join().unwrap().unwrap();
+        let (returned_phone_id, capabilities, supports_quality) = server.join().unwrap().unwrap();
         assert_eq!(returned_phone_id, phone_id);
+        assert!(supports_quality);
+        assert_eq!(capabilities.len(), 32);
+        assert_eq!(capabilities[0], "quality-control-v1");
+        assert!(!capabilities.iter().any(|value| value.len() > 64));
     });
 
     cleanup(store_path);
@@ -296,7 +308,7 @@ fn reconnect_session_keeps_session_identity() {
     let (desktop_io, phone_io) = crossed_bulk_pair();
 
     thread::scope(|scope| {
-        let server = scope.spawn(|| -> Result<Option<SessionIdentity>, String> {
+        let server = scope.spawn(|| -> Result<(Option<SessionIdentity>, bool), String> {
             let session = accept_phone_reconnect_connection(
                 ciphertext_stream(desktop_io),
                 &identity,
@@ -304,7 +316,7 @@ fn reconnect_session_keeps_session_identity() {
                 Duration::from_millis(1500),
             )
             .map_err(|error| error.to_string())?;
-            Ok(session.session)
+            Ok((session.session.clone(), session.supports_quality_control()))
         });
 
         let mut phone_tls = phone_tls_stream(phone_io, &cert, &phone_identity);
@@ -325,7 +337,8 @@ fn reconnect_session_keeps_session_identity() {
             "ACCEPT uses hello.sequence() + 1 (contract section 4.1)"
         );
 
-        let session = server.join().unwrap().unwrap();
+        let (session, supports_quality) = server.join().unwrap().unwrap();
+        assert!(!supports_quality);
         assert_eq!(
             session,
             Some(SessionIdentity {

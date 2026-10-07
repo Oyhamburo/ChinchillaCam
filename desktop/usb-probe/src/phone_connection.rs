@@ -148,6 +148,7 @@ impl<S: Read + Write> PendingPairedPhoneSession<S> {
                 tls: self.tls,
                 phone_id: self.candidate.phone_id,
                 session: None,
+                phone_capabilities: Vec::new(),
             }),
             Err(error) => {
                 close_best_effort(self.tls);
@@ -217,6 +218,16 @@ pub struct AuthenticatedPhoneSession<S: Read + Write> {
     pub tls: StreamOwned<ServerConnection, S>,
     pub phone_id: String,
     pub session: Option<SessionIdentity>,
+    /// Bounded capabilities advertised in the accepted HELLO (empty before HELLO).
+    pub phone_capabilities: Vec<String>,
+}
+
+impl<S: Read + Write> AuthenticatedPhoneSession<S> {
+    pub fn supports_quality_control(&self) -> bool {
+        self.phone_capabilities
+            .iter()
+            .any(|capability| capability == crate::quality_control::QUALITY_CONTROL_CAPABILITY)
+    }
 }
 
 /// Contract section 4.1, pairing branch: runs the existing pairing handshake + CCP1
@@ -309,8 +320,20 @@ where
         }
     };
 
-    let device_id = match hello.payload() {
-        SessionFramePayload::HandshakeHello { device_id, .. } => device_id.clone(),
+    let (device_id, phone_capabilities) = match hello.payload() {
+        SessionFramePayload::HandshakeHello {
+            device_id,
+            capabilities,
+            ..
+        } => (
+            device_id.clone(),
+            capabilities
+                .iter()
+                .filter(|capability| capability.len() <= 64)
+                .take(32)
+                .cloned()
+                .collect::<Vec<_>>(),
+        ),
         _ => {
             let reject = SessionFrame::new(
                 hello.sequence().saturating_add(1),
@@ -390,6 +413,7 @@ where
     Ok(AuthenticatedPhoneSession {
         tls,
         phone_id,
+        phone_capabilities,
         session: Some(SessionIdentity {
             session_id: hello.session_id().to_string(),
             next_inbound_sequence,
