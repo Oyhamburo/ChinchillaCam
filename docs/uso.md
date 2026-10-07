@@ -207,6 +207,8 @@ La experiencia prevista debe permitir, cuando el dispositivo y el sistema lo per
 
 El modo automático debe priorizar fluidez y baja latencia con la mejor calidad posible. Los controles disponibles desde escritorio son una hipótesis hasta validar las APIs, permisos y comportamiento de cada teléfono.
 
+Estado actual (T26, pendiente de validar con hardware en M9): la pantalla de conexión del teléfono permite elegir la cámara, la resolución (1920 × 1080, 1280 × 720, 960 × 540 o 640 × 480) y los FPS (30, 24 o 15), o dejar el modo **Automático** (1280 × 720 a 30 FPS si la cámara lo admite). Las opciones que la cámara no admite aparecen deshabilitadas con el motivo. Si la sesión está activa, el cambio se aplica en vivo: el video se corta unos segundos mientras se reinicia la cámara, sin reconectar. El control desde la computadora todavía no existe.
+
 ## 7. Métricas visibles
 
 ChinchillaCam debe mostrar métricas entendibles para diagnosticar problemas:
@@ -279,6 +281,19 @@ Recuperación prevista:
 ### 9.5 Pantalla bloqueada o app en segundo plano
 
 La continuidad con pantalla bloqueada es una meta, no un hecho validado. Si falla, el producto debe informar que la sesión requiere mantener la app visible o el teléfono desbloqueado hasta completar la validación por dispositivo.
+
+### 9.6 Mensajes del teléfono y qué hacer
+
+Estado actual (T27, pendiente de validar con hardware en M9). El teléfono muestra un mensaje sin detalles técnicos y un botón para salir de la falla. Si la sesión se detiene por un error, además deja una notificación «ChinchillaCam se detuvo» que abre la app (en Android 13 o posterior, sólo si se aceptó el permiso de notificaciones).
+
+| Situación | Qué hacer |
+| --- | --- |
+| Se perdió la conexión con la computadora, se desconectó el cable o el envío se saturó | **Reintentar** vuelve a conectar con la última computadora usada. Revisá el cable y que la app de la computadora esté abierta. |
+| La computadora y el teléfono no se entendieron | Actualizá ChinchillaCam en los dos y tocá **Reintentar**. |
+| La computadora no reconoce al teléfono o cambió su identidad | **Vincular de nuevo** y escaneá el QR nuevo. |
+| No se pudo abrir la cámara o preparar el video durante la transmisión | **Reintentar cámara** reinicia sólo la cámara, sin desconectar. Cerrá otras apps que usen la cámara. |
+| Falta el permiso de cámara | **Abrir ajustes**, permití la cámara y volvé a la app. |
+| El QR venció, no es válido o falló la vinculación | **Vincular una computadora** y escaneá un QR nuevo. |
 
 ## 10. Criterio para declarar soporte real
 

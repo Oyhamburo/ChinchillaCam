@@ -45,6 +45,16 @@ Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Andro
    - Evidencia r2: RED observado por referencias sin implementar; fallas tipadas, última computadora en memoria y acciones de recuperación conectadas a la pantalla. Dos RED adicionales confirmaron que, sin sesión, reintentar cámara no tenía efecto y que volver a vincular duplicaba el botón de vinculación. Ahora la falla de cámara sin sesión ofrece reconexión manual sólo si hay última computadora; volver a vincular conserva únicamente Diagnóstico como acción secundaria. Pruebas focalizadas y suite completa con ensamblado y lint correctos (546 pruebas, 2 omitidas, 0 fallas).
 3. [x] r3 — notificación de error al terminar la sesión por falla. RED: `session_failure_posts_error_notification`. ~200 líneas.
    - Evidencia r3: RED observado por el notifier aún inexistente y GREEN focalizado; el cierre por falla conserva el mensaje en el estado visible y publica una notificación descartable tras retirar la de cámara. La alerta abre la pantalla de conexión y se cancela al iniciar otra sesión; el cierre voluntario o local no alerta. En Android 13+ se solicita el permiso una vez sin detener la conexión si se deniega. Canal «Errores» de importancia normal separado del canal de cámara de importancia baja; pruebas focalizadas, suite completa, ensamblado y lint correctos (553 pruebas, 2 omitidas, 0 fallas).
-4. [ ] r4 — cierre: suite completa, guía de problemas en `docs/uso.md`, plan general, push.
+4. [x] r4 — cierre: suite completa, guía de problemas en `docs/uso.md`, plan general, push.
+   - Evidencia r4: verificación independiente sobre `dd9a6b9`: 553 tests, 2 omitidos, 0 fallas; `assembleDebug` y `lintDebug` aprobados; revisión estática sin defectos (sin texto técnico en la UI, las cuatro acciones despachadas y con efecto en su estado, notificación sólo en fallas y cancelada al iniciar sesión, permiso pedido una vez y sólo en API 33+). Guía en `docs/uso.md` §6 y §9.6.
 
 ## 8. Evidencia
+
+- Commits: `d01205d` (r1, catálogo tipado), `183e6a9` (r2, acciones de recuperación), `dd9a6b9` (r3, notificación de error) y el commit de cierre.
+- Readback del orquestador: `SessionProtocolViolation` pasó de "Vincular de nuevo" a "Reintentar" (datos inesperados indican versiones distintas o un bug, no un problema de confianza); fuera de sesión, una falla de cámara ofrece "Reintentar" (reconectar) en lugar de "Reintentar cámara", que no hace nada sin sesión; "Vincular de nuevo" ya no se duplica con "Vincular una computadora".
+- Sin ejecutar: notificaciones, apertura de ajustes y permisos en un dispositivo real (M9).
+
+## 9. Seguimientos
+
+- "Sin cable" sigue siendo la espera `AwaitingAccessory` con Cancelar, no una falla con Reintentar.
+- Los rechazos TLS de reconexión no tienen subcausa tipada: todos ofrecen "Vincular de nuevo", incluso si fueran transitorios.
