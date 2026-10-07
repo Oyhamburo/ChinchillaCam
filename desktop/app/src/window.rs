@@ -5,6 +5,7 @@ use crate::{
     },
     paths::AppPaths,
     qr_image::qr_rgba,
+    version::version_label,
     video_output::LatestVideoFrame,
     video_view::{fit_size, initial_size},
     view_model::{AppState, QualityView},
@@ -301,7 +302,7 @@ impl eframe::App for ChinchillaCamWindow {
             .unwrap_or_default()
             .as_secs();
         let view = self.state.view(now);
-        ui.heading("ChinchillaCam");
+        ui.heading(version_label());
         ui.separator();
         ui.label(&view.status);
         if let Some(quality) = &view.quality {

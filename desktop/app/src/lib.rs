@@ -4,6 +4,7 @@ pub mod messages;
 pub mod nv12;
 pub mod paths;
 pub mod qr_image;
+pub mod version;
 pub mod video_output;
 pub mod video_view;
 pub mod video_watchdog;
