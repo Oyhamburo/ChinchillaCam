@@ -37,6 +37,11 @@ Runners: `cd desktop/usb-probe` y `cd desktop/app` con `PATH=$HOME/.cargo/bin:$P
 
 1. [x] d1 — test de contrato de privacidad (dependencias y red) y `trusted-phones.txt` con 0600. RED: `trusted_phone_file_is_private`. ~250 líneas.
    - Evidencia d1: RED observado (0644 ≠ 0600); GREEN 337/0 en usb-probe y 45/0 en app; fmt y clippy sin advertencias en ambos crates. Contrato sin infracciones detectadas; `tokio` sólo depende de `wasm-bindgen-futures`.
-2. [ ] d2 — `docs/uso.md` §8 con datos guardados; renumerar la guía de mensajes del desktop a §9.7 para no chocar con la del teléfono al integrar; cierre, plan general y push.
+2. [x] d2 — `docs/uso.md` §8 con datos guardados; renumerar la guía de mensajes del desktop a §9.7 para no chocar con la del teléfono al integrar; cierre, plan general y push.
+   - Evidencia d2: `docs/uso.md` §8.2 (datos, ubicación, permisos de archivo y cómo borrarlos) y guía de mensajes del desktop renumerada a §9.7. Suites reportadas por el writer de d1: `usb-probe` 337/0 y `desktop/app` 45/0; fmt y clippy limpios.
 
 ## 8. Evidencia
+
+- Commits: `8c7873f` (d1, archivo de teléfonos con 0600 y test de contrato de privacidad) y el commit de cierre.
+- El contrato no encontró infracciones: `tokio` sólo figura como dependencia de `wasm-bindgen-futures`.
+- Límite: análisis estático; la ausencia de tráfico en ejecución queda para M9 si se quiere con captura de red.

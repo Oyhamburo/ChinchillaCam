@@ -248,6 +248,17 @@ La primera versión se define con estas garantías de producto:
 
 La app debe explicar qué permisos usa y por qué. Cualquier telemetría remota, analítica, cuenta, backend o servidor público quedaría fuera del alcance actual y requeriría una decisión explícita de cambio de producto.
 
+### 8.2 Datos en la computadora
+
+Estado actual (T28, macOS), protegido por tests (`privacy_contract_test`, `trusted_phone_store_test`, `desktop_tls_identity_test`):
+
+| Dato | Dónde se guarda | Cómo borrarlo |
+| --- | --- | --- |
+| Identidad segura de la computadora (clave privada y certificado) | `~/Library/Application Support/ChinchillaCam/identity/` (carpeta 0700, archivo 0600) | Borrar la carpeta `ChinchillaCam`; la próxima vez se crea una identidad nueva y hay que volver a vincular los teléfonos |
+| Teléfonos vinculados (identificador, nombre y huella de su identidad) | `~/Library/Application Support/ChinchillaCam/trusted-phones.txt` (0600) | **Olvidar** en la lista de teléfonos, o borrar el archivo |
+
+La app de escritorio no guarda video, fotos ni audio, no tiene cuentas, no envía telemetría ni busca actualizaciones por Internet, y no abre puertos de red: hoy sólo se comunica con el teléfono por USB. El test de contrato rechaza dependencias de HTTP, telemetría, actualización automática o TLS del sistema, y limita las APIs de red a los módulos de prueba en `127.0.0.1`.
+
 ## 9. Fallos y recuperación
 
 La experiencia debe cubrir fallos comunes con mensajes claros.
@@ -293,7 +304,7 @@ Recuperación prevista:
 
 La continuidad con pantalla bloqueada es una meta, no un hecho validado. Si falla, el producto debe informar que la sesión requiere mantener la app visible o el teléfono desbloqueado hasta completar la validación por dispositivo.
 
-### 9.6 Mensajes de la app de escritorio y qué hacer
+### 9.7 Mensajes de la app de escritorio y qué hacer
 
 Estado actual (T27, pendiente de validar con hardware en M9). La app de escritorio muestra en rojo qué pasó y debajo una sugerencia. Un mismo aviso que se repite (por ejemplo, mientras no hay teléfono conectado) no parpadea ni se reinicia. La app sigue buscando el teléfono por USB sola; no hace falta reiniciarla.
 
