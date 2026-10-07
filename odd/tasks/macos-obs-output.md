@@ -44,6 +44,18 @@ Runner app: `cd desktop/app && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check 
    - Evidencia o2: RED observado: `presenter_publishes_only_the_newest_frame` falló al publicar [1, 2, 3] en vez de [3] (0 aprobadas, 1 fallida). GREEN: 5 pruebas del presentador y 25 pruebas de la aplicación aprobadas. Comprobaciones: `cargo fmt -- --check`, `cargo test --offline` y `cargo clippy --offline --all-targets -- -D warnings` aprobados.
 3. [x] o3 — cableado en `bootstrap` (sin hilo de descarte), viewport de video en la ventana, botón y guía OBS en `docs/uso.md`. RED: `production_frames_reach_the_shared_slot` (factory con decoder falso). ~250 líneas.
    - Evidencia o3: RED observado: `production_frames_reach_the_shared_slot` falló porque el consumidor estaba desconectado (0 aprobadas, 1 fallida); también fallaron inicialmente las 2 pruebas puras de ajuste y tamaño. GREEN: 12 pruebas unitarias y 16 de integración aprobadas. Corrección o3: viewport diferido con repintado propio para evitar que la ventana principal minimizada limite el video a la frecuencia de repintado de ventanas invisibles. Comprobaciones: `cargo fmt -- --check`, `cargo test --offline`, `cargo clippy --offline --all-targets -- -D warnings` y `cargo build --offline` aprobados. No se ejecutaron la interfaz gráfica, OBS ni pruebas con hardware; la validación real queda para M9.
-4. [ ] o4 — cierre: evidencia, `complete-webcam-product.md`, push.
+4. [x] o4 — cierre: evidencia, `complete-webcam-product.md`, push.
+   - Evidencia o4: verificación independiente sobre `1066da4`: `usb-probe` 334/0 y `desktop/app` 28/0; fmt, clippy y build `--offline` limpios; revisión estática sin defectos concretos. Revisión nativa: `inspect` volvió a resolver la base en `32d0401` (rama completa, ~180 rutas, por encima del presupuesto de lentes; mismo bug de la fachada que #7977/#8065/#8125); no se hizo START ni se reintentó.
 
 ## 8. Evidencia
+
+- Commits: `327dbae` (o1, conversión NV12 → RGBA), `217f47e` (o2, ranura del último fotograma y presentador), `1066da4` (o3, cableado, ventana de video diferida y guía OBS) y el commit de cierre.
+- Readback del orquestador: detectó que el viewport inmediato dependía del repintado de la ventana principal (eframe limita a 100 ms los repintados de una ventana minimizada); se corrigió con un viewport diferido que se repinta en cada fotograma nuevo.
+- Sin ejecutar: lanzamiento gráfico, OBS (no instalado en esta Mac) ni hardware; queda para M9 (T36).
+
+## 9. Seguimientos
+
+- Leer la matriz de color de la VUI del SPS en lugar de elegirla por altura.
+- Conversión NV12 → RGBA en CPU escalar: medir con 1080p en release; si no alcanza, convertir en GPU (shader) o pasar a Syphon.
+- La ventana principal se repinta en cada fotograma mientras está visible; acotarlo si el costo de CPU se nota.
+- Revisión nativa de `327dbae..1066da4` pendiente del arreglo de la fachada.
