@@ -13,11 +13,17 @@ data class ConnectionScreenInput(
     val identityRegenerated: Boolean = false,
     val cameraStatus: VisibleCameraServiceStatus? = null,
     val quality: QualityControlsPlan? = null,
+    val lastDesktopId: String? = null,
+    val cameraPermissionDenied: Boolean = false,
 )
 
 /** Buttons the screen can show, with their Spanish labels; the activity maps each id to an operation. */
 enum class ConnectionAction(val label: String) {
     START_PAIRING("Vincular una computadora"),
+    RETRY("Reintentar"),
+    RETRY_CAMERA("Reintentar cámara"),
+    OPEN_APP_SETTINGS("Abrir ajustes"),
+    PAIR_AGAIN("Vincular de nuevo"),
     DIAGNOSTICS("Diagnóstico"),
     PASTE_CODE("Pegar código"),
     SUBMIT_PASTED("Usar código"),
@@ -72,12 +78,12 @@ object ConnectionScreenPlanner {
             state is PhoneConnectionState.Idle -> {
                 status = READY
                 stateNotice = state.notice
-                actions = listOf(ConnectionAction.START_PAIRING, ConnectionAction.DIAGNOSTICS)
+                actions = failureActions(input, state.cause?.let(UserFailureCatalog::actionFor), null)
             }
             state is PhoneConnectionState.Failed -> {
                 status = FAILED
                 stateNotice = state.message
-                actions = listOf(ConnectionAction.START_PAIRING, ConnectionAction.DIAGNOSTICS)
+                actions = failureActions(input, null, state.kind)
             }
             state is PhoneConnectionState.AwaitingAccessory -> {
                 status = if (state.purpose is AccessoryPurpose.Pairing) CONNECT_CABLE_TO_PAIR else PhoneConnectionMessages.CONNECT_CABLE
@@ -100,7 +106,11 @@ object ConnectionScreenPlanner {
                 val connected = state as PhoneConnectionState.Connected
                 status = "Transmitiendo a «${connected.desktopName}»."
                 stateNotice = cameraNotice(input.cameraStatus)
-                actions = listOf(ConnectionAction.DISCONNECT)
+                actions = if (input.cameraStatus?.state == VisibleCameraServiceState.Error) {
+                    val recovery = if (input.cameraStatus.cause == FailureCause.CameraPermissionDenied)
+                        ConnectionAction.OPEN_APP_SETTINGS else ConnectionAction.RETRY_CAMERA
+                    listOf(recovery, ConnectionAction.DISCONNECT)
+                } else listOf(ConnectionAction.DISCONNECT)
             }
         }
         val rows = if (scanning) emptyList() else trustedRows(input.trusted, canConnect = idle)
@@ -117,6 +127,28 @@ object ConnectionScreenPlanner {
             emptyTrustedText = NO_TRUSTED_DESKTOPS.takeIf { !scanning && rows.isEmpty() },
             quality = input.quality.takeIf { idle || state is PhoneConnectionState.Connected },
         )
+    }
+
+    private fun failureActions(input: ConnectionScreenInput, recovery: RecoveryAction?, kind: ConnectionFailureKind?): List<ConnectionAction> {
+        val primary = when {
+            input.cameraPermissionDenied -> ConnectionAction.OPEN_APP_SETTINGS
+            recovery != null -> when (recovery) {
+                RecoveryAction.None -> null
+                RecoveryAction.Retry -> ConnectionAction.RETRY
+                RecoveryAction.RetryCamera -> ConnectionAction.RETRY
+                RecoveryAction.OpenAppSettings -> ConnectionAction.OPEN_APP_SETTINGS
+                RecoveryAction.PairAgain -> ConnectionAction.PAIR_AGAIN
+                RecoveryAction.Disconnect -> ConnectionAction.DISCONNECT
+            }
+            kind == ConnectionFailureKind.DESKTOP_NOT_TRUSTED || kind == ConnectionFailureKind.RECONNECT_TLS_REJECTED -> ConnectionAction.PAIR_AGAIN
+            kind == ConnectionFailureKind.QR_INVALID || kind == ConnectionFailureKind.QR_EXPIRED ||
+                kind == ConnectionFailureKind.PAIRING_FAILED -> ConnectionAction.START_PAIRING
+            kind == ConnectionFailureKind.FORGET_FAILED || kind == null -> null
+            else -> ConnectionAction.RETRY
+        }
+        val pairing = if (primary == ConnectionAction.PAIR_AGAIN) emptyList() else listOf(ConnectionAction.START_PAIRING)
+        return (listOfNotNull(primary?.takeUnless { it == ConnectionAction.RETRY && input.lastDesktopId == null }) +
+            pairing + ConnectionAction.DIAGNOSTICS).distinct()
     }
 
     private fun cameraNotice(camera: VisibleCameraServiceStatus?): String? = when (camera?.state) {

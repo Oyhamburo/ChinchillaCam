@@ -41,7 +41,8 @@ Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Andro
 
 1. [x] r1 — catálogo tipado de fallas de cámara/pipeline y de fin de sesión, sin texto técnico en la UI. RED: `camera_open_failure_shows_spanish_message_without_platform_reason`. ~300 líneas.
    - Evidencia r1: RED observado al exponer el motivo de plataforma en la apertura; el catálogo en español separa mensaje y causa, y la causa llega al estado visible de cámara y al fin de sesión sin mostrar el detalle técnico. Una infracción de protocolo indica incompatibilidad o falla, no pérdida de confianza: se recomienda actualizar y reintentar, sin volver a vincular.
-2. [ ] r2 — acciones de recuperación en la pantalla de conexión (Reintentar, Abrir ajustes, Vincular de nuevo, Reintentar cámara). RED: `failed_connection_offers_retry_for_last_desktop`. ~350 líneas.
+2. [x] r2 — acciones de recuperación en la pantalla de conexión (Reintentar, Abrir ajustes, Vincular de nuevo, Reintentar cámara). RED: `failed_connection_offers_retry_for_last_desktop`. ~350 líneas.
+   - Evidencia r2: RED observado por referencias sin implementar; fallas tipadas, última computadora en memoria y acciones de recuperación conectadas a la pantalla. Dos RED adicionales confirmaron que, sin sesión, reintentar cámara no tenía efecto y que volver a vincular duplicaba el botón de vinculación. Ahora la falla de cámara sin sesión ofrece reconexión manual sólo si hay última computadora; volver a vincular conserva únicamente Diagnóstico como acción secundaria. Pruebas focalizadas y suite completa con ensamblado y lint correctos (546 pruebas, 2 omitidas, 0 fallas).
 3. [ ] r3 — notificación de error al terminar la sesión por falla. RED: `session_failure_posts_error_notification`. ~200 líneas.
 4. [ ] r4 — cierre: suite completa, guía de problemas en `docs/uso.md`, plan general, push.
 

@@ -7,6 +7,10 @@ import dev.chinchillacam.usbprobe.ConnectionAction.DIAGNOSTICS
 import dev.chinchillacam.usbprobe.ConnectionAction.DISCONNECT
 import dev.chinchillacam.usbprobe.ConnectionAction.PASTE_CODE
 import dev.chinchillacam.usbprobe.ConnectionAction.REJECT_PAIRING
+import dev.chinchillacam.usbprobe.ConnectionAction.RETRY
+import dev.chinchillacam.usbprobe.ConnectionAction.RETRY_CAMERA
+import dev.chinchillacam.usbprobe.ConnectionAction.OPEN_APP_SETTINGS
+import dev.chinchillacam.usbprobe.ConnectionAction.PAIR_AGAIN
 import dev.chinchillacam.usbprobe.ConnectionAction.START_PAIRING
 import dev.chinchillacam.usbprobe.ConnectionAction.SUBMIT_PASTED
 import org.junit.Assert.assertEquals
@@ -18,6 +22,105 @@ import org.junit.Test
 /** TDD for task c6a (`odd/tasks/android-production-connection.md` §4.6): [ConnectionScreenPlanner]. */
 class ConnectionScreenPlannerTest {
     private val trusted = listOf(record("pc-2", "Studio"), record("pc-old", "Antigua", revokedAt = 1_500), record("pc-1", "casa"))
+
+    @Test
+    fun failed_connection_offers_retry_for_last_desktop() {
+        val plan = ConnectionScreenPlanner.plan(ConnectionScreenInput(
+            state = PhoneConnectionState.Failed(PhoneConnectionMessages.CONNECTION_FAILED, ConnectionFailureKind.CONNECTION_FAILED),
+            lastDesktopId = "pc-1",
+        ))
+        assertEquals(listOf(ConnectionAction.RETRY, START_PAIRING, DIAGNOSTICS), plan.actions)
+    }
+
+    @Test
+    fun failedKindsChooseTypedRecoveryWithoutDuplicates() {
+        val cases = ConnectionFailureKind.values().associateWith { kind -> when (kind) {
+            ConnectionFailureKind.QR_INVALID, ConnectionFailureKind.QR_EXPIRED, ConnectionFailureKind.PAIRING_FAILED,
+            ConnectionFailureKind.FORGET_FAILED -> START_PAIRING
+            ConnectionFailureKind.DESKTOP_NOT_TRUSTED, ConnectionFailureKind.RECONNECT_TLS_REJECTED -> PAIR_AGAIN
+            else -> RETRY
+        } }
+        cases.forEach { (kind, primary) ->
+            val actions = ConnectionScreenPlanner.plan(ConnectionScreenInput(
+                PhoneConnectionState.Failed(PhoneConnectionMessages.messageFor(kind), kind), lastDesktopId = "pc-1",
+            )).actions
+            val pairing = if (primary == PAIR_AGAIN) emptyList() else listOf(START_PAIRING)
+            assertEquals(kind.name, (listOf(primary) + pairing + DIAGNOSTICS).distinct(), actions)
+            assertEquals(kind.name, actions.size, actions.distinct().size)
+        }
+        assertEquals(listOf(START_PAIRING, DIAGNOSTICS), ConnectionScreenPlanner.plan(ConnectionScreenInput(
+            PhoneConnectionState.Failed(PhoneConnectionMessages.USB_OPEN_FAILED, ConnectionFailureKind.USB_OPEN_FAILED),
+        )).actions)
+    }
+
+    @Test
+    fun idle_camera_failure_reconnects_instead_of_retrying_disconnected_camera() {
+        for (cause in listOf(FailureCause.CameraUnavailable, FailureCause.CameraOpenFailed, FailureCause.EncoderFailed,
+            FailureCause.CaptureFailed, FailureCause.CameraStopFailed)) {
+            val idle = PhoneConnectionState.Idle(UserFailureCatalog.messageFor(cause), cause)
+            assertEquals(cause.name, listOf(RETRY, START_PAIRING, DIAGNOSTICS), ConnectionScreenPlanner.plan(ConnectionScreenInput(
+                idle, lastDesktopId = "pc-1",
+            )).actions)
+            assertEquals(cause.name, listOf(START_PAIRING, DIAGNOSTICS), ConnectionScreenPlanner.plan(ConnectionScreenInput(idle)).actions)
+        }
+    }
+
+    @Test
+    fun pair_again_does_not_duplicate_pairing_button() {
+        for (kind in listOf(ConnectionFailureKind.DESKTOP_NOT_TRUSTED, ConnectionFailureKind.RECONNECT_TLS_REJECTED)) {
+            assertEquals(kind.name, listOf(PAIR_AGAIN, DIAGNOSTICS), ConnectionScreenPlanner.plan(ConnectionScreenInput(
+                PhoneConnectionState.Failed(PhoneConnectionMessages.messageFor(kind), kind), lastDesktopId = "pc-1",
+            )).actions)
+        }
+    }
+
+    @Test
+    fun tlsPinRejectionIsTypedForPairAgainWithoutExposingTechnicalDetail() {
+        val kind = PhoneConnectionMessages.kindForRejection(UsbTrustedReconnectResult.Rejected.TlsRejected("pc-1", "secret TLS detail"))
+        assertEquals(ConnectionFailureKind.RECONNECT_TLS_REJECTED, kind)
+        assertEquals(PhoneConnectionMessages.CONNECTION_FAILED, PhoneConnectionMessages.messageFor(kind))
+    }
+
+    @Test
+    fun idleCausesAndLocalPermissionDenialOfferRecovery() {
+        val expected = mapOf(
+            FailureCause.SessionPeerDead to RETRY,
+            FailureCause.SessionReadFailed to RETRY,
+            FailureCause.SessionWriteFailed to RETRY,
+            FailureCause.VideoSendFailed to RETRY,
+            FailureCause.VideoSaturated to RETRY,
+            FailureCause.SessionProtocolViolation to RETRY,
+            FailureCause.CameraUnavailable to RETRY,
+            FailureCause.CameraOpenFailed to RETRY,
+            FailureCause.EncoderFailed to RETRY,
+            FailureCause.CaptureFailed to RETRY,
+            FailureCause.CameraStopFailed to RETRY,
+            FailureCause.CameraPermissionDenied to OPEN_APP_SETTINGS,
+        )
+        assertEquals(FailureCause.values().toSet() - FailureCause.SessionLocalClose, expected.keys)
+        expected.forEach { (cause, action) ->
+            assertEquals(cause.name, listOf(action, START_PAIRING, DIAGNOSTICS), ConnectionScreenPlanner.plan(ConnectionScreenInput(
+                PhoneConnectionState.Idle(UserFailureCatalog.messageFor(cause), cause), lastDesktopId = "pc-1",
+            )).actions)
+        }
+        for (cause in listOf(FailureCause.SessionPeerDead, FailureCause.SessionLocalClose)) {
+            assertEquals(listOf(START_PAIRING, DIAGNOSTICS), ConnectionScreenPlanner.plan(ConnectionScreenInput(
+                PhoneConnectionState.Idle("error", cause),
+            )).actions)
+        }
+        assertEquals(listOf(OPEN_APP_SETTINGS, START_PAIRING, DIAGNOSTICS), ConnectionScreenPlanner.plan(ConnectionScreenInput(
+            PhoneConnectionState.Idle(), cameraPermissionDenied = true,
+        )).actions)
+    }
+
+    @Test
+    fun connectedCameraErrorOffersRetryOrSettingsAndDisconnect() {
+        val connected = PhoneConnectionState.Connected("pc-1", "Studio")
+        for ((cause, action) in listOf(FailureCause.CameraOpenFailed to RETRY_CAMERA, FailureCause.CameraPermissionDenied to OPEN_APP_SETTINGS)) {
+            val status = VisibleCameraServiceStatus(VisibleCameraServiceState.Error, message = "Error.", cause = cause)
+            assertEquals(listOf(action, DISCONNECT), plan(connected, camera = status).actions)
+        }
+    }
 
     @Test
     fun pendingPairingShowsShortCodeAndConfirmButtons() {
@@ -92,7 +195,7 @@ class ConnectionScreenPlannerTest {
             val plan = plan(connected, camera = camera)
             assertEquals("Transmitiendo a «Studio».", plan.status)
             assertEquals(notice, plan.notice)
-            assertEquals(listOf(DISCONNECT), plan.actions)
+            assertEquals(if (camera?.state == VisibleCameraServiceState.Error) listOf(RETRY_CAMERA, DISCONNECT) else listOf(DISCONNECT), plan.actions)
             assertEquals("Desconectar", DISCONNECT.label)
             assertEquals(listOf(false to true, false to true), plan.trustedRows.map { it.canConnect to it.canForget })
         }

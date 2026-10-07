@@ -111,7 +111,7 @@ class PhoneConnectionControllerTest {
         awaitState<PhoneConnectionState.ConfirmPairing>()
         controller.confirmPairing()
 
-        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.DESKTOP_REJECTED), awaitState<PhoneConnectionState.Failed>())
+        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.DESKTOP_REJECTED, ConnectionFailureKind.DESKTOP_REJECTED), awaitState<PhoneConnectionState.Failed>())
         assertEquals(null, store.lookup("pc-1"))
         assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
         assertTrue(launcher.launches.isEmpty())
@@ -130,13 +130,39 @@ class PhoneConnectionControllerTest {
     }
 
     @Test
+    fun retryReconnectsLastDesktopAfterSessionFailureAndForgetClearsIt() {
+        seedTrust()
+        source.enqueue(Desktop.ReconnectAccept, Desktop.ReconnectAccept)
+        controller.connect("pc-1")
+        awaitState<PhoneConnectionState.Connected>()
+        assertEquals("pc-1", controller.lastDesktopId())
+        launcher.launches[0].onEnded(SessionEndNotice("Se perdió la conexión.", FailureCause.SessionPeerDead))
+        awaitState<PhoneConnectionState.Idle>()
+        controller.lastDesktopId()?.let(controller::connect)
+        awaitState<PhoneConnectionState.Connected>()
+        assertEquals(listOf("pc-1", "pc-1"), launcher.launches.map { it.reconnected.desktopId })
+        controller.forget("pc-1")
+        drainWorker()
+        assertEquals(null, controller.lastDesktopId())
+    }
+
+    @Test
+    fun failedConnectRemembersAttemptedDesktopForManualRetry() {
+        seedTrust()
+        source.attached = false
+        controller.connect("pc-1")
+        awaitState<PhoneConnectionState.AwaitingAccessory>()
+        assertEquals("pc-1", controller.lastDesktopId())
+    }
+
+    @Test
     fun launchFailureClosesChannelAndReleasesAuthority() {
         seedTrust()
         source.enqueue(Desktop.ReconnectAccept)
         launcher.failNext = true
         controller.connect("pc-1")
 
-        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.SESSION_START_FAILED), awaitState<PhoneConnectionState.Failed>())
+        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.SESSION_START_FAILED, ConnectionFailureKind.SESSION_START_FAILED), awaitState<PhoneConnectionState.Failed>())
         assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
         assertNotNull("trust survives a launch failure", store.lookup("pc-1"))
     }
@@ -223,10 +249,10 @@ class PhoneConnectionControllerTest {
         awaitState<PhoneConnectionState.ConfirmPairing>()
 
         controller.accessoryDetached()
-        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.USB_DETACHED), awaitState<PhoneConnectionState.Failed>())
+        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.USB_DETACHED, ConnectionFailureKind.USB_DETACHED), awaitState<PhoneConnectionState.Failed>())
         controller.confirmPairing()
         drainWorker()
-        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.USB_DETACHED), controller.snapshot())
+        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.USB_DETACHED, ConnectionFailureKind.USB_DETACHED), controller.snapshot())
         assertEquals(null, store.lookup("pc-1"))
         assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
         // tearDown() then proves the pairing channel was closed: the fake desktop only exits on close.
@@ -235,7 +261,7 @@ class PhoneConnectionControllerTest {
     @Test
     fun invalidQrFails() {
         controller.qrScanned("CHINCHILLACAM-PAIR:v1:garbage")
-        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.QR_INVALID), awaitState<PhoneConnectionState.Failed>())
+        assertEquals(PhoneConnectionState.Failed(PhoneConnectionMessages.QR_INVALID, ConnectionFailureKind.QR_INVALID), awaitState<PhoneConnectionState.Failed>())
         controller.qrScanned(qrText(expiresAt = 900))
         awaitState<PhoneConnectionState.Failed> { it.message == PhoneConnectionMessages.QR_EXPIRED }
     }
@@ -252,7 +278,7 @@ class PhoneConnectionControllerTest {
         controller.qrScanned("CHINCHILLACAM-PAIR:v1:garbage")
         awaitState<PhoneConnectionState.Failed>()
         drainWorker()
-        assertEquals(listOf<PhoneConnectionState>(PhoneConnectionState.Failed(PhoneConnectionMessages.QR_INVALID)), kept)
+        assertEquals(listOf<PhoneConnectionState>(PhoneConnectionState.Failed(PhoneConnectionMessages.QR_INVALID, ConnectionFailureKind.QR_INVALID)), kept)
         assertTrue(removed.isEmpty())
     }
 

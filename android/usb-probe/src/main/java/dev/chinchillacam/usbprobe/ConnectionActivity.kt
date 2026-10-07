@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.graphics.SurfaceTexture
 import android.graphics.Typeface
 import android.hardware.camera2.CameraManager
@@ -17,6 +18,7 @@ import android.hardware.usb.UsbManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.TextureView
@@ -184,6 +186,12 @@ class ConnectionActivity : Activity() {
         localNotice = null
         when (action) {
             ConnectionAction.START_PAIRING -> withCameraPermission { scanning = true }
+            ConnectionAction.PAIR_AGAIN -> withCameraPermission { scanning = true }
+            ConnectionAction.RETRY -> bound.lastDesktopId()?.let(::connectTo)
+            ConnectionAction.RETRY_CAMERA -> retryCamera()
+            ConnectionAction.OPEN_APP_SETTINGS -> runCatching {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+            }.onFailure { localNotice = "No se pudieron abrir los ajustes de la app." }
             ConnectionAction.CANCEL_SCAN -> leaveScan()
             ConnectionAction.PASTE_CODE -> pasteVisible = true
             ConnectionAction.SUBMIT_PASTED -> {
@@ -301,7 +309,10 @@ class ConnectionActivity : Activity() {
     private fun render() {
         val cameraStatus = VisibleCameraServiceStatusStore.snapshot()
         val quality = cameraCatalog?.let { QualityControlsPlanner.plan(it, selectedCameraId, qualityPreference) }
-        val plan = ConnectionScreenPlanner.plan(ConnectionScreenInput(state, scanning, pasteVisible, trusted, identityRegenerated, cameraStatus, quality))
+        val plan = ConnectionScreenPlanner.plan(ConnectionScreenInput(
+            state, scanning, pasteVisible, trusted, identityRegenerated, cameraStatus, quality,
+            lastDesktopId = controller?.lastDesktopId(), cameraPermissionDenied = localNotice == CAMERA_DENIED,
+        ))
         if (scanning && !plan.showScanner) {
             scanning = false
             pasteVisible = false
@@ -380,6 +391,13 @@ class ConnectionActivity : Activity() {
                 .onFailure { localNotice = "No se pudo aplicar la calidad de cámara. Intentá nuevamente." }
         }
         render()
+    }
+
+    private fun retryCamera() {
+        if (state !is PhoneConnectionState.Connected) return
+        val effectiveId = cameraCatalog?.let { QualityControlsPlanner.plan(it, selectedCameraId, qualityPreference).effectiveCameraId }
+        runCatching { PhoneConnectionRuntime.applyCameraQuality(this, effectiveId) }
+            .onFailure { localNotice = "No se pudo reiniciar la cámara. Intentá nuevamente." }
     }
 
     private fun renderQuality(plan: QualityControlsPlan) {

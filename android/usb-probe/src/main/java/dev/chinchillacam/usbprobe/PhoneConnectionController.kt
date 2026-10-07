@@ -42,7 +42,7 @@ sealed class PhoneConnectionState {
     data class AwaitingDesktopConfirmation(val desktopName: String) : PhoneConnectionState()
     data class Connecting(val desktopName: String) : PhoneConnectionState()
     data class Connected(val desktopId: String, val desktopName: String) : PhoneConnectionState()
-    data class Failed(val message: String) : PhoneConnectionState()
+    data class Failed(val message: String, val kind: ConnectionFailureKind? = null) : PhoneConnectionState()
 }
 
 /**
@@ -78,6 +78,9 @@ class PhoneConnectionController(
     private val listeners = CopyOnWriteArrayList<(PhoneConnectionState) -> Unit>()
 
     @Volatile private var state: PhoneConnectionState = PhoneConnectionState.Idle()
+    @Volatile private var lastDesktop: String? = null
+
+    fun lastDesktopId(): String? = lastDesktop
 
     // Worker-confined.
     private var pendingQr: PairingQrPayload? = null
@@ -103,7 +106,7 @@ class PhoneConnectionController(
     fun qrScanned(text: String) = post {
         if (!isIdle()) return@post
         val qr = PairingQrPayloadCodec.decode(text, epochSecondsSource.nowEpochSeconds()).getOrElse { error ->
-            fail(if (error is PairingQrPayloadDecodeError.Expired) PhoneConnectionMessages.QR_EXPIRED else PhoneConnectionMessages.QR_INVALID)
+            fail(if (error is PairingQrPayloadDecodeError.Expired) ConnectionFailureKind.QR_EXPIRED else ConnectionFailureKind.QR_INVALID)
             return@post
         }
         pendingQr = qr
@@ -122,22 +125,22 @@ class PhoneConnectionController(
         val id = pendingId ?: return@post
         clearPending()
         val outcome = runCatching { pairingFlow.confirm(id, store, authority) }.getOrElse {
-            fail(PhoneConnectionMessages.PAIRING_FAILED)
+            fail(ConnectionFailureKind.PAIRING_FAILED)
             return@post
         }
         val channel = outcome.channel
         when (val result = outcome.result) {
             is PendingPairingConfirmResult.Activated -> if (channel == null) {
                 rollBackPairing(result.desktopId)
-                return@post fail(PhoneConnectionMessages.PAIRING_FAILED)
+                return@post fail(ConnectionFailureKind.PAIRING_FAILED)
             } else {
                 startFirstSession(result.desktopId, confirming.desktopName, channel)
             }
             is PendingPairingConfirmResult.TrustedButInactive -> {
                 runCatching { store.forget(result.desktopId) }
-                fail(PhoneConnectionMessages.SECOND_ACTIVE_DESKTOP)
+                fail(ConnectionFailureKind.SECOND_ACTIVE_DESKTOP)
             }
-            is PendingPairingConfirmResult.Rejected -> fail(PhoneConnectionMessages.PAIRING_FAILED)
+            is PendingPairingConfirmResult.Rejected -> fail(ConnectionFailureKind.PAIRING_FAILED)
         }
     }
 
@@ -159,6 +162,7 @@ class PhoneConnectionController(
     /** Valid from `Idle`/`Failed`. */
     fun connect(desktopId: String) = post {
         if (!isIdle()) return@post
+        lastDesktop = desktopId
         openFor(AccessoryPurpose.Connect(desktopId))
     }
 
@@ -168,7 +172,10 @@ class PhoneConnectionController(
     /** Disconnects first if connected to [desktopId], then forgets it; listeners are re-notified so the list can refresh. */
     fun forget(desktopId: String) = post {
         if (session?.desktopId == desktopId) endSession(PhoneConnectionMessages.DISCONNECTED)
-        if (runCatching { store.forget(desktopId) }.isFailure) fail(PhoneConnectionMessages.FORGET_FAILED) else publish(state)
+        if (runCatching { store.forget(desktopId) }.isFailure) fail(ConnectionFailureKind.FORGET_FAILED) else {
+            if (lastDesktop == desktopId) lastDesktop = null
+            publish(state)
+        }
     }
 
     /**
@@ -182,7 +189,7 @@ class PhoneConnectionController(
             is PhoneConnectionState.ConfirmPairing -> {
                 runCatching { pairingFlow.reject() }
                 clearPending()
-                fail(PhoneConnectionMessages.USB_DETACHED)
+                fail(ConnectionFailureKind.USB_DETACHED)
             }
             else -> Unit
         }
@@ -195,8 +202,8 @@ class PhoneConnectionController(
                 is AccessoryPurpose.Connect -> reconnectTo(purpose.desktopId, opened.transport)
             }
             AccessoryTransportOpenResult.NotAttached -> publish(PhoneConnectionState.AwaitingAccessory(purpose))
-            AccessoryTransportOpenResult.PermissionDenied -> abandon(PhoneConnectionMessages.USB_PERMISSION_DENIED)
-            is AccessoryTransportOpenResult.Failed -> abandon(PhoneConnectionMessages.USB_OPEN_FAILED)
+            AccessoryTransportOpenResult.PermissionDenied -> abandon(ConnectionFailureKind.USB_PERMISSION_DENIED)
+            is AccessoryTransportOpenResult.Failed -> abandon(ConnectionFailureKind.USB_OPEN_FAILED)
         }
     }
 
@@ -211,7 +218,7 @@ class PhoneConnectionController(
             // Rejections before the proof step leave the transport with us; closing twice is harmless.
             runCatching { transport.close() }
             val expired = started is PendingPairingStartResult.Rejected.Expired
-            return abandon(if (expired) PhoneConnectionMessages.QR_EXPIRED else PhoneConnectionMessages.PAIRING_FAILED)
+            return abandon(if (expired) ConnectionFailureKind.QR_EXPIRED else ConnectionFailureKind.PAIRING_FAILED)
         }
         pendingId = summary.pendingId
         val shortCode = PairingShortCode.derive(qr.trustMaterial, phoneSpki, summary.qrNonce, summary.challengeNonce)
@@ -228,11 +235,11 @@ class PhoneConnectionController(
             is PairedSessionStartResult.Started -> launchSession(started.reconnected, desktopName)
             is PairedSessionStartResult.Rejected -> {
                 rollBackPairing(desktopId)
-                fail(PhoneConnectionMessages.forRejection(started.rejection))
+                fail(PhoneConnectionMessages.kindForRejection(started.rejection))
             }
             is PairedSessionStartResult.ExchangeFailed -> {
                 rollBackPairing(desktopId)
-                fail(PhoneConnectionMessages.PAIRING_FAILED)
+                fail(ConnectionFailureKind.PAIRING_FAILED)
             }
         }
     }
@@ -242,11 +249,11 @@ class PhoneConnectionController(
         publish(PhoneConnectionState.Connecting(desktopName))
         val result = runCatching { reconnect.reconnect(desktopId, transport, store, authority) }.getOrElse {
             runCatching { transport.close() }
-            return fail(PhoneConnectionMessages.CONNECTION_FAILED)
+            return fail(ConnectionFailureKind.CONNECTION_FAILED)
         }
         when (result) {
             is UsbTrustedReconnectResult.Reconnected -> launchSession(result, desktopName)
-            is UsbTrustedReconnectResult.Rejected -> fail(PhoneConnectionMessages.forRejection(result))
+            is UsbTrustedReconnectResult.Rejected -> fail(PhoneConnectionMessages.kindForRejection(result))
         }
     }
 
@@ -260,8 +267,9 @@ class PhoneConnectionController(
         val handle = runCatching { sessionLauncher.launch(reconnected, onEnded) }.getOrElse {
             runCatching { reconnected.channel.close() }
             authority.stopActiveDesktop(reconnected.desktopId)
-            return fail(PhoneConnectionMessages.SESSION_START_FAILED)
+            return fail(ConnectionFailureKind.SESSION_START_FAILED)
         }
+        lastDesktop = reconnected.desktopId
         launched = LiveSession(reconnected.desktopId, handle).also { session = it }
         publish(PhoneConnectionState.Connected(reconnected.desktopId, desktopName))
     }
@@ -290,9 +298,9 @@ class PhoneConnectionController(
     }
 
     /** Fails a pairing/connection attempt that never got a pending, dropping any kept QR. */
-    private fun abandon(message: String) {
+    private fun abandon(kind: ConnectionFailureKind) {
         clearPending()
-        fail(message)
+        fail(kind)
     }
 
     private fun clearPending() {
@@ -302,7 +310,7 @@ class PhoneConnectionController(
 
     private fun isIdle(): Boolean = state is PhoneConnectionState.Idle || state is PhoneConnectionState.Failed
 
-    private fun fail(message: String) = publish(PhoneConnectionState.Failed(message))
+    private fun fail(kind: ConnectionFailureKind) = publish(PhoneConnectionState.Failed(PhoneConnectionMessages.messageFor(kind), kind))
 
     private fun publish(next: PhoneConnectionState) {
         state = next

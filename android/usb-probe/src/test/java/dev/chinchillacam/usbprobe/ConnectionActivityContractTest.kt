@@ -61,6 +61,20 @@ class ConnectionActivityContractTest {
     }
 
     @Test
+    fun recoveryActionsDispatchToExistingConnectionCameraAndSettingsPaths() {
+        val dispatch = body("onAction")
+        assertTrue(dispatch.contains("ConnectionAction.RETRY -> bound.lastDesktopId()?.let(::connectTo)"))
+        assertTrue("retry must keep permission prompts and worker dispatch", body("connectTo").contains("withCameraPermission { withUsbPermission { bound.connect(desktopId) } }"))
+        assertTrue(dispatch.contains("ConnectionAction.RETRY_CAMERA -> retryCamera()"))
+        assertTrue(body("retryCamera").contains("PhoneConnectionRuntime.applyCameraQuality(this, effectiveId)"))
+        assertTrue(body("retryCamera").contains(".onFailure { localNotice ="))
+        assertTrue(dispatch.contains("ConnectionAction.OPEN_APP_SETTINGS -> runCatching"))
+        assertTrue(dispatch.contains("Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts(\"package\", packageName, null))"))
+        assertTrue(dispatch.contains("ConnectionAction.PAIR_AGAIN -> withCameraPermission { scanning = true }"))
+        assertTrue(body("render").contains("cameraPermissionDenied = localNotice == CAMERA_DENIED"))
+    }
+
+    @Test
     fun scannerUsesCamera2AndClosesWhenLeavingTheScreen() {
         assertContains("the scanner must be the Camera2 QR scanner", """Camera2QrScanner\(""")
         assertTrue("onPause must close the scanner", body("onPause").contains("closeScanner()"))
