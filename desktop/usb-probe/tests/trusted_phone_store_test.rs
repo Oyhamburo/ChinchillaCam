@@ -37,6 +37,31 @@ fn trusted_phone_store_persists_identity_without_private_keys() {
     cleanup(path);
 }
 
+#[cfg(unix)]
+#[test]
+fn trusted_phone_file_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = unique_store_path("private");
+    let store = FileTrustedPhoneStore::new(&path);
+    let identity = TrustedPhoneIdentity::new("phone-private", "Private", vec![1]).unwrap();
+
+    store.trust(identity.clone()).unwrap();
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    store.trust(identity).unwrap();
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "a new private temp file must replace a previously loose store"
+    );
+    cleanup(path);
+}
+
 #[test]
 fn trusted_phone_store_initializes_missing_parent_directory() {
     let path = unique_store_path("fresh-install")

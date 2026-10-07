@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -318,7 +318,16 @@ impl FileTrustedPhoneStore {
         }
         let tmp_path = self.unique_temp_path();
         let tmp_guard = TempFileGuard::new(tmp_path.clone());
-        fs::write(&tmp_path, text)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut tmp_file = options.open(&tmp_path)?;
+        tmp_file.write_all(text.as_bytes())?;
+        drop(tmp_file);
         fs::rename(&tmp_path, &self.path)?;
         tmp_guard.disarm();
         Ok(())
