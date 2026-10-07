@@ -95,6 +95,24 @@ class VisibleCameraForegroundServiceOwnershipTest {
     }
 
     @Test
+    fun failedLauncherCauseReachesVisibleServiceStatus() {
+        val launcher = object : VisibleCameraPipelineLauncher {
+            override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String?, cameraPermissionGranted: Boolean, encoderConfig: H264EncoderConfig) =
+                VisibleCameraPipelineLaunchResult.Failed("platform-secret", FailureCause.EncoderFailed)
+        }
+        val pipeline = ControllerVisibleCameraServicePipeline(VisibleCameraPipelineController(
+            launcher, H264EncoderConfig(1280, 720, 2_000_000, 30, 2),
+        ))
+        val owner = VisibleCameraForegroundServicePipelineOwner(pipeline, VisibleCameraServiceDrainLoop.Noop)
+
+        assertEquals(VisibleCameraServiceCommandOutcome.Blocked,
+            owner.handleStartCommand(VisibleCameraServiceStartRequest("camera-1", true), true, sampleSnapshot()))
+        val status = VisibleCameraServiceStatusStore.snapshot()
+        assertEquals(FailureCause.EncoderFailed, status.cause)
+        assertEquals(UserFailureCatalog.messageFor(FailureCause.EncoderFailed), status.message)
+    }
+
+    @Test
     fun serviceOwnerUsesPlannedEncoderAndFpsAtLauncher() {
         val expected = H264EncoderConfig(1920, 1080, 4_000_000, 24, 2)
         val range = CameraFpsRange(24, 30)

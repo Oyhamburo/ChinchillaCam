@@ -17,7 +17,7 @@ fun interface AccessoryTransportSource {
 }
 
 /** Why a launched session ended on its own; [message] is the Spanish text shown to the user. */
-data class SessionEndNotice(val message: String)
+data class SessionEndNotice(val message: String, val cause: FailureCause? = null)
 
 /** A running session (camera, encoder, egress). [close] stops all of it; it may block, so it is only called off the main thread. */
 fun interface ActiveSessionHandle {
@@ -36,7 +36,7 @@ sealed class AccessoryPurpose {
 }
 
 sealed class PhoneConnectionState {
-    data class Idle(val notice: String? = null) : PhoneConnectionState()
+    data class Idle(val notice: String? = null, val cause: FailureCause? = null) : PhoneConnectionState()
     data class AwaitingAccessory(val purpose: AccessoryPurpose) : PhoneConnectionState()
     data class ConfirmPairing(val desktopName: String, val shortCode: PairingShortCode) : PhoneConnectionState()
     data class AwaitingDesktopConfirmation(val desktopName: String) : PhoneConnectionState()
@@ -273,7 +273,7 @@ class PhoneConnectionController(
         // The session already ended; closing is idempotent and releases whatever it still holds.
         runCatching { live.handle.close() }
         authority.stopActiveDesktop(live.desktopId)
-        publish(PhoneConnectionState.Idle(notice.message))
+        publish(PhoneConnectionState.Idle(notice.message, notice.cause))
     }
 
     private fun endSession(notice: String) {

@@ -163,6 +163,27 @@ class PhoneConnectionControllerTest {
     }
 
     @Test
+    fun sessionFailuresRetainTheirCauseInIdleState() {
+        seedTrust()
+        val ends = listOf(
+            SessionEnd.PeerDead, SessionEnd.Backpressure,
+            SessionEnd.ReadFailed("platform-secret"), SessionEnd.WriteFailed("platform-secret"),
+            SessionEnd.ProtocolViolation("platform-secret"),
+        )
+        ends.forEachIndexed { index, end ->
+            source.enqueue(Desktop.ReconnectAccept)
+            controller.connect("pc-1")
+            awaitState<PhoneConnectionState.Connected>()
+            val cause = UserFailureCatalog.causeFor(end)
+            launcher.launches[index].onEnded(SessionEndNotice(SessionEgressBinding.messageForEnd(end), cause))
+            val idle = awaitState<PhoneConnectionState.Idle>()
+            assertEquals(cause, idle.cause)
+            assertEquals(UserFailureCatalog.messageFor(cause), idle.notice)
+            assertTrue(idle.notice?.contains("platform-secret") == false)
+        }
+    }
+
+    @Test
     fun disconnectClosesHandleAndReleasesAuthority() {
         seedTrust()
         source.enqueue(Desktop.ReconnectAccept)

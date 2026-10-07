@@ -245,7 +245,7 @@ class SessionEgressBindingTest {
             assertEquals("the error must be handed off the runtime thread", "p2-end-executor", thread)
             assertFalse("must not run on the runtime reader thread", thread!!.contains("session-runtime-reader"))
             assertFalse("must not run on the runtime writer thread", thread.contains("session-runtime-writer"))
-            assertEquals(listOf(SessionEnd.PeerDead to "Se perdió la conexión con la computadora."), errorEnds.toList())
+            assertEquals(listOf(SessionEnd.PeerDead to UserFailureCatalog.messageFor(FailureCause.SessionPeerDead)), errorEnds.toList())
         } finally {
             binding.close()
             endExecutor.shutdownNow()
@@ -291,7 +291,8 @@ class SessionEgressBindingTest {
         // One step: the composition starts its own binding with its own error handler (no holder).
         val composition = SessionEgressServicePipelineComposition.start(
             reconnected = reconnected,
-            requestPipelineFailureStop = {
+            requestPipelineFailureStop = { _, cause ->
+                assertEquals(FailureCause.SessionPeerDead, cause)
                 stopThread.set(Thread.currentThread().name)
                 stopCalls.incrementAndGet()
                 stopped.countDown()
@@ -308,7 +309,8 @@ class SessionEgressBindingTest {
 
             val status = VisibleCameraServiceStatusStore.snapshot()
             assertEquals(VisibleCameraServiceState.Error, status.state)
-            assertEquals("Se perdió la conexión con la computadora.", status.message)
+            assertEquals(UserFailureCatalog.messageFor(FailureCause.SessionPeerDead), status.message)
+            assertEquals(FailureCause.SessionPeerDead, status.cause)
             assertEquals(1, stopCalls.get())
         } finally {
             composition.close()

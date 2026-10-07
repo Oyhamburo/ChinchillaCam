@@ -16,6 +16,33 @@ class VisibleCameraPipelineControllerTest {
     )
 
     @Test
+    fun camera_open_failure_shows_spanish_message_without_platform_reason() {
+        val controller = VisibleCameraPipelineController(
+            RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Failed("CameraAccessException: platform-secret")),
+            sampleConfig(),
+        )
+
+        val state = controller.start(sampleSnapshot(), "camera-1", true)
+
+        assertEquals(VisibleCameraPipelineStatus.Error, state.status)
+        assertEquals("No se pudo abrir la cámara. Cerrá otras apps que la estén usando y reintentá.", state.detail)
+        assertFalse(state.detail.contains("platform-secret"))
+    }
+
+    @Test
+    fun launcherFailuresRetainTypedCauseButNeverRenderRawReason() {
+        listOf(FailureCause.CameraOpenFailed, FailureCause.EncoderFailed, FailureCause.CaptureFailed).forEach { cause ->
+            val controller = VisibleCameraPipelineController(
+                RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Failed("platform-secret", cause)), sampleConfig(),
+            )
+            val state = controller.start(sampleSnapshot(), "camera-1", true)
+            assertEquals(cause, state.cause)
+            assertEquals(UserFailureCatalog.messageFor(cause), state.detail)
+            assertFalse(state.detail.contains("platform-secret"))
+        }
+    }
+
+    @Test
     fun startRequiresFreshCameraPermissionBeforeLaunching() {
         val launcher = RecordingVisibleLauncher(VisibleCameraPipelineLaunchResult.Failed("unused"))
         val controller = VisibleCameraPipelineController(launcher, sampleConfig())
@@ -23,7 +50,8 @@ class VisibleCameraPipelineControllerTest {
         val state = controller.start(sampleSnapshot(), selectedCameraId = "camera-1", cameraPermissionGranted = false)
 
         assertEquals(VisibleCameraPipelineStatus.Error, state.status)
-        assertEquals("Permiso de cámara requerido antes de iniciar.", state.detail)
+        assertEquals(UserFailureCatalog.messageFor(FailureCause.CameraPermissionDenied), state.detail)
+        assertEquals(FailureCause.CameraPermissionDenied, state.cause)
         assertEquals(0, launcher.starts)
     }
 
@@ -48,7 +76,8 @@ class VisibleCameraPipelineControllerTest {
         val state = controller.start(sampleSnapshot(), "physical-1", cameraPermissionGranted = true)
 
         assertEquals(VisibleCameraPipelineStatus.Error, state.status)
-        assertEquals("Selecciona una cámara directa antes de iniciar.", state.detail)
+        assertEquals(UserFailureCatalog.messageFor(FailureCause.CameraUnavailable), state.detail)
+        assertEquals(FailureCause.CameraUnavailable, state.cause)
         assertEquals(0, launcher.starts)
     }
 
@@ -62,7 +91,8 @@ class VisibleCameraPipelineControllerTest {
 
         assertEquals(1, handle.stopCount)
         assertEquals(VisibleCameraPipelineStatus.Error, state.status)
-        assertEquals("La cámara se detuvo con errores: encoder release failed", state.detail)
+        assertEquals(UserFailureCatalog.messageFor(FailureCause.CameraStopFailed), state.detail)
+        assertEquals(FailureCause.CameraStopFailed, state.cause)
     }
 
     @Test
@@ -94,7 +124,7 @@ class VisibleCameraPipelineControllerTest {
 
         assertEquals(1, handle.drainCount)
         assertEquals(listOf(2), handle.consumed)
-        assertEquals("Cámara local activa. 2 chunks codificados descartados en memoria.", state.detail)
+        assertEquals("Cámara local activa. 2 fragmentos de video descartados en memoria.", state.detail)
     }
 
     @Test
@@ -118,8 +148,8 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(listOf(0, 1), transport.payloads.map { it.chunkIndex })
         assertEquals(listOf(SessionVideoFrameKind.CODEC_CONFIG, SessionVideoFrameKind.DELTA), transport.payloads.map { it.frameKind })
         assertEquals("Cámara local activa. 2 fragmentos de video entregados al canal de salida; 0 descartados.", state.detail)
-        assertTrue(state.metricsText.contains("Chunks aceptados: 2"))
-        assertTrue(state.metricsText.contains("Chunks descartados: 0"))
+        assertTrue(state.metricsText.contains("Fragmentos aceptados: 2"))
+        assertTrue(state.metricsText.contains("Fragmentos descartados: 0"))
     }
 
     @Test
@@ -139,8 +169,8 @@ class VisibleCameraPipelineControllerTest {
         val state = controller.drainOnce(maxOutputs = 4)
 
         assertTrue(state.metricsText.contains("FPS: 2.0"))
-        assertTrue(state.metricsText.contains("Chunks aceptados: 2"))
-        assertTrue(state.metricsText.contains("Chunks descartados: 0"))
+        assertTrue(state.metricsText.contains("Fragmentos aceptados: 2"))
+        assertTrue(state.metricsText.contains("Fragmentos descartados: 0"))
         assertFalse(state.metricsText.contains("Bytes descartados"))
     }
 
@@ -177,8 +207,8 @@ class VisibleCameraPipelineControllerTest {
         assertArrayEquals(h264CsdBytes, payloads[0].h264Bytes)
         assertEquals(listOf(3), handle.consumed)
         assertTrue(state.metricsText.contains("FPS: 2.0"))
-        assertTrue(state.metricsText.contains("Chunks aceptados: 3"))
-        assertTrue(state.metricsText.contains("Chunks descartados: 0"))
+        assertTrue(state.metricsText.contains("Fragmentos aceptados: 3"))
+        assertTrue(state.metricsText.contains("Fragmentos descartados: 0"))
         assertEquals(null, fake.removeOutgoingEncodedAccessoryFrame())
     }
 
@@ -204,8 +234,8 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(VisibleCameraPipelineStatus.Error, state.status)
         assertEquals(emptyList<Int>(), handle.consumed)
         assertTrue(state.metricsText.contains("FPS: 1.0"))
-        assertTrue(state.metricsText.contains("Chunks aceptados: 1"))
-        assertTrue(state.metricsText.contains("Chunks descartados: 1"))
+        assertTrue(state.metricsText.contains("Fragmentos aceptados: 1"))
+        assertTrue(state.metricsText.contains("Fragmentos descartados: 1"))
         assertEquals(2, transport.payloads.size)
     }
 
@@ -223,7 +253,8 @@ class VisibleCameraPipelineControllerTest {
 
         assertEquals(1, handle.stopCount)
         assertEquals(VisibleCameraPipelineStatus.Error, state.status)
-        assertEquals("No se pudo iniciar el envío de video: sink init boom", state.detail)
+        assertEquals(UserFailureCatalog.messageFor(FailureCause.VideoSendFailed), state.detail)
+        assertEquals(FailureCause.VideoSendFailed, state.cause)
         assertEquals(state, afterFailure)
     }
 
@@ -247,7 +278,8 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(emptyList<Int>(), handle.consumed)
         assertEquals(1, transport.closeCount)
         assertEquals(VisibleCameraPipelineStatus.Error, state.status)
-        assertEquals("El envío de video se detuvo por saturación; cámara local detenida.", state.detail)
+        assertEquals(UserFailureCatalog.messageFor(FailureCause.VideoSaturated), state.detail)
+        assertEquals(FailureCause.VideoSaturated, state.cause)
         assertEquals(state, afterFailure)
     }
 
@@ -271,7 +303,8 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(emptyList<Int>(), handle.consumed)
         assertEquals(1, transport.payloads.size)
         assertEquals(1, transport.closeCount)
-        assertEquals("El envío de video se detuvo porque el canal se cerró; cámara local detenida.", state.detail)
+        assertEquals(UserFailureCatalog.messageFor(FailureCause.VideoSendFailed), state.detail)
+        assertEquals(FailureCause.VideoSendFailed, state.cause)
     }
 
     @Test
@@ -293,7 +326,7 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(emptyList<Int>(), handle.consumed)
         assertEquals(0, transport.payloads.size)
         assertEquals(1, transport.closeCount)
-        assertEquals("El envío de video se detuvo: un fragmento de video superó el tamaño permitido; cámara local detenida.", state.detail)
+        assertEquals(UserFailureCatalog.messageFor(FailureCause.VideoSendFailed), state.detail)
     }
 
     @Test
@@ -337,7 +370,7 @@ class VisibleCameraPipelineControllerTest {
         controller.start(sampleSnapshot(), "camera-1", true)
         val restarted = controller.drainOnce(maxOutputs = 4)
 
-        assertEquals("La cámara se detuvo con errores: falló el cierre del canal de salida: close boom", stopped.detail)
+        assertEquals(UserFailureCatalog.messageFor(FailureCause.CameraStopFailed), stopped.detail)
         assertEquals(1, secondTransport.payloads.size)
         assertEquals(VisibleCameraPipelineStatus.Running, restarted.status)
     }
@@ -464,8 +497,8 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(VisibleCameraPipelineStatus.Running, state.status)
         assertEquals(listOf(2), handle.consumed)
         assertTrue(state.metricsText.contains("FPS: 2.0"))
-        assertTrue(state.metricsText.contains("Chunks aceptados: 2"))
-        assertTrue(state.metricsText.contains("Chunks descartados: 0"))
+        assertTrue(state.metricsText.contains("Fragmentos aceptados: 2"))
+        assertTrue(state.metricsText.contains("Fragmentos descartados: 0"))
         assertEquals(SessionFrameType.VIDEO_CHUNK_V2, decodeOutgoing(fake).type)
         assertEquals(SessionFrameType.VIDEO_CHUNK_FRAGMENT_V1, decodeOutgoing(fake).type)
         assertEquals(SessionFrameType.VIDEO_CHUNK_FRAGMENT_V1, decodeOutgoing(fake).type)
@@ -489,8 +522,8 @@ class VisibleCameraPipelineControllerTest {
         assertEquals(VisibleCameraPipelineStatus.Error, state.status)
         assertEquals(emptyList<Int>(), handle.consumed)
         assertTrue(state.metricsText.contains("FPS: 0.0"))
-        assertTrue(state.metricsText.contains("Chunks aceptados: 0"))
-        assertTrue(state.metricsText.contains("Chunks descartados: 1"))
+        assertTrue(state.metricsText.contains("Fragmentos aceptados: 0"))
+        assertTrue(state.metricsText.contains("Fragmentos descartados: 1"))
         val first = decodeOutgoing(fake)
         assertEquals(0, first.sequence)
         assertEquals(0, (first.payload as SessionPayload.VideoChunkFragmentV1).fragmentIndex)
@@ -562,7 +595,8 @@ class VisibleCameraPipelineControllerTest {
 
         assertEquals(1, handle.stopCount)
         assertEquals(VisibleCameraPipelineStatus.Error, state.status)
-        assertEquals("Error al drenar encoder: codec died", state.detail)
+        assertEquals(UserFailureCatalog.messageFor(FailureCause.EncoderFailed), state.detail)
+        assertEquals(FailureCause.EncoderFailed, state.cause)
     }
 
 

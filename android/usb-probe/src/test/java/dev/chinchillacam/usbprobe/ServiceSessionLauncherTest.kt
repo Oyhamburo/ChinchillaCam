@@ -98,8 +98,9 @@ class ServiceSessionLauncherTest {
             assertTrue("the session end was not notified", ended.await(4, TimeUnit.SECONDS))
             val published = VisibleCameraServiceStatusStore.snapshot()
             assertEquals(VisibleCameraServiceState.Error, published.state)
-            assertEquals(listOf(SessionEndNotice(published.message)), notices.toList())
-            assertEquals("Se perdió la conexión con la computadora.", published.message)
+            assertEquals(FailureCause.SessionPeerDead, published.cause)
+            assertEquals(listOf(SessionEndNotice(published.message, FailureCause.SessionPeerDead)), notices.toList())
+            assertEquals(UserFailureCatalog.messageFor(FailureCause.SessionPeerDead), published.message)
             assertEquals(1, camera.stops)
             assertNull("a failed session must not stay registered", registry.current())
         } finally {

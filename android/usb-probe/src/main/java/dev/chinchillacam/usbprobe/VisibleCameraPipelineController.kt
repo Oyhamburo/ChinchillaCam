@@ -17,6 +17,8 @@ class VisibleCameraPipelineController(
     private var handle: VisibleCameraPipelineHandle? = null
     private var activeEncodedVideoSink: EncodedVideoEgressSink? = null
     private var startGeneration: Int = 0
+    /** Diagnostics only; never render in a UI state. */
+    private var technicalDetail: String? = null
 
     @Synchronized
     fun currentState(): VisibleCameraPipelineUiState = state
@@ -56,9 +58,9 @@ class VisibleCameraPipelineController(
         synchronized(this) {
             if (token != startGeneration || state.status != VisibleCameraPipelineStatus.Starting) return state
             metrics.reset()
-            if (!cameraPermissionGranted) return setError("Permiso de cámara requerido antes de iniciar.")
+            if (!cameraPermissionGranted) return setError(FailureCause.CameraPermissionDenied)
             if (selectedCameraId == null || !snapshot.isDirectCandidate(selectedCameraId)) {
-                return setError("Selecciona una cámara directa antes de iniciar.")
+                return setError(FailureCause.CameraUnavailable)
             }
         }
 
@@ -77,7 +79,7 @@ class VisibleCameraPipelineController(
                             encodedVideoSinkFactory?.invoke()
                         } catch (error: RuntimeException) {
                             result.handle.stop()
-                            return@synchronized setError("No se pudo iniciar el envío de video: ${error.message ?: error::class.java.simpleName}")
+                            return@synchronized setError(FailureCause.VideoSendFailed, detail = error.toString())
                         }
                         activeEncodedVideoSink = sink
                         handle = result.handle
@@ -85,7 +87,7 @@ class VisibleCameraPipelineController(
                     }
                     is VisibleCameraPipelineLaunchResult.Failed -> {
                         handle = null
-                        setError(result.reason)
+                        setError(result.cause, detail = result.reason)
                     }
                 }
             }
@@ -103,8 +105,8 @@ class VisibleCameraPipelineController(
             is H264DrainResult.Chunks -> drainChunks(running, drained.chunks)
             H264DrainResult.TryAgainLater -> setRunning("Cámara local activa. Esperando salida codificada.")
             H264DrainResult.Stopped -> stopWithMessage("La cámara local ya se detuvo.")
-            is H264DrainResult.BackpressureExceeded -> failAndStop("Backpressure local excedido; salida codificada detenida.")
-            is H264DrainResult.Failed -> failAndStop("Error al drenar encoder: ${drained.reason}")
+            is H264DrainResult.BackpressureExceeded -> failAndStop(FailureCause.VideoSaturated)
+            is H264DrainResult.Failed -> failAndStop(FailureCause.EncoderFailed, drained.reason)
         }
     }
 
@@ -121,7 +123,7 @@ class VisibleCameraPipelineController(
     private fun drainChunks(running: VisibleCameraPipelineHandle, chunks: List<EncodedVideoChunk>): VisibleCameraPipelineUiState {
         val sink = activeEncodedVideoSink ?: run {
             running.consumeEncoded(chunks.size)
-            return setRunning("Cámara local activa. ${chunks.size} chunks codificados descartados en memoria.")
+            return setRunning("Cámara local activa. ${chunks.size} fragmentos de video descartados en memoria.")
         }
         val acceptedChunks = mutableListOf<EncodedVideoChunk>()
         for (chunk in chunks) {
@@ -130,27 +132,27 @@ class VisibleCameraPipelineController(
                 EncodedVideoEgressSinkResult.BackpressureExceeded -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
-                    "El envío de video se detuvo por saturación; cámara local detenida.",
+                    FailureCause.VideoSaturated,
                 )
                 EncodedVideoEgressSinkResult.Closed -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
-                    "El envío de video se detuvo porque el canal se cerró; cámara local detenida.",
+                    FailureCause.VideoSendFailed,
                 )
                 EncodedVideoEgressSinkResult.Oversized -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
-                    "El envío de video se detuvo: un fragmento de video superó el tamaño permitido; cámara local detenida.",
+                    FailureCause.VideoSendFailed,
                 )
                 is EncodedVideoEgressSinkResult.InvalidPayload -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
-                    "El envío de video se detuvo: fragmento de video inválido: ${result.reason}; cámara local detenida.",
+                    FailureCause.VideoSendFailed, result.reason,
                 )
                 is EncodedVideoEgressSinkResult.Failed -> return failAfterPartialFakeEgressDelivery(
                     acceptedChunks,
                     sink.stats(),
-                    "El envío de video se detuvo: ${result.reason}",
+                    FailureCause.VideoSendFailed, result.reason,
                 )
             }
         }
@@ -166,22 +168,23 @@ class VisibleCameraPipelineController(
     private fun failAfterPartialFakeEgressDelivery(
         acceptedChunks: List<EncodedVideoChunk>,
         stats: EncodedVideoEgressSinkStats,
-        detail: String,
+        cause: FailureCause,
+        detail: String? = null,
     ): VisibleCameraPipelineUiState {
         metrics.recordDeliveredChunks(acceptedChunks)
-        return failAndStop(detail, metricsText = fakeEgressMetricsText(stats))
+        return failAndStop(cause, detail, metricsText = fakeEgressMetricsText(stats))
     }
 
     private fun failAndStop(
-        detail: String,
+        cause: FailureCause,
+        detail: String? = null,
         metricsText: String = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
     ): VisibleCameraPipelineUiState {
         val stoppedHandle = handle
         handle = null
         stoppedHandle?.stop()
         val closeError = closeActiveSink()
-        val errorDetail = if (closeError == null) detail else "$detail El canal de salida se cerró con errores: $closeError"
-        return setError(errorDetail, metricsText)
+        return setError(cause, metricsText, listOfNotNull(detail, closeError).joinToString("; "))
     }
 
     private fun stopWithMessage(successMessage: String): VisibleCameraPipelineUiState {
@@ -191,16 +194,16 @@ class VisibleCameraPipelineController(
         metrics.reset()
         val closeError = closeActiveSink()
         if (stoppedHandle == null) {
-            state = if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("falló el cierre del canal de salida: $closeError"))
+            state = if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf(closeError))
             return state
         }
         state = when (val stopped = stoppedHandle.stop()) {
             CameraEncoderPipelineStopResult.Stopped,
             CameraEncoderPipelineStopResult.AlreadyStopped -> {
-                if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf("falló el cierre del canal de salida: $closeError"))
+                if (closeError == null) stoppedState(successMessage) else stopErrorState(listOf(closeError))
             }
             is CameraEncoderPipelineStopResult.Failed -> {
-                val reasons = stopped.reasons + listOfNotNull(closeError?.let { "falló el cierre del canal de salida: $it" })
+                val reasons = stopped.reasons + listOfNotNull(closeError)
                 stopErrorState(reasons)
             }
         }
@@ -242,19 +245,13 @@ class VisibleCameraPipelineController(
         metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
     )
 
-    private fun stopErrorState(reasons: List<String>): VisibleCameraPipelineUiState = VisibleCameraPipelineUiState(
-        status = VisibleCameraPipelineStatus.Error,
-        title = "Cámara local",
-        detail = "La cámara se detuvo con errores: ${reasons.joinToString()}",
-        primaryAction = "Iniciar cámara local",
-        primaryActionEnabled = true,
-        metricsText = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
-    )
+    private fun stopErrorState(reasons: List<String>): VisibleCameraPipelineUiState =
+        setError(FailureCause.CameraStopFailed, detail = reasons.joinToString())
 
     private fun fakeEgressMetricsText(stats: EncodedVideoEgressSinkStats): String = listOf(
         "FPS: ${formatFakeEgressMetricValue(metrics.snapshot().encodedFps)}",
-        "Chunks aceptados: ${stats.accepted}",
-        "Chunks descartados: ${stats.dropped}",
+        "Fragmentos aceptados: ${stats.accepted}",
+        "Fragmentos descartados: ${stats.dropped}",
     ).joinToString("\n")
 
     private fun formatFakeEgressMetricValue(value: MetricValue): String = when (value) {
@@ -263,17 +260,20 @@ class VisibleCameraPipelineController(
     }
 
     private fun setError(
-        detail: String,
+        cause: FailureCause,
         metricsText: String = LocalPipelineMetricsFormatter.format(metrics.snapshot()),
+        detail: String? = null,
     ): VisibleCameraPipelineUiState {
+        technicalDetail = detail
         handle = null
         state = VisibleCameraPipelineUiState(
             status = VisibleCameraPipelineStatus.Error,
             title = "Cámara local",
-            detail = detail,
+            detail = UserFailureCatalog.messageFor(cause),
             primaryAction = "Iniciar cámara local",
             primaryActionEnabled = true,
             metricsText = metricsText,
+            cause = cause,
         )
         return state
     }
@@ -290,6 +290,7 @@ data class VisibleCameraPipelineUiState(
     val primaryAction: String,
     val primaryActionEnabled: Boolean,
     val metricsText: String = "",
+    val cause: FailureCause? = null,
 )
 
 enum class VisibleCameraPipelineStatus {
@@ -320,7 +321,7 @@ interface VisibleCameraPipelineLauncher {
 
 sealed class VisibleCameraPipelineLaunchResult {
     data class Running(val handle: VisibleCameraPipelineHandle) : VisibleCameraPipelineLaunchResult()
-    data class Failed(val reason: String) : VisibleCameraPipelineLaunchResult()
+    data class Failed(val reason: String, val cause: FailureCause = FailureCause.CameraOpenFailed) : VisibleCameraPipelineLaunchResult()
 }
 
 interface VisibleCameraPipelineHandle {

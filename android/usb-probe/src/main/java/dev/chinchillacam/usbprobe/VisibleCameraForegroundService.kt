@@ -324,6 +324,7 @@ data class VisibleCameraServiceStatus(
     val state: VisibleCameraServiceState,
     val selectedCameraId: String? = null,
     val message: String = "",
+    val cause: FailureCause? = null,
 ) {
     val isActive: Boolean = state == VisibleCameraServiceState.Starting || state == VisibleCameraServiceState.Running
 }
@@ -529,6 +530,7 @@ interface VisibleCameraServicePipeline {
     fun stop(): VisibleCameraPipelineStatus
     fun stopForReconfigure(): VisibleCameraPipelineStatus = stop()
     fun currentDetail(): String = ""
+    fun currentCause(): FailureCause? = null
 }
 
 interface VisibleCameraServiceDrainLoop {
@@ -582,7 +584,13 @@ class VisibleCameraForegroundServicePipelineOwner(
         if (synchronized(this) { token != generation }) return VisibleCameraServiceCommandOutcome.Stopped
         val decision = policy.planStartCommand(startRequest.visibleStartRequested, cameraPermissionGranted, snapshot, startRequest.selectedCameraId)
         if (decision is VisibleCameraServiceStartDecision.Blocked) {
-            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = decision.message))
+            val cause = when {
+                !cameraPermissionGranted -> FailureCause.CameraPermissionDenied
+                !startRequest.visibleStartRequested -> null
+                else -> FailureCause.CameraUnavailable
+            }
+            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error,
+                message = cause?.let(UserFailureCatalog::messageFor) ?: decision.message, cause = cause))
             synchronized(this) {
                 if (token == generation) stopActiveLocked()
             }
@@ -627,7 +635,8 @@ class VisibleCameraForegroundServicePipelineOwner(
             )
             VisibleCameraServiceCommandOutcome.Started
         } else {
-            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, selectedCameraId = decision.cameraId, message = "No se pudo iniciar la prueba local desde el servicio visible."))
+            val cause = pipeline.currentCause() ?: FailureCause.CameraOpenFailed
+            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, selectedCameraId = decision.cameraId, message = UserFailureCatalog.messageFor(cause), cause = cause))
             VisibleCameraServiceCommandOutcome.Blocked
         }
     }
@@ -727,10 +736,12 @@ class VisibleCameraForegroundServicePipelineOwner(
     private fun handlePipelineStoppedByFailure(token: Int) {
         synchronized(this) {
             if (token != generation) return
-            val detail = pipeline.currentDetail().ifBlank { "El servicio visible de cámara local informó un error." }
+            val cause = pipeline.currentCause()
+            val detail = cause?.let(UserFailureCatalog::messageFor)
+                ?: pipeline.currentDetail().ifBlank { UserFailureCatalog.messageFor(FailureCause.CaptureFailed) }
             generation += 1
             stopActiveLocked()
-            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = detail))
+            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = detail, cause = cause))
         }
         onPipelineFailureStop()
     }
@@ -760,6 +771,8 @@ class ControllerVisibleCameraServicePipeline(
     override fun stopForReconfigure(): VisibleCameraPipelineStatus = controller.stopForReconfigure().status
 
     override fun currentDetail(): String = controller.currentState().detail
+
+    override fun currentCause(): FailureCause? = controller.currentState().cause
 }
 
 class ThreadedVisibleCameraServiceDrainLoop(

@@ -51,9 +51,9 @@ class ServiceSessionLauncher(
         val session = ServiceSession(cameraService, registry)
         val composition = SessionEgressServicePipelineComposition.start(
             reconnected = reconnected,
-            requestPipelineFailureStop = { message ->
+            requestPipelineFailureStop = { message, cause ->
                 session.stopCamera()
-                onEnded(SessionEndNotice(message))
+                onEnded(SessionEndNotice(message, cause))
             },
             endExecutor = endExecutor,
             onCameraControlCommand = onCameraControlCommand,
@@ -64,7 +64,9 @@ class ServiceSessionLauncher(
         try {
             session.token = registry.register(
                 ActiveSessionEntry(composition.encodedVideoSinkFactory) { message ->
-                    onEnded(SessionEndNotice(message ?: SERVICE_STOPPED_MESSAGE))
+                    val status = VisibleCameraServiceStatusStore.snapshot()
+                    onEnded(SessionEndNotice(message ?: SERVICE_STOPPED_MESSAGE,
+                        status.cause.takeIf { message != null && status.state == VisibleCameraServiceState.Error && status.message == message }))
                 },
             )
             cameraService.start(cameraId)

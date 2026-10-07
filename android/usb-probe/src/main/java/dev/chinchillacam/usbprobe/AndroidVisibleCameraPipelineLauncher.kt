@@ -26,24 +26,24 @@ class AndroidVisibleCameraPipelineLauncher(
         val openSession = when (val opened = CameraDeviceOpenBoundary(
             AndroidCameraDeviceOpenGateway(cameraManager, handler),
         ).requestOpenSelected(snapshot, selectedCameraId, cameraPermissionGranted)) {
-            CameraDeviceOpenResult.MissingSelection -> return VisibleCameraPipelineLaunchResult.Failed("Selecciona una cámara directa antes de iniciar.")
-            CameraDeviceOpenResult.CameraPermissionMissing -> return VisibleCameraPipelineLaunchResult.Failed("Permiso de cámara requerido antes de iniciar.")
-            is CameraDeviceOpenResult.SelectionNotDirectOpenCandidate -> return VisibleCameraPipelineLaunchResult.Failed("Selecciona una cámara directa antes de iniciar.")
-            is CameraDeviceOpenResult.OpenRequestFailed -> return VisibleCameraPipelineLaunchResult.Failed("No se pudo abrir la cámara: ${opened.reason}")
+            CameraDeviceOpenResult.MissingSelection -> return VisibleCameraPipelineLaunchResult.Failed("missing camera selection", FailureCause.CameraUnavailable)
+            CameraDeviceOpenResult.CameraPermissionMissing -> return VisibleCameraPipelineLaunchResult.Failed("camera permission missing", FailureCause.CameraPermissionDenied)
+            is CameraDeviceOpenResult.SelectionNotDirectOpenCandidate -> return VisibleCameraPipelineLaunchResult.Failed("camera selection unavailable", FailureCause.CameraUnavailable)
+            is CameraDeviceOpenResult.OpenRequestFailed -> return VisibleCameraPipelineLaunchResult.Failed(opened.reason, FailureCause.CameraOpenFailed)
             is CameraDeviceOpenResult.OpenRequestSubmitted -> opened.session
         }
         if (!waitForOpen(openSession)) {
             openSession.cancel()
-            return VisibleCameraPipelineLaunchResult.Failed("No se pudo abrir la cámara.")
+            return VisibleCameraPipelineLaunchResult.Failed("camera open timed out", FailureCause.CameraOpenFailed)
         }
         val androidDevice = openSession.activeDevice as? AndroidCloseableCameraDevice ?: run {
             openSession.cancel()
-            return VisibleCameraPipelineLaunchResult.Failed("La cámara abierta no es compatible con el pipeline local.")
+            return VisibleCameraPipelineLaunchResult.Failed("camera device incompatible", FailureCause.CameraOpenFailed)
         }
         val encoder = when (val started = H264EncoderBoundary(AndroidH264EncoderGateway()).start(encoderConfig)) {
             is H264EncoderStartResult.Failed -> {
                 openSession.cancel()
-                return VisibleCameraPipelineLaunchResult.Failed("No se pudo iniciar el encoder: ${started.reason}")
+                return VisibleCameraPipelineLaunchResult.Failed(started.reason, FailureCause.EncoderFailed)
             }
             is H264EncoderStartResult.Started -> started
         }
@@ -52,21 +52,21 @@ class AndroidVisibleCameraPipelineLauncher(
         ).startRepeating(openSession, encoder.inputSurface, streamConfig.fpsRange)) {
             CameraCaptureStartResult.MissingSurface -> {
                 cleanupStartup(encoder.session, openSession)
-                return VisibleCameraPipelineLaunchResult.Failed("No hay superficie de encoder para la cámara.")
+                return VisibleCameraPipelineLaunchResult.Failed("encoder surface missing", FailureCause.EncoderFailed)
             }
             is CameraCaptureStartResult.CameraNotActive -> {
                 cleanupStartup(encoder.session, openSession)
-                return VisibleCameraPipelineLaunchResult.Failed("La cámara se cerró antes de iniciar captura.")
+                return VisibleCameraPipelineLaunchResult.Failed("camera closed before capture", FailureCause.CaptureFailed)
             }
             is CameraCaptureStartResult.ConfigurationFailed -> {
                 cleanupStartup(encoder.session, openSession)
-                return VisibleCameraPipelineLaunchResult.Failed("No se pudo configurar captura: ${started.reason}")
+                return VisibleCameraPipelineLaunchResult.Failed(started.reason, FailureCause.CaptureFailed)
             }
             is CameraCaptureStartResult.ConfigurationSubmitted -> started.session
         }
         if (!waitForCapture(capture)) {
             cleanupStartup(encoder.session, openSession, capture)
-            return VisibleCameraPipelineLaunchResult.Failed("No se pudo confirmar la captura local.")
+            return VisibleCameraPipelineLaunchResult.Failed("capture confirmation timed out", FailureCause.CaptureFailed)
         }
         return VisibleCameraPipelineLaunchResult.Running(
             CameraEncoderPipelineVisibleHandle(

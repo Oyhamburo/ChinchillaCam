@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * into a stop-and-notify signal:
  *
  * - [SessionEnd.LocalClose] is a local stop: nothing user-visible is reported.
- * - Any other cause hands [onSessionEndedWithError] a neutral Spanish message describing the cause.
+ * - Any other cause hands [onSessionEndedWithError] the typed end and its safe Spanish message.
  *
  * The runtime invokes its `onEnd` on its own writer/reader thread. This binding never acts on that
  * thread: it hands the notification to [endExecutor] (contract §4.1, risk §5), so a handler that
@@ -49,14 +49,7 @@ class SessionEgressBinding private constructor(
 
     companion object {
         /** Neutral Spanish, cause-typed copy that never claims a successful transmission (contract §4.1, §4.2). */
-        internal fun messageForEnd(cause: SessionEnd): String = when (cause) {
-            SessionEnd.PeerDead -> "Se perdió la conexión con la computadora."
-            SessionEnd.Backpressure -> "El envío de video se saturó y la sesión se detuvo."
-            is SessionEnd.WriteFailed -> "No se pudo enviar datos a la computadora; la sesión se detuvo."
-            is SessionEnd.ReadFailed -> "No se pudo recibir datos de la computadora; la sesión se detuvo."
-            is SessionEnd.ProtocolViolation -> "La computadora envió datos inesperados; la sesión se detuvo."
-            SessionEnd.LocalClose -> "La sesión se cerró."
-        }
+        internal fun messageForEnd(cause: SessionEnd): String = UserFailureCatalog.messageFor(UserFailureCatalog.causeFor(cause))
 
         /** Starts a binding from the explicit parts a [UsbTrustedReconnectResult.Reconnected] carries. */
         fun start(
@@ -143,12 +136,12 @@ class SessionEgressServicePipelineComposition private constructor(
     companion object {
         /**
          * Starts the binding from [reconnected] with this composition's end handler and returns the
-         * composition that owns it. [requestPipelineFailureStop] receives the Spanish message just
-         * published as `Error`; it runs on the [endExecutor] thread, never on the runtime thread.
+         * composition that owns it. [requestPipelineFailureStop] receives the Spanish message and
+         * typed cause just published as `Error`; it runs off the runtime thread.
          */
         fun start(
             reconnected: UsbTrustedReconnectResult.Reconnected,
-            requestPipelineFailureStop: (message: String) -> Unit,
+            requestPipelineFailureStop: (message: String, cause: FailureCause) -> Unit,
             endExecutor: Executor,
             onCameraControlCommand: (SessionPayload.CameraControlCommand) -> Unit,
             config: SessionRuntimeConfig = SessionRuntimeConfig(),
@@ -157,8 +150,8 @@ class SessionEgressServicePipelineComposition private constructor(
             val binding = SessionEgressBinding.start(
                 reconnected = reconnected,
                 onCameraControlCommand = onCameraControlCommand,
-                onSessionEndedWithError = { _, message ->
-                    publishErrorAndRequestStop(message, requestPipelineFailureStop)
+                onSessionEndedWithError = { end, message ->
+                    publishErrorAndRequestStop(message, UserFailureCatalog.causeFor(end), requestPipelineFailureStop)
                 },
                 endExecutor = endExecutor,
                 config = config,
@@ -168,11 +161,11 @@ class SessionEgressServicePipelineComposition private constructor(
         }
 
         /** Publishes the visible error and requests the same failure stop p1 wires through the owner. */
-        private fun publishErrorAndRequestStop(message: String, requestPipelineFailureStop: (String) -> Unit) {
+        private fun publishErrorAndRequestStop(message: String, cause: FailureCause, requestPipelineFailureStop: (String, FailureCause) -> Unit) {
             VisibleCameraServiceStatusStore.publish(
-                VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = message),
+                VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = message, cause = cause),
             )
-            requestPipelineFailureStop(message)
+            requestPipelineFailureStop(message, cause)
         }
     }
 }
