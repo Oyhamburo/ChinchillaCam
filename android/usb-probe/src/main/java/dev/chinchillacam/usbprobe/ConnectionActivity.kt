@@ -319,6 +319,12 @@ class ConnectionActivity : Activity() {
     }
 
     private fun render() {
+        // The desktop writes the same preferences; refresh the visible controls while connected.
+        if (state is PhoneConnectionState.Connected) cameraCatalog?.let { snapshot ->
+            val preferences = getSharedPreferences(CAMERA_PREFERENCES, Context.MODE_PRIVATE)
+            selectedCameraId = CameraSelectionPreference(SharedPreferencesStringStore(preferences, CAMERA_SELECTION_KEY)).restoreSelection(snapshot)
+            qualityPreference = QualityPreferenceStore(SharedPreferencesStringStore(preferences, QUALITY_KEY)).load()
+        }
         val cameraStatus = VisibleCameraServiceStatusStore.snapshot()
         val quality = cameraCatalog?.let { QualityControlsPlanner.plan(it, selectedCameraId, qualityPreference) }
         val plan = ConnectionScreenPlanner.plan(ConnectionScreenInput(
@@ -384,6 +390,7 @@ class ConnectionActivity : Activity() {
         if (id == null) backing.clear() else CameraSelectionPreference(backing).saveSelection(snapshot, id)
         selectedCameraId = id
         applyQuality(id)
+        PhoneConnectionRuntime.notifyLocalQualityChange(this)
     }
 
     private fun selectQuality(preference: QualityPreference) {
@@ -391,6 +398,7 @@ class ConnectionActivity : Activity() {
             getSharedPreferences(CAMERA_PREFERENCES, Context.MODE_PRIVATE), QUALITY_KEY)).save(preference)
         qualityPreference = preference
         applyQuality(selectedCameraId)
+        PhoneConnectionRuntime.notifyLocalQualityChange(this)
     }
 
     private fun applyQuality(cameraId: String?) {

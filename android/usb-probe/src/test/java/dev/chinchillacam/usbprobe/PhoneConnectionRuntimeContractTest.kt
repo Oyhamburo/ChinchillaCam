@@ -31,6 +31,21 @@ class PhoneConnectionRuntimeContractTest {
     }
 
     @Test
+    fun remoteQualityCommandsAndLocalChangesReachTheSameSharedPreferences() {
+        assertContains("reader callback forwards commands", """onCameraControlCommand = \{ qualityHandler\.onCommand\(it\.command, it\.arguments\) \}""")
+        assertContains("quality worker is dedicated", """executor = singleThread\("quality-control"\)""")
+        assertContains("quality egress uses active controller", """send = controller::sendControl""")
+        assertContains("quality updates use the live applier", """apply = \{ qualityApplier\.apply\(it\) \}""")
+        assertContains("session transition resets subscription", """qualityHandler\.reset\(\)""")
+        assertContains("active handle retries early subscription", """qualityHandler\.onSessionReady\(\)""")
+        assertContains("selection uses UI key", """SharedPreferencesStringStore\(preferences, CAMERA_SELECTION_KEY\)""")
+        assertContains("quality uses UI key", """SharedPreferencesStringStore\(preferences, QUALITY_KEY\)""")
+        val activity = File("src/main/java/dev/chinchillacam/usbprobe/ConnectionActivity.kt").readText()
+        assertTrue(Regex("""selectedCameraId = id\s+applyQuality\(id\)\s+PhoneConnectionRuntime\.notifyLocalQualityChange\(this\)""").containsMatchIn(activity))
+        assertTrue(Regex("""qualityPreference = preference\s+applyQuality\(selectedCameraId\)\s+PhoneConnectionRuntime\.notifyLocalQualityChange\(this\)""").containsMatchIn(activity))
+    }
+
+    @Test
     fun workerIsSingleThreadedAndNothingListensOnTheNetwork() {
         assertContains("the controller worker must be a single thread", """worker = singleThread\("phone-connection"\)""")
         assertContains("singleThread must build a single-thread executor", """Executors\.newSingleThreadExecutor""")

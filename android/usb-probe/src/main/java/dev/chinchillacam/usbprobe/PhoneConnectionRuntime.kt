@@ -24,6 +24,7 @@ object PhoneConnectionRuntime {
         val identity: AndroidKeyStorePhoneTlsIdentity,
         val accessorySource: UsbManagerAccessoryTransportSource<UsbAccessory>,
         val qualityApplier: CameraQualityApplier,
+        val qualityHandler: QualityControlHandler,
     )
 
     private var components: Components? = null
@@ -32,6 +33,9 @@ object PhoneConnectionRuntime {
 
     /** False if the session is no longer connected; service-start exceptions are left to the UI to report. */
     fun applyCameraQuality(context: Context, cameraId: String?): Boolean = components(context).qualityApplier.apply(cameraId)
+
+    /** Queue a fresh shared-preference state for the subscribed desktop after a phone-side choice. */
+    fun notifyLocalQualityChange(context: Context) = components(context).qualityHandler.onLocalChange()
 
     /** `true` when the phone key had to be regenerated: every desktop must be paired again (c6 shows it). */
     fun identityRegenerated(context: Context): Boolean = components(context).identity.regenerated
@@ -48,19 +52,19 @@ object PhoneConnectionRuntime {
         val tlsChannel = SslEngineUsbTlsChannel(phoneTlsIdentity = identity)
         val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
         val accessorySource = UsbManagerAccessoryTransportSource(AndroidAttachedAccessoryPort(usbManager))
+        val preferences = context.getSharedPreferences(CAMERA_PREFERENCES, Context.MODE_PRIVATE)
+        val cameraSelection = SharedPreferencesStringStore(preferences, CAMERA_SELECTION_KEY)
         val cameraIdResolver = SessionCameraIdResolver(
             snapshotProvider = { cameraCatalogSnapshot(context) },
-            preference = CameraSelectionPreference(
-                SharedPreferencesStringStore(context.getSharedPreferences(CAMERA_PREFERENCES, Context.MODE_PRIVATE), CAMERA_SELECTION_KEY),
-            ),
+            preference = CameraSelectionPreference(cameraSelection),
         )
         val cameraService = AndroidCameraServiceControl(context)
+        lateinit var qualityHandler: QualityControlHandler
         val sessionLauncher = ServiceSessionLauncher(
             cameraService = cameraService,
             cameraIdProvider = cameraIdResolver::resolve,
             endExecutor = singleThread("session-end"),
-            // Documented ignore until M7/T26 (camera controls): the only intentionally unhandled callback.
-            onCameraControlCommand = { },
+            onCameraControlCommand = { qualityHandler.onCommand(it.command, it.arguments) },
         )
         val coordinator = PendingPairingCoordinator(clock, SecureRandomChallengeNonceSource(clock), UnusedByteProofVerifier)
         val controller = PhoneConnectionController(
@@ -75,8 +79,22 @@ object PhoneConnectionRuntime {
             worker = singleThread("phone-connection"),
             epochSecondsSource = clock,
         )
+        val qualityApplier = CameraQualityApplier(controller::snapshot, cameraService)
+        qualityHandler = QualityControlHandler(
+            snapshotProvider = { cameraCatalogSnapshot(context) }, cameraSelection = cameraSelection,
+            qualityStore = QualityPreferenceStore(SharedPreferencesStringStore(preferences, QUALITY_KEY)),
+            apply = { qualityApplier.apply(it) }, send = controller::sendControl,
+            executor = singleThread("quality-control"),
+        )
+        controller.addListener { state ->
+            // Connecting precedes the session reader; Idle/Failed invalidate the old subscription.
+            if (state is PhoneConnectionState.Connected) qualityHandler.onSessionReady()
+            else if (state is PhoneConnectionState.Connecting || state is PhoneConnectionState.Idle || state is PhoneConnectionState.Failed) {
+                qualityHandler.reset()
+            }
+        }
         registerAccessoryDetached(context, controller)
-        return Components(controller, identity, accessorySource, CameraQualityApplier(controller::snapshot, cameraService))
+        return Components(controller, identity, accessorySource, qualityApplier, qualityHandler)
     }
 
     /** Registered once with the application context, so a cable pull ends the session even with no activity alive. */
@@ -111,6 +129,7 @@ object PhoneConnectionRuntime {
     /** Same preference file and key as [UsbProbeActivity]'s camera selection (kept in sync by hand). */
     private const val CAMERA_PREFERENCES = "dev.chinchillacam.usbprobe.camera"
     private const val CAMERA_SELECTION_KEY = "selected_direct_camera_id"
+    private const val QUALITY_KEY = "quality_preference"
 }
 
 /** Sends a reconfiguration only for a live session; injectable state and service keep this contract testable. */

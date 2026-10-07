@@ -16,7 +16,7 @@ sealed class SetQualityRequest {
     data class Invalid(val req: Long?) : SetQualityRequest()
 }
 
-private fun withinLimit(arguments: Map<String, String>): Boolean = arguments.all { (key, value) ->
+internal fun withinQualityControlLimits(arguments: Map<String, String>): Boolean = arguments.all { (key, value) ->
     key.toByteArray(Charsets.UTF_8).size <= MAX_BYTES && value.toByteArray(Charsets.UTF_8).size <= MAX_BYTES
 }
 
@@ -24,12 +24,12 @@ private fun positiveLong(value: String?): Long? = value?.takeIf { POSITIVE_DECIM
 private fun positiveInt(value: String?): Int? = value?.takeIf { POSITIVE_DECIMAL.matches(it) }?.toIntOrNull()
 
 fun isSubscribe(command: String, args: Map<String, String>): Boolean =
-    command == QUALITY_SUBSCRIBE && withinLimit(args) && args["v"] == "1"
+    command == QUALITY_SUBSCRIBE && withinQualityControlLimits(args) && args["v"] == "1"
 
 /** Invalid requests are represented explicitly so the handler can echo a valid req in its error state. */
 fun parseSetQuality(arguments: Map<String, String>): SetQualityRequest {
     val req = positiveLong(arguments["req"])
-    if (!withinLimit(arguments) || arguments["v"] != "1" || req == null) return SetQualityRequest.Invalid(req)
+    if (!withinQualityControlLimits(arguments) || arguments["v"] != "1" || req == null) return SetQualityRequest.Invalid(req)
     val camera = arguments["camera"]
     if (camera != null && camera.isEmpty()) return SetQualityRequest.Invalid(req)
     val preference = when (arguments["mode"]) {

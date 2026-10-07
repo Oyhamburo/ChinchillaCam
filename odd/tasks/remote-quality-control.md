@@ -47,7 +47,8 @@ Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Andro
 
 1. [x] a1 — capacidad `quality-control-v1` en HELLO, envío de control expuesto hasta la sesión activa, y codificación/parser del protocolo (`QualityControlProtocol`). RED: `quality_state_encodes_indexed_options`. ~350 líneas.
    - Evidencia a1: RED por referencia no resuelta a `encodeQualityState`; GREEN con el fixture literal (cámaras Automático/0 Trasera 1/1 Frontal 1, resoluciones 1920x1080/1280x720/960x540 deshabilitada/640x480, FPS 30/24/15 deshabilitado, Manual 1280x720@30, `req=7`, resumen «Calidad: Manual (1280 × 720, 30 FPS)»); HELLO, parser, límites y envío/cierre comprobados con pruebas focalizadas.
-2. [ ] a2 — `QualityControlHandler` (suscripción, `set_quality` validado, preferencia compartida, reconfiguración, `quality_state` tras cambios locales) cableado en `PhoneConnectionRuntime`. RED: `set_quality_applies_supported_choice_and_replies_with_state`. ~350 líneas.
+2. [x] a2 — `QualityControlHandler` (suscripción, `set_quality` validado, preferencia compartida, reconfiguración, `quality_state` tras cambios locales) cableado en `PhoneConnectionRuntime`. RED: `set_quality_applies_supported_choice_and_replies_with_state`. ~350 líneas.
+   - Evidencia a2: RED por referencia no resuelta a `QualityControlHandler`; pruebas focalizadas para aplicación válida, rechazos, suscripción, cambios locales, cola y cableado; verificación completa con el runner de §7.
 3. [ ] a3 — cierre: verificación, docs, plan general, push.
 
 ## 8. Evidencia
