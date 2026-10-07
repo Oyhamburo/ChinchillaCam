@@ -53,6 +53,8 @@ Runners: `export PATH=$HOME/.cargo/bin:$PATH` y en `desktop/usb-probe` y `deskto
    - Evidencia c3: RED por ausencia del evento `QualityState`; GREEN de suscripción negociada, estado entrante, pedidos con `req` creciente, ausencia de frame 7 sin capacidad y descarte de estados inválidos; verificación de formato, tests y clippy en usb-probe y tests/clippy en app.
 4. [x] c4 — app: sección de calidad en la ventana (cámara, resolución, FPS, automático; deshabilitadas con motivo). RED: `connected_view_shows_remote_quality_options`. ~300 líneas.
    - Evidencia c4: RED por ausencia de `AppView.quality`; GREEN de opciones, selección, errores, estado pendiente y limpieza; 50 tests de app sin fallas, formato, clippy y build verificados offline.
-5. [ ] c5 — cierre: verificación, docs, plan general, push.
+5. [x] c5 — cierre: verificación, docs, plan general, push.
+   - Evidencia c5: verificación independiente sobre `a504e10`: `usb-probe` 349/0 y `desktop/app` 50/0; fmt, clippy y build limpios; los commits intermedios `1aa2f07`, `c7ce8b7`, `9af5734` y `f9deee6` compilan; revisión cruzada contra §4 sin desajustes. Guía en `docs/uso.md` §6. Commits: `1aa2f07`, `c7ce8b7` (c1), `23d348f` (c2), `cae09f3` (c3), `9af5734`, `f9deee6`, `a504e10` (c4) y el commit de cierre.
 
 ## 8. Evidencia
+- Sin ejecutar: interoperabilidad real teléfono↔computadora por USB y la UI en pantalla (M9).

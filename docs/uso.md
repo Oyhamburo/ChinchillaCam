@@ -220,6 +220,8 @@ La experiencia prevista debe permitir, cuando el dispositivo y el sistema lo per
 
 El modo automático debe priorizar fluidez y baja latencia con la mejor calidad posible. Los controles disponibles desde escritorio son una hipótesis hasta validar las APIs, permisos y comportamiento de cada teléfono.
 
+Control desde la computadora (pendiente de validar con hardware en M9): con el teléfono conectado, la ventana de ChinchillaCam en la computadora muestra la sección **Cámara y calidad** con las mismas opciones que el teléfono (las no admitidas aparecen deshabilitadas con el motivo al pasar el mouse). Teléfono y computadora editan una sola preferencia: gana el último cambio, se aplica en vivo y los dos muestran el mismo estado. Con una versión vieja del teléfono que no anuncia esta función, la sección no aparece.
+
 ## 7. Métricas visibles
 
 ChinchillaCam debe mostrar métricas entendibles para diagnosticar problemas:
