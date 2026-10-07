@@ -4,5 +4,6 @@ pub mod messages;
 pub mod nv12;
 pub mod paths;
 pub mod qr_image;
+pub mod video_output;
 pub mod view_model;
 pub mod window;

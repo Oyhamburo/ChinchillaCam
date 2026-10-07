@@ -20,7 +20,7 @@ Que los fotogramas que VideoToolbox ya decodifica (NV12) lleguen a OBS Studio en
 
 1. `nv12_to_rgba(width, height, data) -> Result<Vec<u8>, Nv12Error>`: valida dimensiones no nulas y largo exacto; RGBA con alfa 255.
 2. `LatestVideoFrame` (clonable, `Send + Sync`): `publish`/`snapshot` con secuencia, `clear_if_owner`.
-3. `spawn_frame_presenter(receiver, slot, session, on_frame)`: hilo que vacía la cola, convierte el más nuevo, publica, avisa a la UI (`on_frame`) y limpia al desconectarse; descarta formatos que no sean NV12 sin caerse.
+3. `spawn_frame_presenter(receiver, slot, on_frame)` (la sesión la asigna la ranura con `new_session`): hilo que vacía la cola, convierte el más nuevo, publica, avisa a la UI (`on_frame`) y limpia al desconectarse; descarta formatos que no sean NV12 sin caerse.
 4. `start_production_worker` recibe la ranura y el aviso de repintado; ya no hay hilo de descarte.
 
 ## 5. Riesgos
@@ -40,7 +40,8 @@ Runner app: `cd desktop/app && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check 
 
 1. [x] o1 — `nv12_to_rgba` (BT.601/BT.709, rango de video, dimensiones impares, validación de largo). RED: `nv12_converts_reference_colors`. ~180 líneas.
    - Evidencia o1: RED observado: `nv12_converts_reference_colors` falló al devolver `EmptyDimensions` para una entrada válida (0 aprobadas, 1 fallida). GREEN: 4 pruebas NV12 y 20 pruebas de la aplicación aprobadas. Comprobaciones: `cargo fmt -- --check`, `cargo test --offline` y `cargo clippy --offline --all-targets -- -D warnings` aprobados.
-2. [ ] o2 — `LatestVideoFrame` + `spawn_frame_presenter` (último gana, limpieza por sesión, aviso de repintado, formatos ajenos). RED: `presenter_publishes_only_the_newest_frame`. ~250 líneas.
+2. [x] o2 — `LatestVideoFrame` + `spawn_frame_presenter` (último gana, limpieza por sesión, aviso de repintado, formatos ajenos). RED: `presenter_publishes_only_the_newest_frame`. ~250 líneas.
+   - Evidencia o2: RED observado: `presenter_publishes_only_the_newest_frame` falló al publicar [1, 2, 3] en vez de [3] (0 aprobadas, 1 fallida). GREEN: 5 pruebas del presentador y 25 pruebas de la aplicación aprobadas. Comprobaciones: `cargo fmt -- --check`, `cargo test --offline` y `cargo clippy --offline --all-targets -- -D warnings` aprobados.
 3. [ ] o3 — cableado en `bootstrap` (sin hilo de descarte), viewport de video en la ventana, botón y guía OBS en `docs/uso.md`. RED: `production_frames_reach_the_shared_slot` (factory con decoder falso). ~250 líneas.
 4. [ ] o4 — cierre: evidencia, `complete-webcam-product.md`, push.
 
