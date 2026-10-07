@@ -237,6 +237,26 @@ La primera versión se define con estas garantías de producto:
 
 La app debe explicar qué permisos usa y por qué. Cualquier telemetría remota, analítica, cuenta, backend o servidor público quedaría fuera del alcance actual y requeriría una decisión explícita de cambio de producto.
 
+### 8.1 Datos en el teléfono y permisos
+
+Estado actual (T28), protegido por tests de contrato (`PrivacyContractTest`, `NoNetworkListenerContractTest`):
+
+| Dato | Dónde se guarda | Cómo borrarlo |
+| --- | --- | --- |
+| Identidad segura del teléfono (clave privada) | Android Keystore; la clave no se puede exportar | Borrar los datos de la app o desinstalarla |
+| Computadoras vinculadas (huella de su identidad y nombre) | Preferencias privadas de la app | **Olvidar** en la lista de computadoras, o borrar los datos de la app |
+| Cámara, resolución y FPS elegidos | Preferencias privadas de la app | Elegir **Automático**, o borrar los datos de la app |
+
+La app tiene desactivado el backup de Android (`allowBackup="false"`): estos datos no se suben a la nube ni se copian a otro teléfono. No guarda video, fotos ni audio, y no escribe en el almacenamiento compartido.
+
+Permisos que pide y por qué:
+
+- **Cámara**: para transmitir el video y para escanear el QR de vinculación.
+- **Notificaciones** (Android 13 o posterior): para avisar si la transmisión se detiene por un error.
+- **Servicio en primer plano de cámara**: para que la transmisión siga mientras la notificación visible está activa.
+
+No pide permisos de Internet, red, Wi‑Fi, micrófono ni almacenamiento. Su única dependencia externa es la biblioteca de lectura de QR (ZXing), que funciona sin red.
+
 ## 9. Fallos y recuperación
 
 La experiencia debe cubrir fallos comunes con mensajes claros.

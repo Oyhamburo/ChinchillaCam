@@ -36,6 +36,11 @@ Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Andro
 
 1. [x] p1 — tests de contrato de privacidad y resolución de `TlsPairingProofVerifier`. RED: `manifest_requests_only_allowed_permissions` contra una violación simulada. ~250 líneas.
    - Evidencia p1: el test de permisos falló con `INTERNET` añadido sólo a su entrada XML; el guardián de sockets detectó tres usos en el verificador antes de moverlo a fuentes de test. Tras el cambio, el contrato focalizado pasó (7 tests) y el runner completo pasó (560 tests, 2 omitidos, 0 fallos, 0 errores; ensamblado y lint correctos).
-2. [ ] p2 — `docs/uso.md` §8 con datos guardados y permisos; cierre, plan general y push.
+2. [x] p2 — `docs/uso.md` §8 con datos guardados y permisos; cierre, plan general y push.
+   - Evidencia p2: `docs/uso.md` §8.1 (datos, ubicación, cómo borrarlos, backup desactivado y motivo de cada permiso). Suite completa reportada por el writer de p1: 560 tests, 2 omitidos, 0 fallas; assemble y lint aprobados.
 
 ## 8. Evidencia
+
+- Commits: `bdaf157` (p1, tests de contrato y `TlsPairingProofVerifier` movido a tests) y el commit de cierre.
+- Readback del orquestador: `TlsPairingProofVerifier` se movió sin cambios (sólo lo usaban tests); el guardia de sockets salientes quedó sin excepciones.
+- Límite: los tests de contrato son estáticos; no prueban la ausencia de tráfico en ejecución (eso queda para M9 con captura de red si se quiere).
