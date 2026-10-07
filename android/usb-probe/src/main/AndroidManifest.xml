@@ -8,7 +8,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="ChinchillaCam USB Probe"
+        android:label="ChinchillaCam"
         android:supportsRtl="true">
         <activity
             android:name=".ConnectionActivity"
