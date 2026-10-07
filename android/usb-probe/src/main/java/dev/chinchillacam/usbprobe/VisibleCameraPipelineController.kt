@@ -40,9 +40,10 @@ class VisibleCameraPipelineController(
         snapshot: CameraCatalogSnapshot,
         selectedCameraId: String?,
         cameraPermissionGranted: Boolean,
+        streamConfig: CameraStreamConfig = CameraStreamConfig(encoderConfig),
     ): VisibleCameraPipelineUiState {
         val token = prepareStart() ?: return currentState()
-        return completeStart(token, snapshot, selectedCameraId, cameraPermissionGranted)
+        return completeStart(token, snapshot, selectedCameraId, cameraPermissionGranted, streamConfig)
     }
 
     fun completeStart(
@@ -50,6 +51,7 @@ class VisibleCameraPipelineController(
         snapshot: CameraCatalogSnapshot,
         selectedCameraId: String?,
         cameraPermissionGranted: Boolean,
+        streamConfig: CameraStreamConfig = CameraStreamConfig(encoderConfig),
     ): VisibleCameraPipelineUiState {
         synchronized(this) {
             if (token != startGeneration || state.status != VisibleCameraPipelineStatus.Starting) return state
@@ -60,7 +62,7 @@ class VisibleCameraPipelineController(
             }
         }
 
-        val result = launcher.start(snapshot, selectedCameraId, cameraPermissionGranted, encoderConfig)
+        val result = launcher.start(snapshot, selectedCameraId, cameraPermissionGranted, streamConfig)
 
         return synchronized(this) {
             if (token != startGeneration || state.status != VisibleCameraPipelineStatus.Starting) {
@@ -294,6 +296,8 @@ enum class VisibleCameraPipelineStatus {
     Error,
 }
 
+data class CameraStreamConfig(val encoderConfig: H264EncoderConfig, val fpsRange: CameraFpsRange? = null)
+
 interface VisibleCameraPipelineLauncher {
     fun start(
         snapshot: CameraCatalogSnapshot,
@@ -301,6 +305,13 @@ interface VisibleCameraPipelineLauncher {
         cameraPermissionGranted: Boolean,
         encoderConfig: H264EncoderConfig,
     ): VisibleCameraPipelineLaunchResult
+
+    fun start(
+        snapshot: CameraCatalogSnapshot,
+        selectedCameraId: String?,
+        cameraPermissionGranted: Boolean,
+        streamConfig: CameraStreamConfig,
+    ): VisibleCameraPipelineLaunchResult = start(snapshot, selectedCameraId, cameraPermissionGranted, streamConfig.encoderConfig)
 }
 
 sealed class VisibleCameraPipelineLaunchResult {

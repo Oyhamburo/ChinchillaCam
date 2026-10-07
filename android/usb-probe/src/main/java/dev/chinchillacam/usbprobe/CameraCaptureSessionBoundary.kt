@@ -3,7 +3,9 @@ package dev.chinchillacam.usbprobe
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CaptureRequest
 import android.os.Handler
+import android.util.Range
 import android.view.Surface
 
 class CameraCaptureSessionBoundary(
@@ -12,12 +14,13 @@ class CameraCaptureSessionBoundary(
     fun startRepeating(
         openSession: CameraOpenSession,
         targetSurface: CaptureTargetSurface?,
+        fpsRange: CameraFpsRange? = null,
     ): CameraCaptureStartResult {
         val surface = targetSurface ?: return CameraCaptureStartResult.MissingSurface
         if (!openSession.isActive) return CameraCaptureStartResult.CameraNotActive(openSession.cameraId)
 
         val session = RepeatingCaptureSession(openSession.cameraId)
-        return when (val outcome = gateway.configureRepeating(openSession.cameraId, surface, session.callbacks)) {
+        return when (val outcome = gateway.configureRepeating(openSession.cameraId, surface, session.callbacks, fpsRange)) {
             CaptureSessionRequestOutcome.Submitted -> CameraCaptureStartResult.ConfigurationSubmitted(openSession.cameraId, session)
             is CaptureSessionRequestOutcome.Failed -> CameraCaptureStartResult.ConfigurationFailed(openSession.cameraId, outcome.reason)
         }
@@ -34,6 +37,13 @@ interface CameraCaptureSessionGateway {
         targetSurface: CaptureTargetSurface,
         callbacks: CaptureSessionCallbacks,
     ): CaptureSessionRequestOutcome
+
+    fun configureRepeating(
+        cameraId: String,
+        targetSurface: CaptureTargetSurface,
+        callbacks: CaptureSessionCallbacks,
+        fpsRange: CameraFpsRange?,
+    ): CaptureSessionRequestOutcome = configureRepeating(cameraId, targetSurface, callbacks)
 }
 
 sealed class CaptureSessionRequestOutcome {
@@ -152,6 +162,13 @@ class AndroidCameraCaptureSessionGateway(
         cameraId: String,
         targetSurface: CaptureTargetSurface,
         callbacks: CaptureSessionCallbacks,
+    ): CaptureSessionRequestOutcome = configureRepeating(cameraId, targetSurface, callbacks, null)
+
+    override fun configureRepeating(
+        cameraId: String,
+        targetSurface: CaptureTargetSurface,
+        callbacks: CaptureSessionCallbacks,
+        fpsRange: CameraFpsRange?,
     ): CaptureSessionRequestOutcome {
         val androidSurface = targetSurface as? AndroidCaptureTargetSurface
             ?: return CaptureSessionRequestOutcome.Failed("target surface is not Android Surface")
@@ -163,6 +180,7 @@ class AndroidCameraCaptureSessionGateway(
                         try {
                             val request = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                                 addTarget(androidSurface.surface)
+                                fpsRange?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(it.min, it.max)) }
                             }.build()
                             session.setRepeatingRequest(request, null, handler)
                             callbacks.onConfigured(AndroidCloseableRepeatingCaptureSession(cameraId, session))

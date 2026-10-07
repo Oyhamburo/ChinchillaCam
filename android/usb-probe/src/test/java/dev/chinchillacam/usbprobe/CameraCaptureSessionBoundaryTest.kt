@@ -7,6 +7,27 @@ import org.junit.Test
 
 class CameraCaptureSessionBoundaryTest {
     @Test
+    fun capture_request_targets_planned_fps_range() {
+        val gateway = RecordingCaptureSessionGateway(CaptureSessionRequestOutcome.Submitted)
+        val range = CameraFpsRange(24, 30)
+
+        CameraCaptureSessionBoundary(gateway).startRepeating(activeOpenSession(), FakeCaptureSurface("encoder-input"), range)
+
+        assertTrue(gateway.fpsRangeProvided)
+        assertEquals(range, gateway.targetFpsRange)
+    }
+
+    @Test
+    fun capture_request_omits_fps_range_when_plan_has_none() {
+        val gateway = RecordingCaptureSessionGateway(CaptureSessionRequestOutcome.Submitted)
+
+        CameraCaptureSessionBoundary(gateway).startRepeating(activeOpenSession(), FakeCaptureSurface("encoder-input"), null)
+
+        assertTrue(gateway.fpsRangeProvided)
+        assertEquals(null, gateway.targetFpsRange)
+    }
+
+    @Test
     fun configuresRepeatingRequestToInjectedSurfaceWhenOpenSessionActive() {
         val openSession = activeOpenSession()
         val surface = FakeCaptureSurface("encoder-input")
@@ -110,6 +131,8 @@ private class RecordingCaptureSessionGateway(
 ) : CameraCaptureSessionGateway {
     val requests = mutableListOf<CaptureSessionRequest>()
     val callbacks = mutableListOf<CaptureSessionCallbacks>()
+    var targetFpsRange: CameraFpsRange? = null
+    var fpsRangeProvided = false
     override fun configureRepeating(
         cameraId: String,
         targetSurface: CaptureTargetSurface,
@@ -118,6 +141,17 @@ private class RecordingCaptureSessionGateway(
         requests += CaptureSessionRequest(cameraId, targetSurface.label)
         this.callbacks += callbacks
         return outcome
+    }
+
+    override fun configureRepeating(
+        cameraId: String,
+        targetSurface: CaptureTargetSurface,
+        callbacks: CaptureSessionCallbacks,
+        fpsRange: CameraFpsRange?,
+    ): CaptureSessionRequestOutcome {
+        fpsRangeProvided = true
+        targetFpsRange = fpsRange
+        return configureRepeating(cameraId, targetSurface, callbacks)
     }
 }
 

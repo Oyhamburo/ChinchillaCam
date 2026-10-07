@@ -95,6 +95,51 @@ class VisibleCameraForegroundServiceOwnershipTest {
     }
 
     @Test
+    fun serviceOwnerUsesPlannedEncoderAndFpsAtLauncher() {
+        val expected = H264EncoderConfig(1920, 1080, 4_000_000, 24, 2)
+        val range = CameraFpsRange(24, 30)
+        val launched = mutableListOf<CameraStreamConfig>()
+        val launcher = object : VisibleCameraPipelineLauncher {
+            override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String?, cameraPermissionGranted: Boolean, encoderConfig: H264EncoderConfig) =
+                VisibleCameraPipelineLaunchResult.Failed("not opened in unit test")
+
+            override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String?, cameraPermissionGranted: Boolean, streamConfig: CameraStreamConfig): VisibleCameraPipelineLaunchResult {
+                launched += streamConfig
+                return VisibleCameraPipelineLaunchResult.Failed("not opened in unit test")
+            }
+        }
+        val pipeline = ControllerVisibleCameraServicePipeline(VisibleCameraPipelineController(launcher, CameraQualityPlanner.plan(null, QualityPreference.Automatic).encoderConfig))
+        val owner = VisibleCameraForegroundServicePipelineOwner(
+            pipeline,
+            VisibleCameraServiceDrainLoop.Noop,
+            qualityPlanResolver = { id ->
+                assertEquals("camera-1", id)
+                CameraQualityPlanner.plan(null, QualityPreference.Automatic).copy(encoderConfig = expected, fpsRange = range)
+            },
+        )
+
+        owner.handleStartCommand(VisibleCameraServiceStartRequest("camera-1", true), true, sampleSnapshot())
+
+        assertEquals(listOf(CameraStreamConfig(expected, range)), launched)
+    }
+
+    @Test
+    fun serviceOwnerFallsBackWhenQualityResolverFails() {
+        val pipeline = PlanRecordingServicePipeline()
+        val owner = VisibleCameraForegroundServicePipelineOwner(
+            pipeline,
+            VisibleCameraServiceDrainLoop.Noop,
+            qualityPlanResolver = { throw IllegalStateException("catalog snapshot unavailable") },
+        )
+
+        val outcome = owner.handleStartCommand(VisibleCameraServiceStartRequest("camera-1", true), true, sampleSnapshot())
+
+        assertEquals(VisibleCameraServiceCommandOutcome.Started, outcome)
+        assertEquals(H264EncoderConfig(1280, 720, 2_000_000, 30, 2), pipeline.plan?.encoderConfig)
+        assertEquals(null, pipeline.plan?.fpsRange)
+    }
+
+    @Test
     fun serviceOwnerDoesNotHoldActivityReference() {
         val owner = VisibleCameraForegroundServicePipelineOwner(FakeServicePipeline(), VisibleCameraServiceDrainLoop.Noop)
 
@@ -113,6 +158,17 @@ class VisibleCameraForegroundServiceOwnershipTest {
             ),
         ),
     )
+}
+
+private class PlanRecordingServicePipeline : VisibleCameraServicePipeline {
+    var plan: QualityPlan? = null
+    override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String, cameraPermissionGranted: Boolean) = VisibleCameraPipelineStatus.Running
+    override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String, cameraPermissionGranted: Boolean, plan: QualityPlan): VisibleCameraPipelineStatus {
+        this.plan = plan
+        return VisibleCameraPipelineStatus.Running
+    }
+    override fun drainOnce(maxOutputs: Int) = VisibleCameraPipelineStatus.Running
+    override fun stop() = VisibleCameraPipelineStatus.Stopped
 }
 
 private class FakeServicePipeline : VisibleCameraServicePipeline {

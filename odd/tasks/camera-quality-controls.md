@@ -49,7 +49,8 @@ Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Andro
 
 1. [x] q1 — `QualityPreference` + store + `CameraQualityPlanner` puro (opciones, automático, fallback, bitrate). RED: `automatic_prefers_720p30_when_supported`. ~300 líneas.
    - Evidencia q1: RED observado por referencias no resueltas a `CameraQualityPlanner` y `QualityPreference` en `automatic_prefers_720p30_when_supported`; GREEN focalizado 13/0/0; runner completo 509 pruebas, 2 omitidas, 0 fallas (base 496/2/0); `assembleDebug` y `lintDebug` correctos; `git diff --check` correcto.
-2. [ ] q2 — la captura aplica el rango de FPS y el servicio arma el encoder desde el plan. RED: `capture_request_targets_planned_fps_range`. ~250 líneas.
+2. [x] q2 — la captura aplica el rango de FPS y el servicio arma el encoder desde el plan. RED: `capture_request_targets_planned_fps_range`. ~250 líneas.
+   - Evidencia q2: RED observado por argumento excedente en `startRepeating` para `capture_request_targets_planned_fps_range`; GREEN focalizado para captura y propietario del servicio; runner completo 513 pruebas, 2 omitidas, 0 fallas; `assembleDebug` y `lintDebug` correctos. El plan se resuelve en el ejecutor de inicio; si falla la resolución, se usa el plan automático sin rango de FPS.
 3. [ ] q3 — reconfiguración en vivo (`restart` del controlador, `reconfigure` del owner, `ACTION_RECONFIGURE`, vuelta atrás si falla). RED: `reconfigure_restarts_pipeline_without_ending_session`. ~350 líneas.
 4. [ ] q4 — UI de calidad en la pantalla de conexión (planner + activity + preferencia + envío de la reconfiguración). RED: `connected_screen_offers_supported_quality_options`. ~350 líneas.
 5. [ ] q5 — cierre: suite completa, evidencia, `complete-webcam-product.md`, push.

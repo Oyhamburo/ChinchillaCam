@@ -14,7 +14,15 @@ class AndroidVisibleCameraPipelineLauncher(
         selectedCameraId: String?,
         cameraPermissionGranted: Boolean,
         encoderConfig: H264EncoderConfig,
+    ): VisibleCameraPipelineLaunchResult = start(snapshot, selectedCameraId, cameraPermissionGranted, CameraStreamConfig(encoderConfig))
+
+    override fun start(
+        snapshot: CameraCatalogSnapshot,
+        selectedCameraId: String?,
+        cameraPermissionGranted: Boolean,
+        streamConfig: CameraStreamConfig,
     ): VisibleCameraPipelineLaunchResult {
+        val encoderConfig = streamConfig.encoderConfig
         val openSession = when (val opened = CameraDeviceOpenBoundary(
             AndroidCameraDeviceOpenGateway(cameraManager, handler),
         ).requestOpenSelected(snapshot, selectedCameraId, cameraPermissionGranted)) {
@@ -41,7 +49,7 @@ class AndroidVisibleCameraPipelineLauncher(
         }
         val capture = when (val started = CameraCaptureSessionBoundary(
             AndroidCameraCaptureSessionGateway(androidDevice.camera, handler),
-        ).startRepeating(openSession, encoder.inputSurface)) {
+        ).startRepeating(openSession, encoder.inputSurface, streamConfig.fpsRange)) {
             CameraCaptureStartResult.MissingSurface -> {
                 cleanupStartup(encoder.session, openSession)
                 return VisibleCameraPipelineLaunchResult.Failed("No hay superficie de encoder para la cámara.")

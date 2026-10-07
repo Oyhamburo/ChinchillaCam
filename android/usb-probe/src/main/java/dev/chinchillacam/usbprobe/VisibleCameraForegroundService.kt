@@ -36,11 +36,17 @@ class VisibleCameraForegroundService : Service() {
                     cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager,
                     handler = cameraCallbackHandler,
                 ),
-                encoderConfig = H264EncoderConfig(width = 1280, height = 720, bitrate = 2_000_000, frameRate = 30, iFrameIntervalSeconds = 2),
+                encoderConfig = CameraQualityPlanner.plan(null, QualityPreference.Automatic).encoderConfig,
                 encodedVideoSinkFactory = sinkFactory,
             ),
         ),
         drainLoop = ThreadedVisibleCameraServiceDrainLoop(),
+        qualityPlanResolver = { cameraId ->
+            val preferences = getSharedPreferences("dev.chinchillacam.usbprobe.camera", Context.MODE_PRIVATE)
+            val preference = QualityPreferenceStore(SharedPreferencesStringStore(preferences, "quality_preference")).load()
+            val entry = currentCameraCatalogSnapshot().entries.firstOrNull { it.id == cameraId }
+            CameraQualityPlanner.plan(entry, preference)
+        },
         onPipelineFailureStop = { mainHandler.post { stopForegroundAndSelfPreservingStatus() } },
     )
 
@@ -487,6 +493,8 @@ class VisibleCameraForegroundServiceCommandRunner(
 
 interface VisibleCameraServicePipeline {
     fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String, cameraPermissionGranted: Boolean): VisibleCameraPipelineStatus
+    fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String, cameraPermissionGranted: Boolean, plan: QualityPlan): VisibleCameraPipelineStatus =
+        start(snapshot, selectedCameraId, cameraPermissionGranted)
     fun drainOnce(maxOutputs: Int): VisibleCameraPipelineStatus
     fun stop(): VisibleCameraPipelineStatus
     fun currentDetail(): String = ""
@@ -507,6 +515,7 @@ class VisibleCameraForegroundServicePipelineOwner(
     private val drainLoop: VisibleCameraServiceDrainLoop,
     private val policy: VisibleCameraForegroundServiceCommandPolicy = VisibleCameraForegroundServiceCommandPolicy(),
     private val onPipelineFailureStop: () -> Unit = {},
+    private val qualityPlanResolver: (String) -> QualityPlan = { CameraQualityPlanner.plan(null, QualityPreference.Automatic) },
 ) {
     val requiresActivityReference: Boolean = false
     private var active: Boolean = false
@@ -548,7 +557,12 @@ class VisibleCameraForegroundServicePipelineOwner(
         }
 
         decision as VisibleCameraServiceStartDecision.Allowed
-        val status = pipeline.start(snapshot, decision.cameraId, cameraPermissionGranted)
+        val plan = try {
+            qualityPlanResolver(decision.cameraId)
+        } catch (_: RuntimeException) {
+            CameraQualityPlanner.plan(null, QualityPreference.Automatic)
+        }
+        val status = pipeline.start(snapshot, decision.cameraId, cameraPermissionGranted, plan)
         val shouldStopLate = synchronized(this) {
             if (token != generation) {
                 true
@@ -627,6 +641,9 @@ class ControllerVisibleCameraServicePipeline(
 ) : VisibleCameraServicePipeline {
     override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String, cameraPermissionGranted: Boolean): VisibleCameraPipelineStatus =
         controller.start(snapshot, selectedCameraId, cameraPermissionGranted).status
+
+    override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String, cameraPermissionGranted: Boolean, plan: QualityPlan): VisibleCameraPipelineStatus =
+        controller.start(snapshot, selectedCameraId, cameraPermissionGranted, CameraStreamConfig(plan.encoderConfig, plan.fpsRange)).status
 
     override fun drainOnce(maxOutputs: Int): VisibleCameraPipelineStatus = controller.drainOnce(maxOutputs).status
 

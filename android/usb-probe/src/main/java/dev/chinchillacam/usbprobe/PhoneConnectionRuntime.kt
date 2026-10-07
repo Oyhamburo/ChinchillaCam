@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.SharedPreferences
 import android.hardware.camera2.CameraManager
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
@@ -102,19 +101,6 @@ object PhoneConnectionRuntime {
     private object UnusedByteProofVerifier : PairingProofVerifier {
         override fun verify(challenge: PairingProofChallenge, proofBytes: ByteArray): PairingProofVerificationResult =
             PairingProofVerificationResult.Rejected("byte-based pairing proof is not used over USB")
-    }
-
-    private class SharedPreferencesStringStore(
-        private val preferences: SharedPreferences,
-        private val key: String,
-    ) : StringPreferenceStore {
-        override fun get(): String? = preferences.getString(key, null)
-        override fun put(value: String) {
-            preferences.edit().putString(key, value).apply()
-        }
-        override fun clear() {
-            preferences.edit().remove(key).apply()
-        }
     }
 
     /** Same preference file and key as [UsbProbeActivity]'s camera selection (kept in sync by hand). */
