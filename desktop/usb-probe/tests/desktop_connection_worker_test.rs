@@ -36,6 +36,11 @@ use usb_probe::{
     SessionRuntimeConfig, TrustedPhoneIdentity, UsbTlsCiphertextStream,
 };
 
+use usb_probe::quality_control::{
+    encode_quality_state, parse_set_quality, CameraSelection, QualityMode, QualityState,
+    QUALITY_CONTROL_CAPABILITY,
+};
+
 const SESSION_ID: &str = "desktop-worker-usb";
 const HELLO_SEQUENCE: i32 = 1;
 const PHONE_LABEL: &str = "Reconnecting Phone";
@@ -444,6 +449,176 @@ fn pairing_qr_refreshes_before_expiry() {
     fixture.cleanup();
 }
 
+#[test]
+fn worker_subscribes_and_reports_quality_state() {
+    let fixture = Fixture::new("quality-state");
+    let (worker, events, link) = fixture.spawn();
+    let phone_id = fixture.phone_id();
+    let phone = fixture.spawn_phone(
+        link.connect_phone(),
+        fixture.phone_identity.clone(),
+        None,
+        move |phone| {
+            phone_hello_with_capabilities(
+                phone,
+                &phone_id,
+                vec![QUALITY_CONTROL_CAPABILITY.into()],
+            );
+            let frame = read_session_frame(phone, Instant::now() + OP_TIMEOUT).unwrap();
+            assert_eq!(
+                frame.payload(),
+                &SessionFramePayload::CameraControlCommand {
+                    command: "quality_subscribe".into(),
+                    arguments: [("v".into(), "1".into())].into(),
+                }
+            );
+            let state = sample_quality_state();
+            let (command, arguments) = encode_quality_state(&state);
+            send_phone_frame(
+                phone,
+                HELLO_SEQUENCE + 1,
+                SessionFramePayload::CameraControlCommand { command, arguments },
+            );
+            // The worker must remain active after consuming the inbound control.
+            thread::sleep(Duration::from_millis(150));
+        },
+    );
+    let seen = expect_event(&events, |e| matches!(e, DesktopEvent::QualityState(_)));
+    assert!(seen
+        .iter()
+        .any(|e| matches!(e, DesktopEvent::Connected { .. })));
+    assert_eq!(
+        seen.last(),
+        Some(&DesktopEvent::QualityState(sample_quality_state()))
+    );
+    phone.join().unwrap();
+    assert!(worker.shutdown());
+    fixture.cleanup();
+}
+
+#[test]
+fn worker_sends_increasing_set_quality_requests() {
+    let fixture = Fixture::new("set-quality");
+    let (worker, events, link) = fixture.spawn();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let phone_id = fixture.phone_id();
+    let phone = fixture.spawn_phone(link.connect_phone(), fixture.phone_identity.clone(), None, move |phone| {
+        phone_hello_with_capabilities(phone, &phone_id, vec![QUALITY_CONTROL_CAPABILITY.into()]);
+        assert!(matches!(read_session_frame(phone, Instant::now() + OP_TIMEOUT).unwrap().payload(),
+            SessionFramePayload::CameraControlCommand { command, .. } if command == "quality_subscribe"));
+        ready_tx.send(()).unwrap();
+        for req in 1..=2 {
+            let frame = read_session_frame(phone, Instant::now() + OP_TIMEOUT).unwrap();
+            let SessionFramePayload::CameraControlCommand { command, arguments } = frame.payload() else {
+                panic!("expected set_quality: {frame:?}");
+            };
+            let set = parse_set_quality(command, arguments).unwrap();
+            assert_eq!(set.req, req);
+            assert_eq!(set.camera, Some(CameraSelection::Id("back".into())));
+            assert_eq!(set.mode, QualityMode::Manual);
+            assert_eq!(set.manual, Some((1280, 720, 30)));
+        }
+    });
+    expect_event(&events, |e| matches!(e, DesktopEvent::Connected { .. }));
+    ready_rx.recv_timeout(OP_TIMEOUT).unwrap();
+    for _ in 0..2 {
+        worker.send(DesktopCommand::SetQuality {
+            camera: Some(CameraSelection::Id("back".into())),
+            mode: QualityMode::Manual,
+            manual: Some((1280, 720, 30)),
+        });
+    }
+    phone.join().unwrap();
+    assert!(worker.shutdown());
+    fixture.cleanup();
+}
+
+#[test]
+fn worker_ignores_quality_commands_for_incapable_phone() {
+    let fixture = Fixture::new("no-quality-capability");
+    let (worker, events, link) = fixture.spawn();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (sent_tx, sent_rx) = mpsc::channel();
+    let phone = fixture.phone_thread(link.connect_phone(), move |phone, _| {
+        ready_tx.send(()).unwrap();
+        sent_rx.recv_timeout(OP_TIMEOUT).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(350);
+        while Instant::now() < deadline {
+            match read_session_frame(phone, Instant::now() + Duration::from_millis(100)) {
+                Ok(frame) => assert!(
+                    !matches!(
+                        frame.payload(),
+                        SessionFramePayload::CameraControlCommand { .. }
+                    ),
+                    "unexpected frame 7: {frame:?}"
+                ),
+                Err(_) => break,
+            }
+        }
+    });
+    expect_event(&events, |e| matches!(e, DesktopEvent::Connected { .. }));
+    ready_rx.recv_timeout(OP_TIMEOUT).unwrap();
+    worker.send(DesktopCommand::SetQuality {
+        camera: None,
+        mode: QualityMode::Auto,
+        manual: None,
+    });
+    sent_tx.send(()).unwrap();
+    phone.join().unwrap();
+    assert!(worker.shutdown());
+    fixture.cleanup();
+}
+
+#[test]
+fn malformed_quality_state_is_ignored_without_ending_session() {
+    let fixture = Fixture::new("malformed-quality");
+    let (worker, events, link) = fixture.spawn();
+    let phone_id = fixture.phone_id();
+    let phone = fixture.spawn_phone(link.connect_phone(), fixture.phone_identity.clone(), None, move |phone| {
+        phone_hello_with_capabilities(phone, &phone_id, vec![QUALITY_CONTROL_CAPABILITY.into()]);
+        assert!(matches!(read_session_frame(phone, Instant::now() + OP_TIMEOUT).unwrap().payload(),
+            SessionFramePayload::CameraControlCommand { command, .. } if command == "quality_subscribe"));
+        send_phone_frame(phone, HELLO_SEQUENCE + 1, SessionFramePayload::CameraControlCommand {
+            command: "quality_state".into(), arguments: [("v".into(), "1".into())].into(),
+        });
+        send_phone_frame(phone, HELLO_SEQUENCE + 2, SessionFramePayload::CameraControlCommand {
+            command: "unknown_command".into(), arguments: Default::default(),
+        });
+        let (command, arguments) = encode_quality_state(&sample_quality_state());
+        send_phone_frame(phone, HELLO_SEQUENCE + 3, SessionFramePayload::CameraControlCommand { command, arguments });
+        thread::sleep(Duration::from_millis(150));
+    });
+    let seen = expect_event(&events, |e| matches!(e, DesktopEvent::QualityState(_)));
+    assert_eq!(
+        seen.iter()
+            .filter(|e| matches!(e, DesktopEvent::QualityState(_)))
+            .count(),
+        1
+    );
+    assert!(!seen
+        .iter()
+        .any(|e| matches!(e, DesktopEvent::SessionEnded(_))));
+    phone.join().unwrap();
+    assert!(worker.shutdown());
+    fixture.cleanup();
+}
+
+fn sample_quality_state() -> QualityState {
+    QualityState {
+        req: None,
+        error: None,
+        mode: QualityMode::Auto,
+        selected_camera: CameraSelection::Auto,
+        cameras: vec![],
+        resolutions: vec![],
+        frame_rates: vec![],
+        applied_width: 640,
+        applied_height: 480,
+        applied_fps: 30,
+        summary: "Auto".into(),
+    }
+}
+
 // --- Harness ---------------------------------------------------------------------------
 
 fn test_config() -> DesktopWorkerConfig {
@@ -618,12 +793,23 @@ fn expect_event(events: &Receiver, matches: impl Fn(&DesktopEvent) -> bool) -> V
 }
 
 fn phone_hello(phone: &mut PhoneStream, device_id: &str) -> SessionFrame {
-    let hello = SessionFramePayload::HandshakeHello {
-        device_id: device_id.to_string(),
-        app_name: "ChinchillaCam".to_string(),
-        capabilities: vec!["video".to_string()],
-    };
-    send_phone_frame(phone, HELLO_SEQUENCE, hello);
+    phone_hello_with_capabilities(phone, device_id, vec!["video".into()])
+}
+
+fn phone_hello_with_capabilities(
+    phone: &mut PhoneStream,
+    device_id: &str,
+    capabilities: Vec<String>,
+) -> SessionFrame {
+    send_phone_frame(
+        phone,
+        HELLO_SEQUENCE,
+        SessionFramePayload::HandshakeHello {
+            device_id: device_id.to_string(),
+            app_name: "ChinchillaCam".to_string(),
+            capabilities,
+        },
+    );
     read_session_frame(phone, Instant::now() + OP_TIMEOUT).unwrap()
 }
 

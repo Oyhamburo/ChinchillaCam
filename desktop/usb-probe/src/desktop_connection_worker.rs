@@ -21,8 +21,12 @@ use std::{
 };
 
 use crate::{
-    accept_phone_pairing_connection, accept_phone_reconnect_connection, AuthenticatedPhoneSession,
-    DecodedFrameCounter, DesktopMetricsSnapshot, DesktopSessionPipeline,
+    accept_phone_pairing_connection, accept_phone_reconnect_connection,
+    quality_control::{
+        encode_set_quality, parse_quality_state, subscribe_command, CameraSelection, QualityMode,
+        QualityState, SetQuality, QUALITY_STATE_COMMAND,
+    },
+    AuthenticatedPhoneSession, DecodedFrameCounter, DesktopMetricsSnapshot, DesktopSessionPipeline,
     DesktopSessionPipelineError, DesktopTlsIdentity, DesktopVideoSessionReceiver,
     FileTrustedPhoneStore, PairingQrIssuer, PairingQrIssuerError, PairingShortCode,
     PendingPairedPhoneSession, PhoneConnectionError, SessionEnd, SessionRuntimeConfig,
@@ -110,10 +114,19 @@ pub enum DesktopWorkerSpawnError {
 pub enum DesktopCommand {
     StartPairing,
     CancelPairing,
-    ConfirmPairing { label: String },
+    ConfirmPairing {
+        label: String,
+    },
     RejectPairing,
     Disconnect,
-    ForgetPhone { phone_id: String },
+    ForgetPhone {
+        phone_id: String,
+    },
+    SetQuality {
+        camera: Option<CameraSelection>,
+        mode: QualityMode,
+        manual: Option<(u32, u32, u32)>,
+    },
     Shutdown,
 }
 
@@ -162,6 +175,7 @@ pub enum DesktopEvent {
         label: Option<String>,
     },
     Metrics(DesktopMetricsSnapshot),
+    QualityState(QualityState),
     SessionEnded(DesktopSessionEndReason),
     ConnectionFailed(DesktopConnectionFailure),
 }
@@ -202,6 +216,7 @@ impl DesktopConnectionWorker {
             events,
             commands: receiver,
             pairing_expires_at: None,
+            next_quality_req: 0,
         };
         let thread = thread::Builder::new()
             .name("desktop-connection-worker".to_string())
@@ -258,6 +273,7 @@ struct Worker<L, F, E> {
     events: E,
     commands: Receiver<DesktopCommand>,
     pairing_expires_at: Option<u64>,
+    next_quality_req: u64,
 }
 
 impl<L, F, D, E> Worker<L, F, E>
@@ -306,7 +322,9 @@ where
             }
             // Only meaningful while a pairing candidate is pending, which happens inside the
             // pairing step (d4b); outside of it there is nothing to confirm or reject.
-            DesktopCommand::ConfirmPairing { .. } | DesktopCommand::RejectPairing => {}
+            DesktopCommand::ConfirmPairing { .. }
+            | DesktopCommand::RejectPairing
+            | DesktopCommand::SetQuality { .. } => {}
             DesktopCommand::Disconnect => {
                 if connected.is_some() {
                     return Flow::EndSession;
@@ -437,7 +455,9 @@ where
                     self.handle_command(command, None);
                 }
                 // No session to disconnect, and the pending pairing already used its QR.
-                DesktopCommand::Disconnect | DesktopCommand::StartPairing => {}
+                DesktopCommand::Disconnect
+                | DesktopCommand::StartPairing
+                | DesktopCommand::SetQuality { .. } => {}
             }
         }
     }
@@ -481,6 +501,7 @@ where
             self.fail(DesktopConnectionFailure::Link(PhoneLinkError::Usb(error)));
             return Flow::Continue;
         }
+        let quality_capable = session.supports_quality_control();
         let phone_id = session.phone_id.clone();
         let label = self.store.list().ok().and_then(|phones| {
             phones
@@ -508,9 +529,25 @@ where
                 return Flow::Continue;
             }
         };
+        if quality_capable {
+            let (command, arguments) = subscribe_command();
+            if let Err(end) = pipeline.send_command(command, arguments, Instant::now()) {
+                (self.events)(DesktopEvent::Metrics(pipeline.metrics(Instant::now())));
+                (self.events)(DesktopEvent::SessionEnded(end_reason(end)));
+                return Flow::Continue;
+            }
+        }
         let mut next_metrics = start + self.config.metrics_interval;
         loop {
-            let flow = self.drain_session_commands(&phone_id);
+            let flow = match self.drain_session_commands(&phone_id, quality_capable, &mut pipeline)
+            {
+                Ok(flow) => flow,
+                Err(end) => {
+                    (self.events)(DesktopEvent::Metrics(pipeline.metrics(Instant::now())));
+                    (self.events)(DesktopEvent::SessionEnded(end_reason(end)));
+                    return Flow::Continue;
+                }
+            };
             if flow != Flow::Continue {
                 let (_end, snapshot) = pipeline.shutdown();
                 (self.events)(DesktopEvent::Metrics(snapshot));
@@ -529,6 +566,13 @@ where
                 (self.events)(DesktopEvent::SessionEnded(end_reason(end)));
                 return Flow::Continue;
             }
+            for (command, arguments) in pipeline.take_controls() {
+                if command == QUALITY_STATE_COMMAND {
+                    if let Ok(state) = parse_quality_state(&command, &arguments) {
+                        (self.events)(DesktopEvent::QualityState(state));
+                    }
+                }
+            }
             if now >= next_metrics {
                 (self.events)(DesktopEvent::Metrics(pipeline.metrics(now)));
                 next_metrics = now + self.config.metrics_interval;
@@ -536,15 +580,39 @@ where
         }
     }
 
-    fn drain_session_commands(&mut self, phone_id: &str) -> Flow {
+    fn drain_session_commands(
+        &mut self,
+        phone_id: &str,
+        quality_capable: bool,
+        pipeline: &mut DesktopSessionPipeline<L::Stream, StaticFrameKindClassifier, D>,
+    ) -> Result<Flow, SessionEnd> {
         loop {
             let flow = match self.commands.try_recv() {
+                Ok(DesktopCommand::SetQuality {
+                    camera,
+                    mode,
+                    manual,
+                }) => {
+                    if quality_capable {
+                        if let Some(req) = self.next_quality_req.checked_add(1) {
+                            self.next_quality_req = req;
+                            let (command, arguments) = encode_set_quality(&SetQuality {
+                                req,
+                                camera,
+                                mode,
+                                manual,
+                            });
+                            pipeline.send_command(command, arguments, Instant::now())?;
+                        }
+                    }
+                    Flow::Continue
+                }
                 Ok(command) => self.handle_command(command, Some(phone_id)),
-                Err(TryRecvError::Empty) => return Flow::Continue,
+                Err(TryRecvError::Empty) => return Ok(Flow::Continue),
                 Err(TryRecvError::Disconnected) => Flow::Stop,
             };
             if flow != Flow::Continue {
-                return flow;
+                return Ok(flow);
             }
         }
     }

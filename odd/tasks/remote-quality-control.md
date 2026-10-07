@@ -49,7 +49,8 @@ Runners: `export PATH=$HOME/.cargo/bin:$PATH` y en `desktop/usb-probe` y `deskto
    - Evidencia c1: RED por módulo ausente; GREEN de ida y vuelta, mapa literal, límites, capacidades y sesión HELLO; verificación de formato, tests y clippy en usb-probe y tests en app.
 2. [x] c2 — `SessionRuntime` acepta frames 7 entrantes (cola de control) y el pipeline expone enviar y recibir control. RED: `inbound_camera_control_is_queued_not_a_violation`. ~250 líneas.
    - Evidencia c2: RED por ausencia de `take_controls`; GREEN de recepción con secuencia, cola FIFO acotada con descarte del más antiguo, envío/recepción por pipeline y mapa literal de Android; verificación de formato, tests y clippy en usb-probe y tests en app.
-3. [ ] c3 — worker: `quality_subscribe` automático si hay capacidad, `DesktopCommand::SetQuality`, `DesktopEvent::QualityState`. RED: `worker_subscribes_and_reports_quality_state`. ~300 líneas.
+3. [x] c3 — worker: `quality_subscribe` automático si hay capacidad, `DesktopCommand::SetQuality`, `DesktopEvent::QualityState`. RED: `worker_subscribes_and_reports_quality_state`. ~300 líneas.
+   - Evidencia c3: RED por ausencia del evento `QualityState`; GREEN de suscripción negociada, estado entrante, pedidos con `req` creciente, ausencia de frame 7 sin capacidad y descarte de estados inválidos; verificación de formato, tests y clippy en usb-probe y tests/clippy en app.
 4. [ ] c4 — app: sección de calidad en la ventana (cámara, resolución, FPS, automático; deshabilitadas con motivo). RED: `connected_view_shows_remote_quality_options`. ~300 líneas.
 5. [ ] c5 — cierre: verificación, docs, plan general, push.
 

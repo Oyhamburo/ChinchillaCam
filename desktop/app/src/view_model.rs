@@ -156,6 +156,8 @@ impl AppState {
                 self.notice = None;
             }
             DesktopEvent::Metrics(metrics) => self.metrics = Some(metrics),
+            // Quality controls are rendered in c4; keep the existing view unchanged for c3.
+            DesktopEvent::QualityState(_) => {}
             DesktopEvent::SessionEnded(reason) => {
                 self.phase = Phase::Waiting;
                 self.metrics = None;
