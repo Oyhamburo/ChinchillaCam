@@ -44,6 +44,31 @@ class VisibleCameraForegroundServiceThreadingTest {
     }
 
     @Test
+    fun reconfigureCommandDispatchesOnStartExecutorAndDoesNotRestartForeground() {
+        val pipeline = BlockingServicePipeline()
+        pipeline.releaseStart()
+        val owner = VisibleCameraForegroundServicePipelineOwner(pipeline, VisibleCameraServiceDrainLoop.Noop)
+        owner.handleStartCommand(VisibleCameraServiceStartRequest("camera-1", true), true, sampleSnapshot())
+        val scheduler = CapturingScheduler()
+        var foregroundCalls = 0
+        val runner = VisibleCameraForegroundServiceCommandRunner(owner, scheduler, object : VisibleCameraForegroundStarter {
+            override fun startForegroundForVisibleCamera() { foregroundCalls++ }
+        }, stopService = { throw AssertionError("reconfigure must not stop the service") })
+
+        runner.handleReconfigure(null, true) { sampleSnapshot() }
+
+        assertEquals(1, scheduler.scheduledCount)
+        assertEquals(0, foregroundCalls)
+        assertEquals(0, pipeline.stopCalls.get())
+        val worker = Thread { scheduler.runOnlyScheduled() }
+        worker.start()
+        worker.join(1_000)
+        assertFalse(worker.isAlive)
+        assertEquals(1, pipeline.stopCalls.get())
+        assertEquals(VisibleCameraServiceState.Running, VisibleCameraServiceStatusStore.snapshot().state)
+    }
+
+    @Test
     fun stopWhileBackgroundStartIsBlockedReturnsPromptlyAndStopsLateRunningGeneration() {
         val pipeline = BlockingServicePipeline()
         val owner = VisibleCameraForegroundServicePipelineOwner(pipeline, VisibleCameraServiceDrainLoop.Noop)

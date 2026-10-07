@@ -114,6 +114,10 @@ class VisibleCameraPipelineController(
     @Synchronized
     fun stopForLifecycle(): VisibleCameraPipelineUiState = stopWithMessage("Cámara local detenida al ocultar la app.")
 
+    /** Releases only the capture/encoder handle and its sink; the session remains owned by the service. */
+    @Synchronized
+    fun stopForReconfigure(): VisibleCameraPipelineUiState = stopWithMessage("Reiniciando cámara local para aplicar la nueva calidad.")
+
     private fun drainChunks(running: VisibleCameraPipelineHandle, chunks: List<EncodedVideoChunk>): VisibleCameraPipelineUiState {
         val sink = activeEncodedVideoSink ?: run {
             running.consumeEncoded(chunks.size)

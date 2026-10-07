@@ -343,6 +343,39 @@ class VisibleCameraPipelineControllerTest {
     }
 
     @Test
+    fun reconfigureStopClosesOldHandleAndSinkAndCanStartWithNewConfig() {
+        val first = RecordingVisibleHandle()
+        val second = RecordingVisibleHandle()
+        val transports = mutableListOf<ControllerRecordingEncodedVideoTransport>()
+        val launched = mutableListOf<CameraStreamConfig>()
+        val launcher = object : VisibleCameraPipelineLauncher {
+            private val handles = listOf(first, second).iterator()
+            override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String?, cameraPermissionGranted: Boolean, encoderConfig: H264EncoderConfig) =
+                VisibleCameraPipelineLaunchResult.Failed("use stream config")
+            override fun start(snapshot: CameraCatalogSnapshot, selectedCameraId: String?, cameraPermissionGranted: Boolean, streamConfig: CameraStreamConfig): VisibleCameraPipelineLaunchResult {
+                launched += streamConfig
+                return VisibleCameraPipelineLaunchResult.Running(handles.next())
+            }
+        }
+        val controller = VisibleCameraPipelineController(launcher, sampleConfig(), encodedVideoSinkFactory = {
+            ControllerRecordingEncodedVideoTransport().also { transports += it }.let { LegacyEncodedVideoEgressSink(EncodedVideoSessionFrameSink(it)) }
+        })
+        controller.start(sampleSnapshot(), "camera-1", true)
+
+        assertEquals(VisibleCameraPipelineStatus.Stopped, controller.stopForReconfigure().status)
+        val config = CameraStreamConfig(H264EncoderConfig(1920, 1080, 4_000_000, 24, 2), CameraFpsRange(24, 30))
+        assertEquals(VisibleCameraPipelineStatus.Running, controller.start(sampleSnapshot(), "camera-1", true, config).status)
+
+        assertEquals(listOf(CameraStreamConfig(sampleConfig()), config), launched)
+        assertEquals(1, first.stopCount)
+        assertEquals(2, transports.size)
+        assertEquals(1, transports[0].closeCount)
+        assertEquals(0, transports[1].closeCount)
+        controller.stopFromUser()
+        assertEquals(1, second.stopCount)
+    }
+
+    @Test
     fun restartAfterExplicitStopCreatesFreshFakeEgressSink() {
         val firstHandle = RecordingVisibleHandle(drainResult = H264DrainResult.Chunks(listOf(
             EncodedVideoChunk(byteArrayOf(1), presentationTimeUs = 1L, isCodecConfig = false, isKeyFrame = false),

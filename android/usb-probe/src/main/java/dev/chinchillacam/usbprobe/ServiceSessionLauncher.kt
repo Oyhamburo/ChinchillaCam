@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** Port over the camera foreground service started in session mode. */
 interface CameraServiceControl {
     fun start(cameraId: String)
+    fun reconfigure(cameraId: String?)
     fun stop()
 }
 
@@ -18,6 +19,10 @@ class AndroidCameraServiceControl(context: Context) : CameraServiceControl {
     override fun start(cameraId: String) {
         val intent = VisibleCameraForegroundService.sessionStartIntent(context, cameraId)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+    }
+
+    override fun reconfigure(cameraId: String?) {
+        context.startService(VisibleCameraForegroundService.reconfigureIntent(context, cameraId))
     }
 
     override fun stop() {

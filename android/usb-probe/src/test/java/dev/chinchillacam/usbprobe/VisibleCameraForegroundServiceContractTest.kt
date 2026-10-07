@@ -36,6 +36,17 @@ class VisibleCameraForegroundServiceContractTest {
     }
 
     @Test
+    fun reconfigureIntentUsesExistingServiceAndNeverStartsForegroundOnColdIntent() {
+        val source = File("src/main/java/dev/chinchillacam/usbprobe/VisibleCameraForegroundService.kt").readText()
+        val launcher = File("src/main/java/dev/chinchillacam/usbprobe/ServiceSessionLauncher.kt").readText()
+        assertTrue(source.contains("ACTION_RECONFIGURE ->"))
+        assertTrue(source.contains("if (owner == null)"))
+        assertTrue(source.contains("stopSelf(startId)"))
+        assertTrue(source.contains("commandRunner(owner, VisibleCameraForegroundServiceNotificationSpec.session()).handleReconfigure("))
+        assertTrue(launcher.contains("context.startService(VisibleCameraForegroundService.reconfigureIntent(context, cameraId))"))
+    }
+
+    @Test
     fun manifestDeclaresCameraForegroundServiceContract() {
         val manifest = File("src/main/AndroidManifest.xml").readText()
 

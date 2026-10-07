@@ -169,6 +169,8 @@ class ServiceSessionLauncherTest {
             started += cameraId
         }
 
+        override fun reconfigure(cameraId: String?) = Unit
+
         override fun stop() {
             stops += 1
         }

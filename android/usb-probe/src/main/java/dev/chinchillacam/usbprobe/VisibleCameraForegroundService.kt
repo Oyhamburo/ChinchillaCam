@@ -65,6 +65,19 @@ class VisibleCameraForegroundService : Service() {
                     is ServicePipelineSinkResolution.Session -> startPipeline(intent, ownerFor(resolution), VisibleCameraForegroundServiceNotificationSpec.session())
                 }
             }
+            ACTION_RECONFIGURE -> {
+                val owner = pipelineOwner
+                if (owner == null) {
+                    // A cold start by this intent must never open a camera or become a foreground service.
+                    stopSelf(startId)
+                } else if (sessionToken != null) {
+                    commandRunner(owner, VisibleCameraForegroundServiceNotificationSpec.session()).handleReconfigure(
+                        intent.getStringExtra(EXTRA_SELECTED_CAMERA_ID),
+                        currentCameraPermissionGranted(),
+                        snapshotProvider = { currentCameraCatalogSnapshot() },
+                    )
+                }
+            }
             ACTION_STOP -> {
                 VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
                 pipelineOwner?.handleStopCommand()
@@ -90,7 +103,14 @@ class VisibleCameraForegroundService : Service() {
     }
 
     private fun startPipeline(intent: Intent, owner: VisibleCameraForegroundServicePipelineOwner, notification: VisibleCameraForegroundServiceNotificationSpec) {
-        VisibleCameraForegroundServiceCommandRunner(
+        commandRunner(owner, notification).handleStart(
+            request = VisibleCameraServiceStartRequest.fromIntent(intent),
+            cameraPermissionGranted = currentCameraPermissionGranted(),
+            snapshotProvider = { currentCameraCatalogSnapshot() },
+        )
+    }
+
+    private fun commandRunner(owner: VisibleCameraForegroundServicePipelineOwner, notification: VisibleCameraForegroundServiceNotificationSpec) = VisibleCameraForegroundServiceCommandRunner(
             owner = owner,
             scheduler = startExecutor,
             foreground = object : VisibleCameraForegroundStarter {
@@ -104,12 +124,7 @@ class VisibleCameraForegroundService : Service() {
                     stopForegroundAndSelf()
                 }
             },
-        ).handleStart(
-            request = VisibleCameraServiceStartRequest.fromIntent(intent),
-            cameraPermissionGranted = currentCameraPermissionGranted(),
-            snapshotProvider = { currentCameraCatalogSnapshot() },
         )
-    }
 
     /** Diagnostic starts keep reusing their owner; any switch of mode or session replaces it with one wired to the new sink. */
     private fun ownerFor(session: ServicePipelineSinkResolution.Session?): VisibleCameraForegroundServicePipelineOwner {
@@ -195,6 +210,7 @@ class VisibleCameraForegroundService : Service() {
     companion object {
         const val ACTION_START = "dev.chinchillacam.usbprobe.action.START_VISIBLE_CAMERA"
         const val ACTION_STOP = "dev.chinchillacam.usbprobe.action.STOP_VISIBLE_CAMERA"
+        const val ACTION_RECONFIGURE = "dev.chinchillacam.usbprobe.action.RECONFIGURE_VISIBLE_CAMERA"
 
         /** Session mode: the pipeline sends video through the [ActiveSessionRegistry] entry. */
         const val ACTION_START_SESSION = "dev.chinchillacam.usbprobe.action.START_SESSION_CAMERA"
@@ -220,6 +236,10 @@ class VisibleCameraForegroundService : Service() {
         }
         fun sessionStartIntent(context: Context, cameraId: String): Intent = startIntent(context, cameraId).apply { action = ACTION_START_SESSION }
         fun stopIntent(context: Context): Intent = serviceIntent(context).apply { action = ACTION_STOP }
+        fun reconfigureIntent(context: Context, cameraId: String?): Intent = serviceIntent(context).apply {
+            action = ACTION_RECONFIGURE
+            cameraId?.let { putExtra(EXTRA_SELECTED_CAMERA_ID, it) }
+        }
         fun restartMode(): Int = START_NOT_STICKY
     }
 }
@@ -284,6 +304,8 @@ class VisibleCameraForegroundServiceCommandPolicy {
 
 enum class VisibleCameraServiceCommandOutcome {
     Started,
+    Reconfigured,
+    IgnoredNoActivePipeline,
     Blocked,
     Stopped,
     IgnoredColdRestart,
@@ -487,6 +509,14 @@ class VisibleCameraForegroundServiceCommandRunner(
         return VisibleCameraServiceCommandOutcome.Started
     }
 
+    fun handleReconfigure(
+        cameraId: String?,
+        cameraPermissionGranted: Boolean,
+        snapshotProvider: () -> CameraCatalogSnapshot,
+    ) {
+        scheduler.execute { owner.handleReconfigureCommand(cameraId, cameraPermissionGranted, snapshotProvider) }
+    }
+
     private fun RuntimeException.isForegroundStartFailure(): Boolean = this is SecurityException ||
         (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && this is android.app.ForegroundServiceStartNotAllowedException)
 }
@@ -497,6 +527,7 @@ interface VisibleCameraServicePipeline {
         start(snapshot, selectedCameraId, cameraPermissionGranted)
     fun drainOnce(maxOutputs: Int): VisibleCameraPipelineStatus
     fun stop(): VisibleCameraPipelineStatus
+    fun stopForReconfigure(): VisibleCameraPipelineStatus = stop()
     fun currentDetail(): String = ""
 }
 
@@ -520,6 +551,8 @@ class VisibleCameraForegroundServicePipelineOwner(
     val requiresActivityReference: Boolean = false
     private var active: Boolean = false
     private var generation: Int = 0
+    private var currentCameraId: String? = null
+    private var currentPlan: QualityPlan? = null
 
     fun handleStartCommand(
         request: VisibleCameraServiceStartRequest?,
@@ -568,7 +601,11 @@ class VisibleCameraForegroundServicePipelineOwner(
                 true
             } else {
                 active = status == VisibleCameraPipelineStatus.Running || status == VisibleCameraPipelineStatus.Starting
-                if (active) drainLoop.start(pipeline) { handlePipelineStoppedByFailure() }
+                if (active) {
+                    currentCameraId = decision.cameraId
+                    currentPlan = plan
+                    drainLoop.start(pipeline) { handlePipelineStoppedByFailure(token) }
+                }
                 false
             }
         }
@@ -595,6 +632,76 @@ class VisibleCameraForegroundServicePipelineOwner(
         }
     }
 
+    fun handleReconfigureCommand(
+        selectedCameraId: String?,
+        cameraPermissionGranted: Boolean,
+        snapshotProvider: () -> CameraCatalogSnapshot,
+    ): VisibleCameraServiceCommandOutcome {
+        val previous = synchronized(this) {
+            if (!active || currentCameraId == null || currentPlan == null) return VisibleCameraServiceCommandOutcome.IgnoredNoActivePipeline
+            generation += 1
+            Triple(generation, currentCameraId!!, currentPlan!!)
+        }
+        val (token, previousCamera, previousPlan) = previous
+        val cameraId = selectedCameraId?.takeIf { it.isNotBlank() } ?: previousCamera
+        synchronized(this) {
+            if (token != generation) return VisibleCameraServiceCommandOutcome.Stopped
+            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(VisibleCameraServiceState.Starting, cameraId, "Aplicando la nueva calidad…"))
+        }
+        val snapshot = try { snapshotProvider() } catch (_: RuntimeException) { null }
+        if (synchronized(this) { token != generation }) return VisibleCameraServiceCommandOutcome.Stopped
+        // A stale/physical selection or revoked permission must not tear down the working stream.
+        if (snapshot == null || policy.planStartCommand(true, cameraPermissionGranted, snapshot, cameraId) !is VisibleCameraServiceStartDecision.Allowed) {
+            synchronized(this) {
+                if (token == generation) VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(VisibleCameraServiceState.Running, previousCamera, "Prueba local activa desde el servicio visible."))
+            }
+            return VisibleCameraServiceCommandOutcome.Blocked
+        }
+        val plan = try { qualityPlanResolver(cameraId) } catch (_: RuntimeException) {
+            CameraQualityPlanner.plan(null, QualityPreference.Automatic)
+        }
+        synchronized(this) {
+            if (token != generation) return VisibleCameraServiceCommandOutcome.Stopped
+            drainLoop.stop()
+            // Controller drainOnce and stopForReconfigure are @Synchronized: stop waits for any
+            // in-flight chunk to finish. No new drain generation starts until start completes.
+            pipeline.stopForReconfigure()
+            active = false
+        }
+        if (synchronized(this) { token != generation }) return VisibleCameraServiceCommandOutcome.Stopped
+        val started = try { pipeline.start(snapshot, cameraId, cameraPermissionGranted, plan) }
+        catch (_: RuntimeException) { VisibleCameraPipelineStatus.Error }
+        if (finishReconfigureStart(token, cameraId, plan, started)) return VisibleCameraServiceCommandOutcome.Reconfigured
+        if (synchronized(this) { token != generation }) return VisibleCameraServiceCommandOutcome.Stopped
+        // A failed start may leave a partial handle; clear it before trying the old configuration.
+        pipeline.stopForReconfigure()
+        if (synchronized(this) { token != generation }) return VisibleCameraServiceCommandOutcome.Stopped
+        val reverted = try { pipeline.start(snapshot, previousCamera, cameraPermissionGranted, previousPlan) }
+        catch (_: RuntimeException) { VisibleCameraPipelineStatus.Error }
+        if (finishReconfigureStart(token, previousCamera, previousPlan, reverted)) return VisibleCameraServiceCommandOutcome.Reconfigured
+        if (synchronized(this) { token != generation }) return VisibleCameraServiceCommandOutcome.Stopped
+        handlePipelineStoppedByFailure(token)
+        return VisibleCameraServiceCommandOutcome.Blocked
+    }
+
+    private fun finishReconfigureStart(token: Int, cameraId: String, plan: QualityPlan, status: VisibleCameraPipelineStatus): Boolean = synchronized(this) {
+        if (token != generation) {
+            pipeline.stop()
+            return@synchronized false
+        }
+        if (status != VisibleCameraPipelineStatus.Running && status != VisibleCameraPipelineStatus.Starting) return@synchronized false
+        active = true
+        currentCameraId = cameraId
+        currentPlan = plan
+        drainLoop.start(pipeline) { handlePipelineStoppedByFailure(token) }
+        VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(
+            if (status == VisibleCameraPipelineStatus.Running) VisibleCameraServiceState.Running else VisibleCameraServiceState.Starting,
+            cameraId,
+            "Prueba local activa desde el servicio visible.",
+        ))
+        true
+    }
+
     fun handleStopCommand(): VisibleCameraServiceCommandOutcome {
         VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Stopping, message = "Deteniendo servicio visible de cámara local."))
         synchronized(this) {
@@ -617,15 +724,14 @@ class VisibleCameraForegroundServicePipelineOwner(
         if (!preserveError) VisibleCameraServiceStatusStore.clearStopped()
     }
 
-    private fun handlePipelineStoppedByFailure() {
-        val detail = pipeline.currentDetail().ifBlank { "El servicio visible de cámara local informó un error." }
+    private fun handlePipelineStoppedByFailure(token: Int) {
         synchronized(this) {
+            if (token != generation) return
+            val detail = pipeline.currentDetail().ifBlank { "El servicio visible de cámara local informó un error." }
             generation += 1
             stopActiveLocked()
+            VisibleCameraServiceStatusStore.publish(VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = detail))
         }
-        VisibleCameraServiceStatusStore.publish(
-            VisibleCameraServiceStatus(state = VisibleCameraServiceState.Error, message = detail),
-        )
         onPipelineFailureStop()
     }
 
@@ -633,6 +739,8 @@ class VisibleCameraForegroundServicePipelineOwner(
         drainLoop.stop()
         pipeline.stop()
         active = false
+        currentCameraId = null
+        currentPlan = null
     }
 }
 
@@ -648,6 +756,8 @@ class ControllerVisibleCameraServicePipeline(
     override fun drainOnce(maxOutputs: Int): VisibleCameraPipelineStatus = controller.drainOnce(maxOutputs).status
 
     override fun stop(): VisibleCameraPipelineStatus = controller.stopFromUser().status
+
+    override fun stopForReconfigure(): VisibleCameraPipelineStatus = controller.stopForReconfigure().status
 
     override fun currentDetail(): String = controller.currentState().detail
 }
