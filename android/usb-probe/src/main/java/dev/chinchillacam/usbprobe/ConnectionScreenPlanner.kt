@@ -12,6 +12,7 @@ data class ConnectionScreenInput(
     val trusted: List<TrustedDesktopRecord> = emptyList(),
     val identityRegenerated: Boolean = false,
     val cameraStatus: VisibleCameraServiceStatus? = null,
+    val quality: QualityControlsPlan? = null,
 )
 
 /** Buttons the screen can show, with their Spanish labels; the activity maps each id to an operation. */
@@ -39,6 +40,7 @@ data class ConnectionScreenPlan(
     val actions: List<ConnectionAction>,
     val trustedRows: List<TrustedDesktopRow>,
     val emptyTrustedText: String?,
+    val quality: QualityControlsPlan? = null,
 )
 
 /** Pure mapping from controller state plus UI-local flags to Spanish texts and buttons; `ConnectionActivity` only renders it. */
@@ -113,6 +115,7 @@ object ConnectionScreenPlanner {
             actions = actions,
             trustedRows = rows,
             emptyTrustedText = NO_TRUSTED_DESKTOPS.takeIf { !scanning && rows.isEmpty() },
+            quality = input.quality.takeIf { idle || state is PhoneConnectionState.Connected },
         )
     }
 

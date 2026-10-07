@@ -77,6 +77,17 @@ class ConnectionActivityContractTest {
         assertTrue("onDestroy must unregister the receiver", body("onDestroy").contains("unregisterReceiver("))
     }
 
+    @Test
+    fun qualityControlsPersistAndRefreshOffMainThreadAndReportReconfigureFailures() {
+        assertTrue("catalog must refresh on resume", body("onResume").contains("refreshCameraCatalog()"))
+        assertTrue("catalog snapshot must run in a worker", body("refreshCameraCatalog").contains("Thread({"))
+        assertTrue("the quality section must be rendered", body("render").contains("renderQuality(it)"))
+        assertTrue("selection must save a validated camera", body("selectCamera").contains("saveSelection(snapshot, id)"))
+        assertTrue("quality preference must persist", body("selectQuality").contains(".save(preference)"))
+        assertTrue("runtime must receive live changes", body("applyQuality").contains("PhoneConnectionRuntime.applyCameraQuality("))
+        assertTrue("service-start errors must appear as notices", body("applyQuality").contains("onFailure { localNotice ="))
+    }
+
     private fun activityBlock(name: String): String {
         val match = Regex("""<activity\s+android:name="${Regex.escape(name)}"[^>]*?(/>|>[\s\S]*?</activity>)""").find(manifest)
         assertTrue("manifest must declare $name", match != null)

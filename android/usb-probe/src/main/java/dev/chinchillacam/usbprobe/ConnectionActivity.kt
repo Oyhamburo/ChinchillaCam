@@ -33,8 +33,8 @@ import android.widget.TextView
  * [ConnectionScreenPlanner] and forwards user actions to the process-level
  * [PhoneConnectionController]. It only owns UI-local state (scan mode, paste field, local notices),
  * the QR scanner and the permission prompts; the controller keeps running without it (a cable pull
- * is handled by [PhoneConnectionRuntime]). Everything here runs on the main thread except the first
- * runtime build and the controller listener, which re-posts to the main thread.
+ * is handled by [PhoneConnectionRuntime]). UI work runs on the main thread; the first runtime
+ * build, catalog refresh and controller listener work re-post results to the main thread.
  */
 class ConnectionActivity : Activity() {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -47,6 +47,11 @@ class ConnectionActivity : Activity() {
     private lateinit var pasteField: EditText
     private lateinit var actionsView: LinearLayout
     private lateinit var rowsView: LinearLayout
+    private lateinit var qualityView: LinearLayout
+    private var cameraCatalog: CameraCatalogSnapshot? = null
+    private var selectedCameraId: String? = null
+    private var qualityPreference: QualityPreference = QualityPreference.Automatic
+    private var catalogRequest = 0
 
     private var controller: PhoneConnectionController? = null
     private var listener: ((PhoneConnectionState) -> Unit)? = null
@@ -107,12 +112,14 @@ class ConnectionActivity : Activity() {
     override fun onResume() {
         super.onResume()
         resumed = true
+        refreshCameraCatalog()
         render()
         resumeAwaitingAccessory()
     }
 
     override fun onPause() {
         resumed = false
+        catalogRequest++
         closeScanner()
         mainHandler.removeCallbacks(pollCameraStatus)
         super.onPause()
@@ -268,7 +275,7 @@ class ConnectionActivity : Activity() {
 
     /** Same catalog adapter as [PhoneConnectionRuntime]: first back-facing direct candidate, else the first direct one. */
     private fun scanCameraId(cameraManager: CameraManager): String? {
-        val direct = CameraCapabilityCatalog(AndroidCameraManagerGateway(AndroidCameraManagerFacadeImpl(cameraManager))).snapshot()
+        val direct = (cameraCatalog ?: CameraCapabilityCatalog(AndroidCameraManagerGateway(AndroidCameraManagerFacadeImpl(cameraManager))).snapshot())
             .entries.filter { it.role is CameraIdRole.DirectOpenCandidate }
         return (direct.firstOrNull { it.facing == CapabilityState.Known(CameraFacing.Back) } ?: direct.firstOrNull())?.id
     }
@@ -293,7 +300,8 @@ class ConnectionActivity : Activity() {
 
     private fun render() {
         val cameraStatus = VisibleCameraServiceStatusStore.snapshot()
-        val plan = ConnectionScreenPlanner.plan(ConnectionScreenInput(state, scanning, pasteVisible, trusted, identityRegenerated, cameraStatus))
+        val quality = cameraCatalog?.let { QualityControlsPlanner.plan(it, selectedCameraId, qualityPreference) }
+        val plan = ConnectionScreenPlanner.plan(ConnectionScreenInput(state, scanning, pasteVisible, trusted, identityRegenerated, cameraStatus, quality))
         if (scanning && !plan.showScanner) {
             scanning = false
             pasteVisible = false
@@ -308,7 +316,7 @@ class ConnectionActivity : Activity() {
         textureView.visibility = visibleIf(plan.showScanner)
         pasteField.visibility = visibleIf(plan.showPasteField)
         // Rebuilt only on change, so the 1 s camera poll never swaps a button under the user's finger.
-        val buttons = Triple(plan.actions, plan.trustedRows, controller != null)
+        val buttons = Pair(Triple(plan.actions, plan.trustedRows, controller != null), plan.quality)
         if (buttons != renderedButtons) {
             renderedButtons = buttons
             actionsView.removeAllViews()
@@ -316,10 +324,87 @@ class ConnectionActivity : Activity() {
             rowsView.removeAllViews()
             plan.trustedRows.forEach { row -> rowsView.addView(rowView(row), matchWidth()) }
             plan.emptyTrustedText?.let { empty -> rowsView.addView(TextView(this).apply { text = empty }, matchWidth()) }
+            qualityView.removeAllViews()
+            plan.quality?.let { renderQuality(it) }
         }
         updateScanner(plan.showScanner)
         mainHandler.removeCallbacks(pollCameraStatus)
         if (resumed && state is PhoneConnectionState.Connected) mainHandler.postDelayed(pollCameraStatus, CAMERA_POLL_MILLIS)
+    }
+
+    /** Refresh only on resume, off the UI thread; old responses cannot overwrite a later resume. */
+    private fun refreshCameraCatalog() {
+        val request = ++catalogRequest
+        val context = applicationContext
+        Thread({
+            val catalog = runCatching {
+                val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                CameraCapabilityCatalog(AndroidCameraManagerGateway(AndroidCameraManagerFacadeImpl(manager))).snapshot()
+            }
+            mainHandler.post {
+                if (!resumed || isDestroyed || request != catalogRequest) return@post
+                catalog.onSuccess { snapshot ->
+                    cameraCatalog = snapshot
+                    val preferences = getSharedPreferences(CAMERA_PREFERENCES, Context.MODE_PRIVATE)
+                    selectedCameraId = CameraSelectionPreference(SharedPreferencesStringStore(preferences, CAMERA_SELECTION_KEY)).restoreSelection(snapshot)
+                    qualityPreference = QualityPreferenceStore(SharedPreferencesStringStore(preferences, QUALITY_KEY)).load()
+                }.onFailure { localNotice = "No se pudieron leer las cámaras disponibles." }
+                render()
+            }
+        }, "camera-catalog").start()
+    }
+
+    private fun selectCamera(id: String?) {
+        val snapshot = cameraCatalog ?: return
+        val backing = SharedPreferencesStringStore(
+            getSharedPreferences(CAMERA_PREFERENCES, Context.MODE_PRIVATE), CAMERA_SELECTION_KEY)
+        if (id == null) backing.clear() else CameraSelectionPreference(backing).saveSelection(snapshot, id)
+        selectedCameraId = id
+        applyQuality(id)
+    }
+
+    private fun selectQuality(preference: QualityPreference) {
+        QualityPreferenceStore(SharedPreferencesStringStore(
+            getSharedPreferences(CAMERA_PREFERENCES, Context.MODE_PRIVATE), QUALITY_KEY)).save(preference)
+        qualityPreference = preference
+        applyQuality(selectedCameraId)
+    }
+
+    private fun applyQuality(cameraId: String?) {
+        localNotice = null
+        if (state is PhoneConnectionState.Connected) {
+            // The service interprets null as "keep the previous camera", so resolve automatic
+            // selection to the same direct candidate shown by the planner.
+            val effectiveId = cameraCatalog?.let { QualityControlsPlanner.plan(it, cameraId, qualityPreference).effectiveCameraId }
+            runCatching { PhoneConnectionRuntime.applyCameraQuality(this, effectiveId) }
+                .onFailure { localNotice = "No se pudo aplicar la calidad de cámara. Intentá nuevamente." }
+        }
+        render()
+    }
+
+    private fun renderQuality(plan: QualityControlsPlan) {
+        qualityView.addView(TextView(this).apply { text = plan.summary; textSize = 16f }, matchWidth())
+        qualityView.addView(TextView(this).apply { text = "Cámara" }, matchWidth())
+        plan.cameras.forEach { choice ->
+            qualityView.addView(button((if (choice.selected) "✓ " else "") + choice.label) { selectCamera(choice.id) }, matchWidth())
+        }
+        qualityView.addView(TextView(this).apply { text = "Resolución" }, matchWidth())
+        plan.resolutions.forEach { choice ->
+            qualityView.addView(button(choice.label) { QualityControlsPlanner.selectResolution(plan, choice.value)?.let(::selectQuality) }
+                .apply { isEnabled = isEnabled && choice.enabled }, matchWidth())
+        }
+        plan.resolutions.firstOrNull { !it.enabled }?.disabledReason?.let { reason ->
+            qualityView.addView(TextView(this).apply { text = reason; textSize = 12f }, matchWidth())
+        }
+        qualityView.addView(TextView(this).apply { text = "FPS" }, matchWidth())
+        plan.frameRates.forEach { choice ->
+            qualityView.addView(button(choice.label) { QualityControlsPlanner.selectFps(plan, choice.value)?.let(::selectQuality) }
+                .apply { isEnabled = isEnabled && choice.enabled }, matchWidth())
+        }
+        plan.frameRates.firstOrNull { !it.enabled }?.disabledReason?.let { reason ->
+            qualityView.addView(TextView(this).apply { text = reason; textSize = 12f }, matchWidth())
+        }
+        qualityView.addView(button("Automático (calidad)") { selectQuality(QualityPreference.Automatic) }, matchWidth())
     }
 
     private fun rowView(row: TrustedDesktopRow): LinearLayout = LinearLayout(this).apply {
@@ -350,12 +435,13 @@ class ConnectionActivity : Activity() {
         }
         actionsView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         rowsView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        qualityView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(24), dp(16), dp(16))
             listOf(titleView, statusView, noticeView, shortCodeView).forEach { addView(it, matchWidth()) }
             addView(textureView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(320)))
-            listOf(pasteField, actionsView, rowsView).forEach { addView(it, matchWidth()) }
+            listOf(pasteField, qualityView, actionsView, rowsView).forEach { addView(it, matchWidth()) }
         }
         setContentView(ScrollView(this).apply { addView(content) })
     }
@@ -367,6 +453,9 @@ class ConnectionActivity : Activity() {
     private fun visibleIf(show: Boolean): Int = if (show) View.VISIBLE else View.GONE
 
     private companion object {
+        const val CAMERA_PREFERENCES = "dev.chinchillacam.usbprobe.camera"
+        const val CAMERA_SELECTION_KEY = "selected_direct_camera_id"
+        const val QUALITY_KEY = "quality_preference"
         const val REQUEST_CAMERA_PERMISSION = 3001
         const val REQUEST_USB_PERMISSION = 3002
         const val USB_PERMISSION_ACTION_SUFFIX = ".action.CONNECTION_USB_PERMISSION"

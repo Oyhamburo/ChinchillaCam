@@ -53,7 +53,8 @@ Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Andro
    - Evidencia q2: RED observado por argumento excedente en `startRepeating` para `capture_request_targets_planned_fps_range`; GREEN focalizado para captura y propietario del servicio; runner completo 513 pruebas, 2 omitidas, 0 fallas; `assembleDebug` y `lintDebug` correctos. El plan se resuelve en el ejecutor de inicio; si falla la resolución, se usa el plan automático sin rango de FPS.
 3. [x] q3 — reconfiguración en vivo (`restart` del controlador, `reconfigure` del owner, `ACTION_RECONFIGURE`, vuelta atrás si falla). RED: `reconfigure_restarts_pipeline_without_ending_session`. ~350 líneas.
    - Evidencia q3: RED observado por referencias no resueltas a `Reconfigured` y `handleReconfigureCommand`; GREEN focalizado; runner completo 523 pruebas, 2 omitidas, 0 fallas; `assembleDebug`, `lintDebug` y `git diff --check` correctos. La parada y el reinicio afectan sólo al pipeline; si falla el nuevo arranque, se intenta recuperar el plan anterior.
-4. [ ] q4 — UI de calidad en la pantalla de conexión (planner + activity + preferencia + envío de la reconfiguración). RED: `connected_screen_offers_supported_quality_options`. ~350 líneas.
+4. [x] q4 — UI de calidad en la pantalla de conexión (planner + activity + preferencia + envío de la reconfiguración). RED: `connected_screen_offers_supported_quality_options`. ~350 líneas.
+   - Evidencia q4: RED observado por referencias no resueltas al planificador y al campo de calidad; GREEN focalizado; runner completo sin conexión 530 pruebas, 2 omitidas, 0 fallas; `assembleDebug` y `lintDebug` correctos. El catálogo se actualiza fuera del hilo principal al reanudar; las capacidades incompletas deshabilitan las opciones manuales y la reconfiguración sólo se envía durante una sesión conectada.
 5. [ ] q5 — cierre: suite completa, evidencia, `complete-webcam-product.md`, push.
 
 ## 8. Evidencia

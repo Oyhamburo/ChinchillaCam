@@ -23,11 +23,15 @@ object PhoneConnectionRuntime {
         val controller: PhoneConnectionController,
         val identity: AndroidKeyStorePhoneTlsIdentity,
         val accessorySource: UsbManagerAccessoryTransportSource<UsbAccessory>,
+        val qualityApplier: CameraQualityApplier,
     )
 
     private var components: Components? = null
 
     fun get(context: Context): PhoneConnectionController = components(context).controller
+
+    /** False if the session is no longer connected; service-start exceptions are left to the UI to report. */
+    fun applyCameraQuality(context: Context, cameraId: String?): Boolean = components(context).qualityApplier.apply(cameraId)
 
     /** `true` when the phone key had to be regenerated: every desktop must be paired again (c6 shows it). */
     fun identityRegenerated(context: Context): Boolean = components(context).identity.regenerated
@@ -50,8 +54,9 @@ object PhoneConnectionRuntime {
                 SharedPreferencesStringStore(context.getSharedPreferences(CAMERA_PREFERENCES, Context.MODE_PRIVATE), CAMERA_SELECTION_KEY),
             ),
         )
+        val cameraService = AndroidCameraServiceControl(context)
         val sessionLauncher = ServiceSessionLauncher(
-            cameraService = AndroidCameraServiceControl(context),
+            cameraService = cameraService,
             cameraIdProvider = cameraIdResolver::resolve,
             endExecutor = singleThread("session-end"),
             // Documented ignore until M7/T26 (camera controls): the only intentionally unhandled callback.
@@ -71,7 +76,7 @@ object PhoneConnectionRuntime {
             epochSecondsSource = clock,
         )
         registerAccessoryDetached(context, controller)
-        return Components(controller, identity, accessorySource)
+        return Components(controller, identity, accessorySource, CameraQualityApplier(controller::snapshot, cameraService))
     }
 
     /** Registered once with the application context, so a cable pull ends the session even with no activity alive. */
@@ -106,6 +111,18 @@ object PhoneConnectionRuntime {
     /** Same preference file and key as [UsbProbeActivity]'s camera selection (kept in sync by hand). */
     private const val CAMERA_PREFERENCES = "dev.chinchillacam.usbprobe.camera"
     private const val CAMERA_SELECTION_KEY = "selected_direct_camera_id"
+}
+
+/** Sends a reconfiguration only for a live session; injectable state and service keep this contract testable. */
+class CameraQualityApplier(
+    private val state: () -> PhoneConnectionState,
+    private val cameraService: CameraServiceControl,
+) {
+    fun apply(cameraId: String?): Boolean {
+        if (state() !is PhoneConnectionState.Connected) return false
+        cameraService.reconfigure(cameraId)
+        return true
+    }
 }
 
 /**

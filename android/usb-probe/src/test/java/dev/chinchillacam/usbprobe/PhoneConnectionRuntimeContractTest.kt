@@ -21,7 +21,9 @@ class PhoneConnectionRuntimeContractTest {
 
     @Test
     fun sessionsLaunchTheCameraServiceAndUseTheUsbAccessorySource() {
-        assertContains("sessions must launch through the camera service", """ServiceSessionLauncher\(\s*cameraService = AndroidCameraServiceControl\(""")
+        assertContains("camera service must use the Android adapter", """val cameraService = AndroidCameraServiceControl\(context\)""")
+        assertContains("sessions must launch through that camera service", """ServiceSessionLauncher\(\s*cameraService = cameraService""")
+        assertContains("quality updates must use the same service", """CameraQualityApplier\(controller::snapshot, cameraService\)""")
         assertContains("the camera id must come from the session resolver", """cameraIdProvider = cameraIdResolver::resolve""")
         assertContains("the accessory source must be the UsbManager adapter", """accessorySource = accessorySource""")
         assertContains("the accessory source must be built over UsbManager", """UsbManagerAccessoryTransportSource\(AndroidAttachedAccessoryPort\(""")
