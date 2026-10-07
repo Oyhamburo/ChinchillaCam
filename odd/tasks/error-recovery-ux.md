@@ -42,7 +42,8 @@ Runner app: `cd desktop/app && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check 
    - Evidencia e1: RED observado por ausencia de sugerencia en la vista y por el sondeo demorado tras no encontrar un teléfono; se clasificaron las etapas del enlace, se comprobaron los avisos, la deduplicación y los cierres de sesión y se conservó el sondeo inmediato sin teléfono. La reconexión mantiene un aviso genérico de identidad.
 2. [x] e2 — vigía de video (5 s) y falla del presentador visibles en la ventana. RED: `connected_without_frames_for_five_seconds_warns`. ~250 líneas.
    - Evidencia e2: RED observado por falta de `observe_video`; el vigía usa el contador de fotogramas publicados para no confundir el vaciado de la ranura con una llegada, reinicia al reconectar y muestra avisos y sugerencias en la ventana sin reemplazar fallas específicas. Se comprobaron los límites de tiempo, la llegada, la desconexión y la señal de falla del presentador con pruebas sin hardware.
-3. [ ] e3 — cierre: guía de problemas en `docs/uso.md`, plan general, push.
+3. [x] e3 — cierre: guía de problemas en `docs/uso.md`, plan general, push.
+   - Evidencia e3: verificación independiente sobre `b57d075`: `usb-probe` 336/0 y `desktop/app` 40/0; fmt, clippy y build `--offline` limpios; revisión estática sin defectos en el mapeo exhaustivo, el sondeo sin espera cuando no hay teléfono, la deduplicación, el vigía y la precedencia de avisos. La guía de `docs/uso.md` §9.6 se alineó con los textos exactos de la app.
 
 ## 8. Evidencia
 
@@ -50,3 +51,7 @@ Runner app: `cd desktop/app && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check 
 
 - Exponer una causa tipada de reconexión para distinguir un teléfono desconocido o revocado de otras fallas de identidad; el error actual de la negociación sólo expone texto. Por ahora se muestra «No se pudo comprobar la identidad del teléfono.» con la sugerencia «Si no está vinculado, vinculalo con el QR.».
 - Separar el puerto USB ocupado del acceso denegado: el error de reclamo actual no aporta una categoría tipada fiable. Mantener mientras tanto la sugerencia de cerrar la otra app o permitir el acceso.
+
+- Commits: `fd125b1` (clasificación de fallas del enlace USB), `8a7060e` (e1, catálogo con sugerencias y deduplicación), `b57d075` (e2, vigía de video y falla del presentador) y el commit de cierre.
+- Readback del orquestador: «no hay teléfono» no debe activar la espera de 2 s entre reintentos (habría demorado la detección al enchufar); se corrigió con un test RED.
+- Sin ejecutar: errores USB reales de macOS, ventana gráfica ni hardware (M9).

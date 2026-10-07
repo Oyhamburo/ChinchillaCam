@@ -293,6 +293,25 @@ Recuperación prevista:
 
 La continuidad con pantalla bloqueada es una meta, no un hecho validado. Si falla, el producto debe informar que la sesión requiere mantener la app visible o el teléfono desbloqueado hasta completar la validación por dispositivo.
 
+### 9.6 Mensajes de la app de escritorio y qué hacer
+
+Estado actual (T27, pendiente de validar con hardware en M9). La app de escritorio muestra en rojo qué pasó y debajo una sugerencia. Un mismo aviso que se repite (por ejemplo, mientras no hay teléfono conectado) no parpadea ni se reinicia. La app sigue buscando el teléfono por USB sola; no hace falta reiniciarla.
+
+| Mensaje | Qué hacer |
+| --- | --- |
+| No encontramos el teléfono. | Conectá el teléfono con el cable y abrí ChinchillaCam en el teléfono. |
+| No se pudo preparar el teléfono para la conexión. | Desbloqueá el teléfono y aceptá el aviso de USB. |
+| Otra app está usando el teléfono por USB. | Cerrá la otra app o permití el acceso al teléfono e intentá de nuevo. |
+| No se pudo buscar el teléfono. | Revisá el cable y el puerto e intentá de nuevo. |
+| No se pudo abrir la conexión con el teléfono. | Probá con otro cable o puerto e intentá de nuevo. |
+| No se pudo comprobar la identidad del teléfono. | Si no está vinculado, vinculalo con el QR. |
+| Se perdió la conexión con el teléfono. | Revisá el cable y desbloqueá el teléfono. |
+| Se interrumpió la conexión con el teléfono. | Revisá el cable y volvé a conectarlo. |
+| La conexión está saturada. | Cerrá otras apps y volvé a conectar el teléfono. |
+| Las versiones no coinciden. | Actualizá ChinchillaCam en los dos dispositivos. |
+| No llega video del teléfono. (aparece si hay conexión pero pasan 5 segundos sin video) | Revisá que la cámara esté transmitiendo en el teléfono (desbloqueado y con ChinchillaCam abierta). |
+| No se pudo mostrar el video. | Si falló el decodificador: «Volvé a conectar el teléfono e intentá de nuevo.». Si no se pudo iniciar la salida de video: «Cerrá y volvé a abrir ChinchillaCam.». |
+
 ## 10. Criterio para declarar soporte real
 
 Un flujo deja de ser hipótesis y pasa a soporte real solo cuando existe evidencia reproducible. Como mínimo, deben validarse:
