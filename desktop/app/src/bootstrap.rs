@@ -79,6 +79,8 @@ where
         // If the presenter cannot spawn, its receiver disconnects; the decoder still starts
         // and reports rejected frames rather than killing the connection worker thread.
         if let Err(error) = spawn_frame_presenter(frames, slot.clone(), on_frame.clone()) {
+            slot.report_presenter_failure();
+            on_frame.clone()();
             eprintln!("Could not start decoded-frame presenter: {error}");
         }
         make_decoder(sink)

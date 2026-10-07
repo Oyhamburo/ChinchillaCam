@@ -14,7 +14,7 @@ use std::{
         mpsc::{self, Receiver},
         Arc, LazyLock, Mutex,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use usb_probe::{DesktopEvent, DesktopWorkerHandle};
 
@@ -211,6 +211,11 @@ impl eframe::App for ChinchillaCamWindow {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.hide_closed_video();
+        self.state.observe_video(
+            Instant::now(),
+            self.video.slot.frames_published(),
+            self.video.slot.presenter_failed(),
+        );
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

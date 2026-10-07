@@ -40,7 +40,8 @@ Runner app: `cd desktop/app && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check 
 
 1. [x] e1 — catálogo de fallas por causa con sugerencias y deduplicación de avisos repetidos. RED: `link_failures_distinguish_missing_phone_from_device_error`. ~300 líneas.
    - Evidencia e1: RED observado por ausencia de sugerencia en la vista y por el sondeo demorado tras no encontrar un teléfono; se clasificaron las etapas del enlace, se comprobaron los avisos, la deduplicación y los cierres de sesión y se conservó el sondeo inmediato sin teléfono. La reconexión mantiene un aviso genérico de identidad.
-2. [ ] e2 — vigía de video (5 s) y falla del presentador visibles en la ventana. RED: `connected_without_frames_for_five_seconds_warns`. ~250 líneas.
+2. [x] e2 — vigía de video (5 s) y falla del presentador visibles en la ventana. RED: `connected_without_frames_for_five_seconds_warns`. ~250 líneas.
+   - Evidencia e2: RED observado por falta de `observe_video`; el vigía usa el contador de fotogramas publicados para no confundir el vaciado de la ranura con una llegada, reinicia al reconectar y muestra avisos y sugerencias en la ventana sin reemplazar fallas específicas. Se comprobaron los límites de tiempo, la llegada, la desconexión y la señal de falla del presentador con pruebas sin hardware.
 3. [ ] e3 — cierre: guía de problemas en `docs/uso.md`, plan general, push.
 
 ## 8. Evidencia

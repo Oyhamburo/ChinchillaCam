@@ -6,5 +6,6 @@ pub mod paths;
 pub mod qr_image;
 pub mod video_output;
 pub mod video_view;
+pub mod video_watchdog;
 pub mod view_model;
 pub mod window;

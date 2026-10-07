@@ -1,4 +1,5 @@
 use chinchillacam_app::view_model::{AppAction, AppState};
+use std::time::{Duration, Instant};
 use usb_probe::{
     pairing_short_code_v1, DesktopConnectionFailure as Failure, DesktopEvent as Event,
     DesktopMetricsSnapshot, DesktopSessionEndReason as End, PairedPhoneCandidateConfirmError,
@@ -80,6 +81,115 @@ fn connected_view_shows_label_metrics_and_disconnect() {
         label: None,
     });
     assert_eq!(state.view(0).status, "Conectado a «el teléfono».");
+}
+
+#[test]
+fn connected_without_frames_for_five_seconds_warns() {
+    let mut state = AppState::default();
+    state.apply(Event::Connected {
+        phone_id: "id".into(),
+        label: None,
+    });
+    let start = Instant::now();
+    state.observe_video(start, 0, false);
+    assert!(state.view(0).notice.is_none());
+    state.observe_video(start + Duration::from_millis(4900), 0, false);
+    assert!(state.view(0).notice.is_none());
+    state.observe_video(start + Duration::from_secs(5), 0, false);
+    let view = state.view(0);
+    assert_eq!(view.notice.as_deref(), Some("No llega video del teléfono."));
+    assert_eq!(
+        view.hint.as_deref(),
+        Some("Revisá que la cámara esté transmitiendo en el teléfono (desbloqueado y con ChinchillaCam abierta).")
+    );
+}
+
+#[test]
+fn frame_arrival_clears_warning_and_restarts_timer() {
+    let mut state = AppState::default();
+    state.apply(Event::Connected {
+        phone_id: "id".into(),
+        label: None,
+    });
+    let start = Instant::now();
+    state.observe_video(start, 0, false);
+    state.observe_video(start + Duration::from_secs(5), 0, false);
+    state.observe_video(start + Duration::from_secs(6), 1, false);
+    assert!(state.view(0).notice.is_none());
+    state.observe_video(start + Duration::from_secs(10), 1, false);
+    assert!(state.view(0).notice.is_none());
+    state.observe_video(start + Duration::from_secs(11), 1, false);
+    assert_eq!(
+        state.view(0).notice.as_deref(),
+        Some("No llega video del teléfono.")
+    );
+}
+
+#[test]
+fn disconnect_and_reconnect_restart_watchdog() {
+    let mut state = AppState::default();
+    let start = Instant::now();
+    state.apply(Event::Connected {
+        phone_id: "id".into(),
+        label: None,
+    });
+    state.observe_video(start, 0, false);
+    state.observe_video(start + Duration::from_secs(5), 0, false);
+    state.apply(Event::WaitingForPhone);
+    state.observe_video(start + Duration::from_secs(6), 0, false);
+    assert!(state.view(0).notice.is_none());
+    state.apply(Event::Connected {
+        phone_id: "id".into(),
+        label: None,
+    });
+    state.observe_video(start + Duration::from_secs(10), 0, false);
+    assert!(state.view(0).notice.is_none());
+    state.observe_video(start + Duration::from_secs(15), 0, false);
+    assert_eq!(
+        state.view(0).notice.as_deref(),
+        Some("No llega video del teléfono.")
+    );
+}
+
+#[test]
+fn presenter_failure_is_visible_and_beats_watchdog() {
+    let mut state = AppState::default();
+    state.apply(Event::Connected {
+        phone_id: "id".into(),
+        label: None,
+    });
+    let start = Instant::now();
+    state.observe_video(start, 0, false);
+    state.observe_video(start + Duration::from_secs(5), 0, true);
+    let view = state.view(0);
+    assert_eq!(view.notice.as_deref(), Some("No se pudo mostrar el video."));
+    assert_eq!(
+        view.hint.as_deref(),
+        Some("Cerrá y volvé a abrir ChinchillaCam.")
+    );
+}
+
+#[test]
+fn existing_failure_takes_precedence_over_video_warning() {
+    let mut state = AppState::default();
+    state.apply(Event::Connected {
+        phone_id: "id".into(),
+        label: None,
+    });
+    state.apply(Event::ConnectionFailed(Failure::Pipeline(
+        usb_probe::DesktopSessionPipelineError::Metrics(
+            usb_probe::DesktopMetricsError::InvalidWindow,
+        ),
+    )));
+    let start = Instant::now();
+    state.observe_video(start, 0, true);
+    state.observe_video(start + Duration::from_secs(5), 0, true);
+    let view = state.view(0);
+    assert_eq!(view.notice.as_deref(), Some("No se pudo mostrar el video."));
+    assert_eq!(
+        view.hint.as_deref(),
+        Some("Volvé a conectar el teléfono e intentá de nuevo.")
+    );
 }
 
 #[test]

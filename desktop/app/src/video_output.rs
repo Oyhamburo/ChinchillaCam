@@ -22,6 +22,8 @@ struct FrameState {
     frame: Option<RgbaVideoFrame>,
     owner: Option<VideoSessionId>,
     sequence: u64,
+    frames_published: u64,
+    presenter_failed: bool,
     next_session: u64,
 }
 
@@ -32,6 +34,7 @@ impl LatestVideoFrame {
     pub fn new_session(&self) -> VideoSessionId {
         let mut state = self.0.lock().unwrap_or_else(|err| err.into_inner());
         state.next_session += 1;
+        state.presenter_failed = false;
         VideoSessionId(state.next_session)
     }
 
@@ -40,6 +43,28 @@ impl LatestVideoFrame {
         state.frame = Some(frame);
         state.owner = Some(session);
         state.sequence += 1;
+        state.frames_published += 1;
+    }
+
+    pub fn frames_published(&self) -> u64 {
+        self.0
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .frames_published
+    }
+
+    pub fn report_presenter_failure(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .presenter_failed = true;
+    }
+
+    pub fn presenter_failed(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .presenter_failed
     }
 
     pub fn snapshot(&self) -> (u64, Option<RgbaVideoFrame>) {
@@ -172,6 +197,45 @@ mod tests {
         assert_eq!(slot.snapshot(), (3, None));
         slot.clear_if_owner(newer);
         assert_eq!(slot.snapshot(), (3, None));
+    }
+
+    #[test]
+    fn clearing_a_session_does_not_count_as_a_published_frame() {
+        let slot = LatestVideoFrame::default();
+        let session = slot.new_session();
+        slot.publish(
+            session,
+            RgbaVideoFrame {
+                width: 1,
+                height: 1,
+                pts_us: 1,
+                pixels: Arc::from([0, 0, 0, 255]),
+            },
+        );
+        assert_eq!(slot.frames_published(), 1);
+        let start = std::time::Instant::now();
+        let mut watchdog = crate::video_watchdog::VideoWatchdog::default();
+        assert_eq!(watchdog.observe(start, true, slot.frames_published()), None);
+        slot.clear_if_owner(session);
+        assert_eq!(slot.snapshot().0, 2);
+        assert_eq!(slot.frames_published(), 1);
+        assert_eq!(
+            watchdog.observe(
+                start + std::time::Duration::from_secs(5),
+                true,
+                slot.frames_published()
+            ),
+            Some(crate::video_watchdog::VideoWarning::NoFrames)
+        );
+    }
+
+    #[test]
+    fn presenter_failure_flag_can_be_cleared_by_a_new_session() {
+        let slot = LatestVideoFrame::default();
+        slot.report_presenter_failure();
+        assert!(slot.presenter_failed());
+        slot.new_session();
+        assert!(!slot.presenter_failed());
     }
 
     #[test]
