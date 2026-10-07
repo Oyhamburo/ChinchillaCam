@@ -49,8 +49,10 @@ Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Andro
    - Evidencia a1: RED por referencia no resuelta a `encodeQualityState`; GREEN con el fixture literal (cámaras Automático/0 Trasera 1/1 Frontal 1, resoluciones 1920x1080/1280x720/960x540 deshabilitada/640x480, FPS 30/24/15 deshabilitado, Manual 1280x720@30, `req=7`, resumen «Calidad: Manual (1280 × 720, 30 FPS)»); HELLO, parser, límites y envío/cierre comprobados con pruebas focalizadas.
 2. [x] a2 — `QualityControlHandler` (suscripción, `set_quality` validado, preferencia compartida, reconfiguración, `quality_state` tras cambios locales) cableado en `PhoneConnectionRuntime`. RED: `set_quality_applies_supported_choice_and_replies_with_state`. ~350 líneas.
    - Evidencia a2: RED por referencia no resuelta a `QualityControlHandler`; pruebas focalizadas para aplicación válida, rechazos, suscripción, cambios locales, cola y cableado; verificación completa con el runner de §7.
-3. [ ] a3 — cierre: verificación, docs, plan general, push.
+3. [x] a3 — cierre: verificación, docs, plan general, push.
+   - Evidencia a3: verificación independiente: 574 tests, 2 omitidos, 0 fallas; assemble y lint aprobados; revisión cruzada contra §4 sin desajustes de claves ni formatos; el único defecto (la pantalla de diagnóstico no aplicaba ni avisaba el cambio de cámara) se corrigió con RED. Guía en `docs/uso.md` §6. Commits: `48a85fa` (a1), `e41325d` (a2), `604bbfe` (corrección de diagnóstico) y el commit de cierre.
 
 ## 8. Evidencia
 
 - La selección de cámara en la pantalla diagnóstica aplica la preferencia a la sesión activa y notifica al desktop suscrito; ambas llamadas toleran fallos sin cerrar la pantalla.
+- Sin ejecutar: interoperabilidad real teléfono↔computadora por USB y la UI en pantalla (M9).

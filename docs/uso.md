@@ -209,6 +209,8 @@ El modo automático debe priorizar fluidez y baja latencia con la mejor calidad 
 
 Estado actual (T26, pendiente de validar con hardware en M9): la pantalla de conexión del teléfono permite elegir la cámara, la resolución (1920 × 1080, 1280 × 720, 960 × 540 o 640 × 480) y los FPS (30, 24 o 15), o dejar el modo **Automático** (1280 × 720 a 30 FPS si la cámara lo admite). Las opciones que la cámara no admite aparecen deshabilitadas con el motivo. Si la sesión está activa, el cambio se aplica en vivo: el video se corta unos segundos mientras se reinicia la cámara, sin reconectar. El control desde la computadora todavía no existe.
 
+Control desde la computadora (pendiente de validar con hardware en M9): con el teléfono conectado, la ventana de ChinchillaCam en la computadora muestra la sección **Cámara y calidad** con las mismas opciones que el teléfono (las no admitidas aparecen deshabilitadas con el motivo al pasar el mouse). Teléfono y computadora editan una sola preferencia: gana el último cambio, se aplica en vivo y los dos muestran el mismo estado. Con una versión vieja del teléfono que no anuncia esta función, la sección no aparece.
+
 ## 7. Métricas visibles
 
 ChinchillaCam debe mostrar métricas entendibles para diagnosticar problemas:
