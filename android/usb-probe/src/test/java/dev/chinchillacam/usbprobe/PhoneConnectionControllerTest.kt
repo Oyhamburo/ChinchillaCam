@@ -2,6 +2,7 @@ package dev.chinchillacam.usbprobe
 
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -115,6 +116,21 @@ class PhoneConnectionControllerTest {
         assertEquals(null, store.lookup("pc-1"))
         assertEquals(ActiveDesktopAuthority.State.NoActiveDesktop, authority.state)
         assertTrue(launcher.launches.isEmpty())
+    }
+
+    @Test
+    fun controlTargetsOnlyCurrentLiveSession() {
+        assertFalse(controller.sendControl(QUALITY_STATE, mapOf("v" to "1")))
+        seedTrust()
+        source.enqueue(Desktop.ReconnectAccept)
+        controller.connect("pc-1")
+        awaitState<PhoneConnectionState.Connected>()
+        val payload = QUALITY_STATE to mapOf("v" to "1")
+        assertTrue(controller.sendControl(payload.first, payload.second))
+        assertEquals(listOf(payload), launcher.launches[0].controls.toList())
+        controller.disconnect()
+        awaitState<PhoneConnectionState.Idle>()
+        assertFalse(controller.sendControl(payload.first, payload.second))
     }
 
     @Test
@@ -366,6 +382,7 @@ class PhoneConnectionControllerTest {
     private class Launch(val reconnected: UsbTrustedReconnectResult.Reconnected, val onEnded: (SessionEndNotice) -> Unit) {
         @Volatile var closedOn: Thread? = null
         @Volatile var trustedAtClose: Boolean? = null
+        val controls = CopyOnWriteArrayList<Pair<String, Map<String, String>>>()
     }
 
     private inner class FakeSessionLauncher : SessionLauncher {
@@ -378,10 +395,17 @@ class PhoneConnectionControllerTest {
         ): ActiveSessionHandle {
             val launch = Launch(reconnected, onEnded).also { launches += it }
             if (failNext) error("launch failed")
-            return ActiveSessionHandle {
-                launch.closedOn = Thread.currentThread()
-                launch.trustedAtClose = store.lookup(reconnected.desktopId) != null
-                runCatching { reconnected.channel.close() }
+            return object : ActiveSessionHandle {
+                override fun close() {
+                    launch.closedOn = Thread.currentThread()
+                    launch.trustedAtClose = store.lookup(reconnected.desktopId) != null
+                    runCatching { reconnected.channel.close() }
+                }
+
+                override fun sendControl(command: String, arguments: Map<String, String>): Boolean {
+                    launch.controls += command to arguments
+                    return true
+                }
             }
         }
     }

@@ -2,6 +2,7 @@ package dev.chinchillacam.usbprobe
 
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -85,9 +86,11 @@ class ServiceSessionLauncherTest {
             assertNotNull("the session sink factory must be registered for the service", registered)
             assertNotNull(registered!!.entry.encodedVideoSinkFactory())
             assertEquals(0, camera.stops)
+            assertTrue(handle.sendControl(QUALITY_STATE, mapOf("v" to "1")))
         } finally {
             handle.close()
         }
+        assertFalse(handle.sendControl(QUALITY_STATE, mapOf("v" to "1")))
     }
 
     @Test

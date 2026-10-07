@@ -46,7 +46,7 @@ internal class SessionHelloExchange(
         val hello = SessionFrame(
             sequence = helloSequence,
             sessionId = sessionId,
-            payload = SessionPayload.HandshakeHello(deviceId = phoneId, appName = APP_NAME, capabilities = emptyList()),
+            payload = SessionPayload.HandshakeHello(deviceId = phoneId, appName = APP_NAME, capabilities = listOf(QUALITY_CONTROL_CAPABILITY)),
         )
         val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(helloTimeoutMillis)
         val response = try {

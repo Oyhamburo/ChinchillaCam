@@ -41,6 +41,10 @@ class SessionEgressBinding private constructor(
         )
     }
 
+    /** Never blocks: a full shared 64-slot video/control queue ends the session. Send controls rarely. */
+    fun sendControl(command: String, arguments: Map<String, String>): Boolean =
+        !closed.get() && runtime.send(SessionPayload.CameraControlCommand(command, arguments)) == SendResult.Accepted
+
     /** Ends the runtime with [SessionEnd.LocalClose] and joins its threads; idempotent (see class doc). */
     fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -129,6 +133,8 @@ class SessionEgressServicePipelineComposition private constructor(
     private val binding: SessionEgressBinding,
 ) {
     val encodedVideoSinkFactory: () -> EncodedVideoEgressSink = binding.videoSinkFactory
+
+    fun sendControl(command: String, arguments: Map<String, String>): Boolean = binding.sendControl(command, arguments)
 
     /** Ends the owned binding (see [SessionEgressBinding.close]); idempotent. */
     fun close() = binding.close()

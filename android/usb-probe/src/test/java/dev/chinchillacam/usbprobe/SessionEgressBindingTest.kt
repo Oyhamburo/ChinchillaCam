@@ -95,6 +95,46 @@ class SessionEgressBindingTest {
     )
 
     @Test
+    fun sendControlEnqueuesFrameSevenAndRejectsAfterClose() {
+        val desktop = RawStreamTlsTestSupport.desktopFixture("a1-control-desktop")
+        val phone = RawStreamTlsTestSupport.phoneFixture("a1-control-phone")
+        val endpoints = RawStreamTlsTestSupport.rawStreamPair()
+        val serverError = AtomicReference<Throwable?>(null)
+        val received = AtomicReference<SessionFrame?>(null)
+        val collected = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val server = thread {
+            try {
+                val peer = RawStreamTlsTestSupport.serverPeer(endpoints, desktop)
+                peer.handshake()
+                received.set(FramedPeerReader(peer).next())
+                collected.countDown()
+                release.await(5, TimeUnit.SECONDS)
+                peer.close()
+            } catch (error: Throwable) { serverError.set(error) }
+        }
+        val channel = establishPhoneChannel(desktop, phone, endpoints)
+        val endExecutor = Executors.newSingleThreadExecutor()
+        val binding = SessionEgressBinding.start(channel, phoneAdapter(), sessionId, nextOutbound, nextInbound,
+            onCameraControlCommand = {}, onSessionEndedWithError = { _, _ -> }, endExecutor = endExecutor,
+            config = flowConfig())
+        try {
+            assertTrue(binding.sendControl(QUALITY_STATE, mapOf("v" to "1")))
+            assertTrue("fake desktop did not receive control", collected.await(4, TimeUnit.SECONDS))
+            assertEquals(SessionPayload.CameraControlCommand(QUALITY_STATE, mapOf("v" to "1")), received.get()?.payload)
+            assertEquals(7, received.get()?.type?.id)
+            assertEquals(nextOutbound, received.get()?.sequence)
+        } finally {
+            release.countDown()
+            binding.close()
+            endExecutor.shutdownNow()
+            server.join(4_000)
+            serverError.get()?.let { throw it }
+        }
+        assertFalse(binding.sendControl(QUALITY_STATE, mapOf("v" to "1")))
+    }
+
+    @Test
     fun videoFlowsFromControllerThroughBinding() {
         val desktop = RawStreamTlsTestSupport.desktopFixture("p2-flow-desktop")
         val phone = RawStreamTlsTestSupport.phoneFixture("p2-flow-phone")

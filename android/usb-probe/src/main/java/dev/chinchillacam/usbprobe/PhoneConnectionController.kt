@@ -22,6 +22,9 @@ data class SessionEndNotice(val message: String, val cause: FailureCause? = null
 /** A running session (camera, encoder, egress). [close] stops all of it; it may block, so it is only called off the main thread. */
 fun interface ActiveSessionHandle {
     fun close()
+
+    /** Returns false when this handle does not support controls or has ended. Must not block. */
+    fun sendControl(command: String, arguments: Map<String, String>): Boolean = false
 }
 
 /** Port that starts the session composition over an authenticated channel (production in c4). */
@@ -79,6 +82,11 @@ class PhoneConnectionController(
 
     @Volatile private var state: PhoneConnectionState = PhoneConnectionState.Idle()
     @Volatile private var lastDesktop: String? = null
+    @Volatile private var activeHandle: ActiveSessionHandle? = null
+
+    /** Direct nonblocking egress; the handle itself guards against a concurrent close. */
+    fun sendControl(command: String, arguments: Map<String, String>): Boolean =
+        activeHandle?.sendControl(command, arguments) ?: false
 
     fun lastDesktopId(): String? = lastDesktop
 
@@ -271,12 +279,14 @@ class PhoneConnectionController(
         }
         lastDesktop = reconnected.desktopId
         launched = LiveSession(reconnected.desktopId, handle).also { session = it }
+        activeHandle = handle
         publish(PhoneConnectionState.Connected(reconnected.desktopId, desktopName))
     }
 
     /** Only ends [live] if it is still the current session, so a late notice never ends a newer one. */
     private fun sessionEnded(live: LiveSession, notice: SessionEndNotice) {
         if (session !== live) return
+        activeHandle = null
         session = null
         // The session already ended; closing is idempotent and releases whatever it still holds.
         runCatching { live.handle.close() }
@@ -286,6 +296,7 @@ class PhoneConnectionController(
 
     private fun endSession(notice: String) {
         val live = session ?: return
+        activeHandle = null
         session = null
         runCatching { live.handle.close() }
         authority.stopActiveDesktop(live.desktopId)

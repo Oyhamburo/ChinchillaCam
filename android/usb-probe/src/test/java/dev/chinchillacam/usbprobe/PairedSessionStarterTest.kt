@@ -20,6 +20,7 @@ class PairedSessionStarterTest {
         val run = pairThenStart(alias = "c2-accept", starterTimeoutMillis = 120_000) { peer, phoneId ->
             val helloFrame = RawStreamTlsTestSupport.decodeFramed(peer.readApplicationFrame())
             assertEquals(phoneId, (helloFrame.payload as SessionPayload.HandshakeHello).deviceId)
+            assertEquals(listOf(QUALITY_CONTROL_CAPABILITY), (helloFrame.payload as SessionPayload.HandshakeHello).capabilities)
             helloSessionId.set(helloFrame.sessionId)
             val accept = helloFrame.copy(sequence = helloFrame.sequence + 1, payload = SessionPayload.HandshakeAccept("pc-1", "welcome"))
             peer.writeApplicationFrame(RawStreamTlsTestSupport.encodeFramed(accept))

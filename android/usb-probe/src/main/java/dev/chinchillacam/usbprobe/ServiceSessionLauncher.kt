@@ -86,6 +86,9 @@ class ServiceSessionLauncher(
         @Volatile var composition: SessionEgressServicePipelineComposition? = null
         @Volatile var token: Long? = null
 
+        override fun sendControl(command: String, arguments: Map<String, String>): Boolean =
+            !closed.get() && (composition?.sendControl(command, arguments) ?: false)
+
         /** Clears the entry first, so the service stopping because of this call does not report it back. */
         fun stopCamera() {
             token?.let(registry::clear)
