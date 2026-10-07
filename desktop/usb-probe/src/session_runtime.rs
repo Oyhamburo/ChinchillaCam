@@ -2,7 +2,7 @@
 //! step loop over a live authenticated session. `SessionRuntime::step(now)` reads one frame
 //! (bounded by a short poll slice), validates the shared `sessionId`/strict-+1 sequence,
 //! dispatches per contract section 4.4 (keepalive -> liveness only, video -> the receiver,
-//! metrics/metadata -> latest snapshot, anything else -> protocol violation), then sends a
+//! metrics/metadata -> latest snapshot, commands -> bounded FIFO inbox, handshakes -> violation), then sends a
 //! `Keepalive` when the liveness tracker says one is due and ends the session when the peer
 //! is dead. Every exit is a typed [`SessionEnd`], after which the runtime is unusable and the
 //! TLS stream is closed best-effort.
@@ -15,7 +15,7 @@
 //! level for every inbound frame.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fmt,
     io::{Read, Write},
     time::{Duration, Instant},
@@ -39,6 +39,9 @@ pub const DEFAULT_POLL_SLICE: Duration = Duration::from_millis(200);
 /// Default per-frame budget: once a frame has started arriving, how long the rest of it may
 /// take before the read fails closed (contract `session-liveness` section 4.1's frame phase).
 pub const DEFAULT_FRAME_BUDGET: Duration = Duration::from_secs(2);
+
+/// Maximum pending inbound camera-control commands; overflow discards the oldest.
+pub const CONTROL_INBOX_CAPACITY: usize = 8;
 
 /// Tunables for [`SessionRuntime`]. `poll_slice` must be strictly less than
 /// `keepalive_interval` (validated at construction) so one blocking read slice never spans a
@@ -197,6 +200,8 @@ where
     ended: Option<SessionEnd>,
     latest_metrics: Option<SessionFramePayload>,
     latest_metadata: Option<SessionFramePayload>,
+    controls: VecDeque<(String, BTreeMap<String, String>)>,
+    controls_dropped: u64,
     frames_received: u64,
     keepalives_received: u64,
     keepalives_sent: u64,
@@ -248,6 +253,8 @@ where
             ended: None,
             latest_metrics: None,
             latest_metadata: None,
+            controls: VecDeque::with_capacity(CONTROL_INBOX_CAPACITY),
+            controls_dropped: 0,
             frames_received: 0,
             keepalives_received: 0,
             keepalives_sent: 0,
@@ -319,6 +326,18 @@ where
     /// Latest `StreamMetadata` payload received, if any.
     pub fn latest_stream_metadata(&self) -> Option<&SessionFramePayload> {
         self.latest_metadata.as_ref()
+    }
+
+    /// Drains pending inbound camera-control commands in arrival order. An overflowing inbox
+    /// drops the oldest entry without ending the session; unknown commands remain available to
+    /// the caller for interpretation.
+    pub fn take_controls(&mut self) -> Vec<(String, BTreeMap<String, String>)> {
+        self.controls.drain(..).collect()
+    }
+
+    /// Lifetime count of inbound controls discarded because the inbox was full.
+    pub fn controls_dropped(&self) -> u64 {
+        self.controls_dropped
     }
 
     /// Advances the session by one slice. See the module docs for the full sequence.
@@ -457,10 +476,17 @@ where
                 self.latest_metadata = Some(frame.payload().clone());
                 outcome.received_metadata = true;
             }
+            SessionFramePayload::CameraControlCommand { command, arguments } => {
+                if self.controls.len() == CONTROL_INBOX_CAPACITY {
+                    self.controls.pop_front();
+                    self.controls_dropped = self.controls_dropped.saturating_add(1);
+                }
+                self.controls
+                    .push_back((command.clone(), arguments.clone()));
+            }
             SessionFramePayload::HandshakeHello { .. }
             | SessionFramePayload::HandshakeAccept { .. }
-            | SessionFramePayload::HandshakeReject { .. }
-            | SessionFramePayload::CameraControlCommand { .. } => {
+            | SessionFramePayload::HandshakeReject { .. } => {
                 return Err(SessionEnd::ProtocolViolation(format!(
                     "unexpected frame type after session start at sequence {}",
                     frame.sequence()

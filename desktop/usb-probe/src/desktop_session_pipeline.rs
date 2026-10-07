@@ -18,6 +18,7 @@
 //! - phone metrics come from the latest `MetricsSnapshot` when the step received one.
 
 use std::{
+    collections::BTreeMap,
     io::{Read, Write},
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
@@ -181,6 +182,23 @@ where
             frames_decoded,
             chunks_dropped,
         })
+    }
+
+    /// Sends a camera-control command on the runtime's shared outbound sequence. Returns its
+    /// session end unchanged if the send fails or the session has already ended.
+    pub fn send_command(
+        &mut self,
+        command: String,
+        arguments: BTreeMap<String, String>,
+        now: Instant,
+    ) -> Result<(), SessionEnd> {
+        self.runtime.send_command(command, arguments, now)
+    }
+
+    /// Drains pending inbound camera-control commands in arrival order. The runtime bounds
+    /// this inbox to eight, dropping oldest entries on overflow without ending the session.
+    pub fn take_controls(&mut self) -> Vec<(String, BTreeMap<String, String>)> {
+        self.runtime.take_controls()
     }
 
     /// Snapshot of the desktop metrics measured at `now`.

@@ -8,6 +8,7 @@
 //! `LocalClose`.
 
 use std::{
+    collections::BTreeMap,
     io::{ErrorKind, Read},
     net::TcpStream,
     path::PathBuf,
@@ -161,6 +162,67 @@ fn pipeline_decodes_over_loopback_and_shuts_down() {
         );
     });
 
+    fixture.cleanup();
+}
+
+#[test]
+fn pipeline_sends_commands_and_drains_inbound_controls() {
+    let fixture = Fixture::new("control-passthrough");
+    let listener = bind_listener();
+    let addr = listener.local_addr();
+    let cert = fixture.desktop_identity.certificate_der().to_vec();
+    let phone_identity = fixture.phone_identity.clone();
+    let arguments = BTreeMap::from([("v".to_string(), "1".to_string())]);
+
+    std::thread::scope(|scope| {
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let expected = arguments.clone();
+        let phone = scope.spawn(move || {
+            let mut phone = phone_hello_and_accept(connect(addr), &cert, &phone_identity);
+            let outbound = read_session_frame(&mut phone, Instant::now() + OP_TIMEOUT).unwrap();
+            assert_eq!(outbound.sequence(), HELLO_SEQUENCE + 2);
+            assert_eq!(
+                outbound.payload(),
+                &SessionFramePayload::CameraControlCommand {
+                    command: "quality_subscribe".into(),
+                    arguments: expected.clone(),
+                }
+            );
+            send_phone_frame(
+                &mut phone,
+                HELLO_SEQUENCE + 1,
+                SessionFramePayload::CameraControlCommand {
+                    command: "quality_state".into(),
+                    arguments: expected,
+                },
+            );
+            let _ = done_rx.recv();
+        });
+
+        let session = accept_desktop_session(&listener, &fixture);
+        let start = Instant::now();
+        let mut pipeline = build_pipeline(session, start, test_config());
+        pipeline
+            .send_command("quality_subscribe".into(), arguments.clone(), start)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let outcome = pipeline
+                .step(Instant::now())
+                .expect("control must not end session");
+            if outcome.outcome.received_frame {
+                break;
+            }
+            assert!(Instant::now() < deadline, "control frame did not arrive");
+        }
+        assert_eq!(
+            pipeline.take_controls(),
+            vec![("quality_state".into(), arguments)]
+        );
+        assert!(pipeline.take_controls().is_empty());
+        drop(done_tx);
+        phone.join().unwrap();
+    });
     fixture.cleanup();
 }
 

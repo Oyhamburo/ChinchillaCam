@@ -70,6 +70,110 @@ fn literal_protocol_fixture() {
     assert_eq!(encode_quality_state(&state()).1, map);
 }
 
+// The Android quality_state encoder emits these exact text entries, including localized labels.
+#[test]
+fn android_quality_state_fixture_parses() {
+    let map = BTreeMap::from(
+        [
+            ("v", "1"),
+            ("req", "7"),
+            ("mode", "manual"),
+            ("camera.selected", "0"),
+            ("camera.count", "2"),
+            ("camera.0.id", "0"),
+            ("camera.0.label", "Trasera 1"),
+            ("camera.1.id", "1"),
+            ("camera.1.label", "Frontal 1"),
+            ("res.count", "4"),
+            ("res.0", "1920x1080"),
+            ("res.0.enabled", "1"),
+            ("res.1", "1280x720"),
+            ("res.1.enabled", "1"),
+            ("res.2", "960x540"),
+            ("res.2.enabled", "0"),
+            ("res.2.reason", "La cámara no admite esta resolución."),
+            ("res.3", "640x480"),
+            ("res.3.enabled", "1"),
+            ("fps.count", "3"),
+            ("fps.0", "30"),
+            ("fps.0.enabled", "1"),
+            ("fps.1", "24"),
+            ("fps.1.enabled", "1"),
+            ("fps.2", "15"),
+            ("fps.2.enabled", "0"),
+            ("fps.2.reason", "La cámara no admite estos FPS."),
+            ("applied.res", "1280x720"),
+            ("applied.fps", "30"),
+            ("summary", "Calidad: Manual (1280 × 720, 30 FPS)"),
+        ]
+        .map(|(key, value)| (key.to_string(), value.to_string())),
+    );
+    let parsed = parse_quality_state("quality_state", &map).unwrap();
+    assert_eq!(parsed.req, Some(7));
+    assert_eq!(parsed.mode, QualityMode::Manual);
+    assert_eq!(parsed.selected_camera, CameraSelection::Id("0".into()));
+    assert_eq!(
+        parsed.cameras,
+        vec![
+            CameraOption {
+                id: "0".into(),
+                label: "Trasera 1".into()
+            },
+            CameraOption {
+                id: "1".into(),
+                label: "Frontal 1".into()
+            },
+        ]
+    );
+    assert_eq!(
+        parsed.resolutions,
+        [
+            (1920, 1080, true, None),
+            (1280, 720, true, None),
+            (
+                960,
+                540,
+                false,
+                Some("La cámara no admite esta resolución.")
+            ),
+            (640, 480, true, None)
+        ]
+        .into_iter()
+        .map(|(width, height, enabled, reason)| ResolutionOption {
+            width,
+            height,
+            enabled,
+            reason: reason.map(str::to_string),
+        })
+        .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        parsed.frame_rates,
+        [
+            (30, true, None),
+            (24, true, None),
+            (15, false, Some("La cámara no admite estos FPS."))
+        ]
+        .into_iter()
+        .map(|(fps, enabled, reason)| FpsOption {
+            fps,
+            enabled,
+            reason: reason.map(str::to_string),
+        })
+        .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        (
+            parsed.applied_width,
+            parsed.applied_height,
+            parsed.applied_fps
+        ),
+        (1280, 720, 30)
+    );
+    assert_eq!(parsed.summary, "Calidad: Manual (1280 × 720, 30 FPS)");
+    assert_eq!(parsed.error, None);
+}
+
 #[test]
 fn parser_rejects_limits_and_accepts_unknown_keys() {
     let (_, mut map) = encode_quality_state(&state());

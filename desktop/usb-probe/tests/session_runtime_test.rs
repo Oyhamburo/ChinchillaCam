@@ -9,6 +9,7 @@
 mod common;
 
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{mpsc, Arc},
     time::{Duration, Instant, SystemTime},
@@ -337,6 +338,112 @@ fn rejects_out_of_order_sequence() {
             matches!(end, SessionEnd::ProtocolViolation(_)),
             "expected a protocol violation, got {end:?}"
         );
+        drop(done_tx);
+    });
+
+    fixture.cleanup();
+}
+
+#[test]
+fn inbound_camera_control_is_queued_not_a_violation() {
+    let fixture = Fixture::new("inbound-control");
+    let (desktop_duplex, phone_duplex) = InMemoryDuplex::pair(READ_TIMEOUT);
+    let cert = fixture.desktop_identity.certificate_der().to_vec();
+    let phone_identity = fixture.phone_identity.clone();
+    let arguments = BTreeMap::from([("v".to_string(), "1".to_string())]);
+
+    std::thread::scope(|scope| {
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let (continue_tx, continue_rx) = mpsc::channel::<()>();
+        let sent = arguments.clone();
+        scope.spawn(move || {
+            let mut phone = phone_hello_and_accept(phone_duplex, &cert, &phone_identity);
+            send_phone_frame(
+                &mut phone,
+                HELLO_SEQUENCE + 1,
+                SessionFramePayload::CameraControlCommand {
+                    command: "quality_state".into(),
+                    arguments: sent,
+                },
+            );
+            let _ = continue_rx.recv();
+            send_phone_frame(
+                &mut phone,
+                HELLO_SEQUENCE + 2,
+                SessionFramePayload::Keepalive,
+            );
+            let _ = done_rx.recv();
+        });
+
+        let session = accept_desktop_session(desktop_duplex, &fixture);
+        let start = Instant::now();
+        let mut runtime = build_runtime(session, start);
+        assert!(step_until_frame(&mut runtime, start + Duration::from_millis(250)).received_frame);
+        assert_eq!(runtime.frames_received(), 1);
+        assert_eq!(
+            runtime.take_controls(),
+            vec![("quality_state".into(), arguments)]
+        );
+        assert!(runtime.take_controls().is_empty());
+        // No further inbound traffic: the control at 250 ms resets the 300 ms peer deadline.
+        assert!(runtime.step(start + Duration::from_millis(500)).is_ok());
+        continue_tx.send(()).unwrap();
+        assert!(
+            step_until_frame(&mut runtime, start + Duration::from_millis(500)).received_keepalive
+        );
+        assert_eq!(runtime.frames_received(), 2);
+        drop(done_tx);
+    });
+
+    fixture.cleanup();
+}
+
+#[test]
+fn control_inbox_drops_oldest_without_ending_session() {
+    let fixture = Fixture::new("control-overflow");
+    let (desktop_duplex, phone_duplex) = InMemoryDuplex::pair(READ_TIMEOUT);
+    let cert = fixture.desktop_identity.certificate_der().to_vec();
+    let phone_identity = fixture.phone_identity.clone();
+
+    std::thread::scope(|scope| {
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        scope.spawn(move || {
+            let mut phone = phone_hello_and_accept(phone_duplex, &cert, &phone_identity);
+            for i in 0..10 {
+                send_phone_frame(
+                    &mut phone,
+                    HELLO_SEQUENCE + 1 + i,
+                    SessionFramePayload::CameraControlCommand {
+                        command: i.to_string(),
+                        arguments: BTreeMap::new(),
+                    },
+                );
+            }
+            send_phone_frame(
+                &mut phone,
+                HELLO_SEQUENCE + 11,
+                SessionFramePayload::Keepalive,
+            );
+            let _ = done_rx.recv();
+        });
+
+        let session = accept_desktop_session(desktop_duplex, &fixture);
+        let start = Instant::now();
+        let mut runtime = build_runtime(session, start);
+        for _ in 0..10 {
+            assert!(step_until_frame(&mut runtime, start).received_frame);
+        }
+        assert_eq!(runtime.controls_dropped(), 2);
+        assert_eq!(
+            runtime
+                .take_controls()
+                .into_iter()
+                .map(|(command, _)| command)
+                .collect::<Vec<_>>(),
+            (2..10).map(|i| i.to_string()).collect::<Vec<_>>()
+        );
+        assert!(step_until_frame(&mut runtime, start).received_keepalive);
+        assert_eq!(runtime.frames_received(), 11);
         drop(done_tx);
     });
 
