@@ -29,7 +29,9 @@ Unificar `feat/t15c-fake-usb-sustained` (Android) y `feat/desktop-video-sink` (d
 
 1. [x] g1 — merge con resolución de documentos y commit de merge.
    - Evidencia g1: merge `--no-ff` de `origin/feat/desktop-video-sink` sobre la punta Android `51bc281`; 14 conflictos, todos de documentación, resueltos de forma aditiva con un script: 11 documentos de feature unificados en «Parte Android»/«Parte desktop», `docs/release.md` con secciones Android y macOS, `docs/uso.md` con ambas secciones (sin la frase desactualizada sobre el control desde la computadora), y `complete-webcam-product.md` con las 21 actualizaciones de ambas copias en orden cronológico inverso más la de integración. Sin marcadores de conflicto restantes; ningún archivo de código en conflicto.
-2. [ ] g2 — verificación: suite Android completa, suites `desktop/usb-probe` y `desktop/app`, scripts de release en seco.
-3. [ ] g3 — push de `main`, rama por defecto en GitHub, inspect de la revisión nativa y cierre.
+2. [x] g2 — verificación: suite Android completa, suites `desktop/usb-probe` y `desktop/app`, scripts de release en seco.
+   - Evidencia g2: verificación independiente sobre `c6cd1c4`: sin marcadores de conflicto; Android 577 tests, 2 omitidos, 0 fallas, `assembleDebug` y `lintDebug` aprobados; `desktop/usb-probe` 349/0 y `desktop/app` 52/0 con fmt y clippy limpios; `bash -n` de ambos scripts de release y permisos de ejecución correctos; secciones de `docs/release.md` y `docs/uso.md` (§8.1, §8.2, §9.6, §9.7) presentes.
+3. [x] g3 — push de `main`, rama por defecto en GitHub, inspect de la revisión nativa y cierre.
+   - Evidencia g3: `main` pusheada con seguimiento a `origin/main` y configurada como rama por defecto con `gh repo edit --default-branch main`; las ramas anteriores se conservan.
 
 ## 6. Evidencia
