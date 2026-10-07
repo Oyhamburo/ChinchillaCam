@@ -16,6 +16,7 @@ mod pairing_qr_issuer;
 mod pairing_short_code;
 mod phone_client_cert_verifier;
 mod phone_connection;
+pub mod quality_control;
 mod session_frame;
 mod session_liveness;
 mod session_runtime;
