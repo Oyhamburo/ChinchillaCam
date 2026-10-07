@@ -1,23 +1,29 @@
-# Control remoto de cámara y calidad desde la PC (Android)
+# Control remoto de cámara y calidad desde la PC (Android y desktop)
 
-## 1. Objetivo
+Este documento reúne los registros de las dos ramas, integradas en `main` el 2026-10-07 (`odd/tasks/branch-integration.md`). Cada parte conserva su evidencia original sin cambios.
+
+## Parte Android (rama `feat/t15c-fake-usb-sustained`)
+
+## Control remoto de cámara y calidad desde la PC (Android)
+
+### 1. Objetivo
 
 Que el teléfono informe su cámara y calidad a la PC vinculada que lo pida y acepte cambios desde ella, aplicándolos en vivo con la misma lógica de T26.
 
-## 2. Problema
+### 2. Problema
 
 - HELLO anuncia `capabilities = emptyList()` (`SessionHelloExchange.kt:49`).
 - `onCameraControlCommand = { }` está vacío (`PhoneConnectionRuntime.kt:63`) y corre en el hilo lector de la sesión.
 - `SessionRuntime.send` existe pero no está expuesto fuera de `SessionEgressBinding`.
 
-## 3. Decisiones
+### 3. Decisiones
 
 1. **Usuario, 2026-10-07 (T26):** los controles viven primero en el teléfono; el control remoto desde la PC es esta unidad.
 2. **Usuario, 2026-10-07:** la PC vinculada puede cambiar cámara, resolución y FPS.
 3. **Usuario, 2026-10-07:** una sola preferencia compartida; gana el último cambio (teléfono o PC) y los dos muestran el mismo estado.
 4. **Orquestador:** negociación por capacidad en HELLO + `quality_subscribe` para no romper desktops ni teléfonos viejos.
 
-## 4. Protocolo `quality-control-v1` (idéntico en los dos lados)
+### 4. Protocolo `quality-control-v1` (idéntico en los dos lados)
 
 Todo viaja en el frame 7 `CAMERA_CONTROL_COMMAND(command, arguments)` ya existente, con valores de texto.
 
@@ -32,16 +38,16 @@ Todo viaja en el frame 7 `CAMERA_CONTROL_COMMAND(command, arguments)` ya existen
 3. **`set_quality`** (desktop → teléfono): `v=1`, `req=<n>` (entero creciente), `camera=<id>|auto` (opcional: ausente = mantener), `mode=auto|manual`, y `width`, `height`, `fps` obligatorios si `mode=manual`. El teléfono valida contra su propio plan (opciones habilitadas), guarda la preferencia compartida (gana el último cambio), reconfigura en vivo y responde con `quality_state` con el mismo `req`.
 4. **Límites del parser** (ambos lados): a lo sumo 16 cámaras, 16 resoluciones y 16 FPS; cada clave y valor de hasta 256 bytes; números positivos sin signos ni ceros a la izquierda; claves desconocidas ignoradas; un mensaje fuera de límites se descarta sin cortar la sesión.
 
-## 5. Riesgos
+### 5. Riesgos
 
 - La cola de salida (64) es compartida con el video: los `quality_state` deben ser pocos y chicos; una cola llena termina la sesión por saturación.
 - El callback de control corre en el hilo lector: todo el trabajo va a un ejecutor propio.
 
-## 6. Reglas de ejecución
+### 6. Reglas de ejecución
 
 TDD estricto con RED observado; commits de work unit ≤400 líneas con tests y docs; writers delegados acotados; el orquestador lee el diff y verifica que todo callback nuevo esté cableado en producción. Push autorizado tras la unidad; sin PR ni merge.
 
-## 7. Tareas
+### 7. Tareas
 
 Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug --offline` (línea de base 560/2/0).
 
@@ -52,7 +58,70 @@ Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Andro
 3. [x] a3 — cierre: verificación, docs, plan general, push.
    - Evidencia a3: verificación independiente: 574 tests, 2 omitidos, 0 fallas; assemble y lint aprobados; revisión cruzada contra §4 sin desajustes de claves ni formatos; el único defecto (la pantalla de diagnóstico no aplicaba ni avisaba el cambio de cámara) se corrigió con RED. Guía en `docs/uso.md` §6. Commits: `48a85fa` (a1), `e41325d` (a2), `604bbfe` (corrección de diagnóstico) y el commit de cierre.
 
-## 8. Evidencia
+### 8. Evidencia
 
 - La selección de cámara en la pantalla diagnóstica aplica la preferencia a la sesión activa y notifica al desktop suscrito; ambas llamadas toleran fallos sin cerrar la pantalla.
+- Sin ejecutar: interoperabilidad real teléfono↔computadora por USB y la UI en pantalla (M9).
+
+## Parte desktop (rama `feat/desktop-video-sink`)
+
+## Control remoto de cámara y calidad desde la PC (desktop)
+
+### 1. Objetivo
+
+Que la ventana del desktop muestre la cámara y la calidad que transmite el teléfono, con las opciones que admite, y permita cambiarlas; el teléfono aplica el cambio en vivo (T26).
+
+### 2. Problema
+
+- El desktop descarta `HANDSHAKE_HELLO.capabilities` (`phone_connection.rs:313`).
+- `SessionRuntime` trata un frame 7 entrante como violación de protocolo (`session_runtime.rs:459-468`); el pipeline y el worker no exponen `send_command`.
+- La app no tiene comandos ni vista de calidad.
+
+### 3. Decisiones
+
+1. **Usuario, 2026-10-07 (T26):** los controles viven primero en el teléfono; el control remoto desde la PC es esta unidad.
+2. **Usuario, 2026-10-07:** la PC vinculada puede cambiar cámara, resolución y FPS.
+3. **Usuario, 2026-10-07:** una sola preferencia compartida; gana el último cambio (teléfono o PC) y los dos muestran el mismo estado.
+4. **Orquestador:** negociación por capacidad en HELLO + `quality_subscribe` para no romper desktops ni teléfonos viejos.
+
+### 4. Protocolo `quality-control-v1` (idéntico en los dos lados)
+
+Todo viaja en el frame 7 `CAMERA_CONTROL_COMMAND(command, arguments)` ya existente, con valores de texto.
+
+1. **Negociación.** El teléfono anuncia la capacidad `quality-control-v1` en `HANDSHAKE_HELLO.capabilities`. El desktop la guarda y, sólo si está, envía `quality_subscribe` (`v=1`) después de iniciar la sesión. El teléfono envía frames 7 al desktop **sólo después** de recibir `quality_subscribe` (un desktop viejo trata un frame 7 entrante como violación de protocolo). Cada lado ignora comandos desconocidos.
+2. **`quality_state`** (teléfono → desktop), en respuesta a `quality_subscribe`, después de procesar cada `set_quality` y cuando el usuario cambia la calidad en el teléfono mientras hay suscripción:
+   - `v=1`; `req=<n>` sólo si responde a un `set_quality`; `error=unsupported|invalid|unavailable` si rechazó el pedido;
+   - `mode=auto|manual`; `camera.selected=<id>|auto`;
+   - `camera.count=N`, `camera.<i>.id`, `camera.<i>.label` (i = 0..N-1);
+   - `res.count=N`, `res.<i>=<W>x<H>`, `res.<i>.enabled=1|0`, `res.<i>.reason` (opcional);
+   - `fps.count=N`, `fps.<i>=<F>`, `fps.<i>.enabled=1|0`, `fps.<i>.reason` (opcional);
+   - `applied.res=<W>x<H>`, `applied.fps=<F>`, `summary=<texto>`.
+3. **`set_quality`** (desktop → teléfono): `v=1`, `req=<n>` (entero creciente), `camera=<id>|auto` (opcional: ausente = mantener), `mode=auto|manual`, y `width`, `height`, `fps` obligatorios si `mode=manual`. El teléfono valida contra su propio plan (opciones habilitadas), guarda la preferencia compartida (gana el último cambio), reconfigura en vivo y responde con `quality_state` con el mismo `req`.
+4. **Límites del parser** (ambos lados): a lo sumo 16 cámaras, 16 resoluciones y 16 FPS; cada clave y valor de hasta 256 bytes; números positivos sin signos ni ceros a la izquierda; claves desconocidas ignoradas; un mensaje fuera de límites se descarta sin cortar la sesión.
+
+### 5. Riesgos
+
+- El reinicio de cámara corta el video unos segundos; el vigía de 5 s (T27) puede avisar si tarda más.
+- Sin hardware: la interoperabilidad real se valida en M9.
+
+### 6. Reglas de ejecución
+
+TDD estricto con RED observado; commits de work unit ≤400 líneas con tests y docs; writers delegados acotados; el orquestador lee el diff y verifica que todo callback nuevo esté cableado en producción. Push autorizado tras la unidad; sin PR ni merge.
+
+### 7. Tareas
+
+Runners: `export PATH=$HOME/.cargo/bin:$PATH` y en `desktop/usb-probe` y `desktop/app`: `cargo fmt -- --check && cargo test --offline && cargo clippy --offline --all-targets -- -D warnings` (líneas de base 337/0 y 45/0).
+
+1. [x] c1 — capacidades del HELLO guardadas en la sesión + módulo `quality_control` (tipos, codificación y parser con límites). RED: `quality_state_round_trips_with_indexed_options`. ~350 líneas.
+   - Evidencia c1: RED por módulo ausente; GREEN de ida y vuelta, mapa literal, límites, capacidades y sesión HELLO; verificación de formato, tests y clippy en usb-probe y tests en app.
+2. [x] c2 — `SessionRuntime` acepta frames 7 entrantes (cola de control) y el pipeline expone enviar y recibir control. RED: `inbound_camera_control_is_queued_not_a_violation`. ~250 líneas.
+   - Evidencia c2: RED por ausencia de `take_controls`; GREEN de recepción con secuencia, cola FIFO acotada con descarte del más antiguo, envío/recepción por pipeline y mapa literal de Android; verificación de formato, tests y clippy en usb-probe y tests en app.
+3. [x] c3 — worker: `quality_subscribe` automático si hay capacidad, `DesktopCommand::SetQuality`, `DesktopEvent::QualityState`. RED: `worker_subscribes_and_reports_quality_state`. ~300 líneas.
+   - Evidencia c3: RED por ausencia del evento `QualityState`; GREEN de suscripción negociada, estado entrante, pedidos con `req` creciente, ausencia de frame 7 sin capacidad y descarte de estados inválidos; verificación de formato, tests y clippy en usb-probe y tests/clippy en app.
+4. [x] c4 — app: sección de calidad en la ventana (cámara, resolución, FPS, automático; deshabilitadas con motivo). RED: `connected_view_shows_remote_quality_options`. ~300 líneas.
+   - Evidencia c4: RED por ausencia de `AppView.quality`; GREEN de opciones, selección, errores, estado pendiente y limpieza; 50 tests de app sin fallas, formato, clippy y build verificados offline.
+5. [x] c5 — cierre: verificación, docs, plan general, push.
+   - Evidencia c5: verificación independiente sobre `a504e10`: `usb-probe` 349/0 y `desktop/app` 50/0; fmt, clippy y build limpios; los commits intermedios `1aa2f07`, `c7ce8b7`, `9af5734` y `f9deee6` compilan; revisión cruzada contra §4 sin desajustes. Guía en `docs/uso.md` §6. Commits: `1aa2f07`, `c7ce8b7` (c1), `23d348f` (c2), `cae09f3` (c3), `9af5734`, `f9deee6`, `a504e10` (c4) y el commit de cierre.
+
+### 8. Evidencia
 - Sin ejecutar: interoperabilidad real teléfono↔computadora por USB y la UI en pantalla (M9).

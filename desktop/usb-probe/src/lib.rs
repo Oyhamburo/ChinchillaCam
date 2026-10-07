@@ -1,3 +1,141 @@
+mod desktop_connection_worker;
+mod desktop_metrics;
+mod desktop_receiver;
+mod desktop_session_pipeline;
+mod desktop_tls_identity;
+mod encoded_video_sink;
+mod h264_access_unit;
+mod h264_config;
+mod keyframe_gated_sink;
+mod loopback_lan_listener;
+mod loopback_pairing_proof_server;
+mod pairing_proof_endpoint;
+mod pairing_proof_protocol;
+mod pairing_qr;
+mod pairing_qr_issuer;
+mod pairing_short_code;
+mod phone_client_cert_verifier;
+mod phone_connection;
+pub mod quality_control;
+mod session_frame;
+mod session_liveness;
+mod session_runtime;
+mod threaded_video_decoder;
+mod tls_session_frame;
+mod trusted_phone_store;
+mod usb_phone_link;
+mod usb_tls_ciphertext_stream;
+mod usb_tls_pairing_proof;
+mod video_decoder;
+mod video_fragment_reassembler;
+#[cfg(target_os = "macos")]
+mod videotoolbox_decoder;
+
+pub use desktop_connection_worker::{
+    DesktopCommand, DesktopConnectionFailure, DesktopConnectionWorker, DesktopEvent,
+    DesktopSessionEndReason, DesktopWorkerConfig, DesktopWorkerHandle, DesktopWorkerSpawnError,
+    IdleReadTimeoutControl, PhoneLink, PhoneLinkError,
+};
+pub use desktop_metrics::{
+    DesktopMetricsAggregator, DesktopMetricsError, DesktopMetricsSnapshot, PhoneReportedMetrics,
+    DEFAULT_METRICS_WINDOW,
+};
+pub use desktop_receiver::{
+    receive_desktop_video_frame, DesktopReceiverError, DesktopVideoSessionReceiver,
+    StaticFrameKindClassifier, VideoFrameKindClassifier, USB_SESSION_FRAME_STREAM_ID,
+};
+pub use desktop_session_pipeline::{
+    DesktopSessionPipeline, DesktopSessionPipelineError, PipelineStep,
+};
+pub use desktop_tls_identity::{
+    DesktopTlsIdentity, DesktopTlsIdentityError, DesktopTlsIdentityStore,
+};
+pub use encoded_video_sink::{
+    BoundedEncodedVideoQueue, EncodedVideoChunk, EncodedVideoChunkLimits, EncodedVideoFrameKind,
+    EncodedVideoSink, EncodedVideoSinkError, PresentationTimestamp,
+};
+pub use h264_access_unit::{
+    convert_h264_access_unit_to_length_prefixed, H264AccessUnitError, MAX_H264_ACCESS_UNIT_BYTES,
+    MAX_H264_ACCESS_UNIT_NAL_UNITS,
+};
+pub use h264_config::{
+    parse_h264_config, H264ConfigError, H264InputFraming, H264ParameterSets, MAX_H264_CONFIG_BYTES,
+    MAX_H264_CONFIG_NAL_UNITS, MAX_H264_PARAMETER_SET_BYTES,
+};
+pub use keyframe_gated_sink::KeyframeGatedSink;
+pub use loopback_lan_listener::{
+    LoopbackLanError, LoopbackLanListener, LoopbackLanOptions, DEFAULT_STREAM_READ_TIMEOUT,
+    DEFAULT_STREAM_WRITE_TIMEOUT,
+};
+pub use loopback_pairing_proof_server::{
+    LoopbackPairingProofServer, LoopbackPairingProofServerError,
+};
+pub use pairing_proof_endpoint::{PairingProofEndpoint, PairingProofEndpointError};
+pub use pairing_proof_protocol::{
+    PairingProofFrame, PairingProofProtocolError, PairingProofRequest, PairingProofResponse,
+};
+pub use pairing_qr::{PairingQrError, PairingQrPayload, PairingQrProducer};
+pub use pairing_qr_issuer::{
+    IssuedPairingQr, OsPairingQrNonceGenerator, PairingQrIssuer, PairingQrIssuerError,
+    PairingQrNonceGenerator,
+};
+pub use pairing_short_code::{pairing_short_code_v1, PairingShortCode, ShortCodeError};
+pub use phone_client_cert_verifier::{
+    is_canonical_p256_spki, phone_id_for_spki, PhoneClientCertVerifier, TrustedPhoneLookup,
+    TrustedPhoneLookupError, TrustedPhoneStatus,
+};
+pub use phone_connection::{
+    accept_phone_pairing_connection, accept_phone_reconnect_connection, AuthenticatedPhoneSession,
+    PendingPairedPhoneSession, PhoneConnectionError, SessionIdentity,
+};
+pub use session_frame::{
+    SessionFrame, SessionFrameCodec, SessionFrameDecodeError, SessionFrameEncodeError,
+    SessionFramePayload, VideoFrameKind,
+};
+pub use session_liveness::{
+    SessionLivenessError, SessionLivenessTracker, DEFAULT_DEAD_THRESHOLD,
+    DEFAULT_KEEPALIVE_INTERVAL,
+};
+pub use session_runtime::{
+    SessionEnd, SessionRuntime, SessionRuntimeConfig, SessionRuntimeError, StepOutcome,
+    DEFAULT_FRAME_BUDGET, DEFAULT_POLL_SLICE,
+};
+pub use threaded_video_decoder::{
+    ChannelDecodedFrameSink, ThreadedVideoDecoder, ThreadedVideoDecoderConfig,
+    ThreadedVideoDecoderError,
+};
+pub use tls_session_frame::{
+    read_session_frame, read_session_frame_with_budgets, write_session_frame, TlsSessionFrameError,
+};
+pub use trusted_phone_store::{
+    FileTrustedPhoneStore, TrustUnlessRevoked, TrustedPhoneIdentity, TrustedPhoneStoreError,
+    TrustedPhoneStoreWriteCoordinator, TrustedPhoneSummary,
+};
+pub use usb_phone_link::{
+    chinchillacam_accessory_identity, parse_usb_device_override, select_phone_candidate,
+    usb_device_override_from_env, PeekedStream, PhoneCandidate, RusbPhoneBackend, UsbPhoneBackend,
+    UsbPhoneLink, UsbPhoneLinkConfig, SAMSUNG_VENDOR_ID, USB_DEVICE_OVERRIDE_ENV,
+};
+pub use usb_tls_ciphertext_stream::{
+    UsbTlsCiphertextStream, USB_TLS_CIPHERTEXT_MAX_CHUNK_BYTES,
+    USB_TLS_CIPHERTEXT_MAX_PENDING_READ_BYTES, USB_TLS_CIPHERTEXT_STREAM_ID,
+};
+pub use usb_tls_pairing_proof::{
+    complete_trusted_phone_handshake, CompletedPairingProof, CompletedTrustedHandshake,
+    PairedPhoneCandidate, PairedPhoneCandidateConfirmError, UsbTlsPairingProofError,
+    UsbTlsPairingProofServer,
+};
+pub use video_decoder::{
+    DecodedFrameCounter, DecodedFrameSink, DecodedFrameSinkError, DecodedVideoFrame,
+    DecodingEncodedVideoSink, FakeVideoDecoder, PixelFormat, RecordingDecodedFrameSink,
+    VideoDecoder, VideoDecoderError,
+};
+pub use video_fragment_reassembler::{
+    ReassembledVideoChunk, VideoFragmentReassembler, VideoFragmentReassemblerError,
+};
+#[cfg(target_os = "macos")]
+pub use videotoolbox_decoder::{VideoToolboxDecoder, VideoToolboxError, VideoToolboxFormat};
+
 use std::{
     collections::VecDeque,
     fmt,
@@ -40,12 +178,30 @@ pub enum UsbProbeError {
     BulkInterfaceNotClaimed,
     ActiveConfigurationUnavailable,
     InvalidBulkTransferBudget,
+    InvalidBulkReadTransferLen(usize),
+    InvalidBulkIdleReadTimeout(Duration),
     EmptyBulkFrame,
-    OversizeBulkFrame { length: usize, max: usize },
+    OversizeBulkFrame {
+        length: usize,
+        max: usize,
+    },
     BulkFrameHeaderTruncated,
-    BulkFramePayloadTruncated { expected: usize, actual: usize },
+    BulkFramePayloadTruncated {
+        expected: usize,
+        actual: usize,
+    },
     BulkShortWrite,
-    BulkTransferCountExceeded { count: usize, limit: usize },
+    BulkTransferCountExceeded {
+        count: usize,
+        limit: usize,
+    },
+    /// A bulk IN read timed out before transferring any byte.
+    BulkReadTimeout,
+    /// A bulk IN read timed out after `consumed` bytes of the current frame
+    /// were already buffered; the frame boundary is lost.
+    BulkFrameStalled {
+        consumed: usize,
+    },
     UsbBulkTransferFailed(String),
     SelectedDeviceNotFound(DeviceIdentifier),
     InvalidReenumerationWait,
@@ -1139,13 +1295,22 @@ where
     fn read_bulk(&mut self, buffer: &mut [u8], timeout: Duration) -> Result<usize, UsbProbeError> {
         self.handle
             .read_bulk(self.claim.endpoints().in_endpoint(), buffer, timeout)
-            .map_err(|error| UsbProbeError::UsbBulkTransferFailed(error.to_string()))
+            .map_err(map_rusb_read_error)
     }
 
     fn write_bulk(&mut self, bytes: &[u8], timeout: Duration) -> Result<usize, UsbProbeError> {
         self.handle
             .write_bulk(self.claim.endpoints().out_endpoint(), bytes, timeout)
             .map_err(|error| UsbProbeError::UsbBulkTransferFailed(error.to_string()))
+    }
+}
+
+/// Maps a bulk IN read error from rusb. rusb reports `Timeout` only when no
+/// byte was transferred, so it becomes the recoverable `BulkReadTimeout`.
+pub fn map_rusb_read_error(error: rusb::Error) -> UsbProbeError {
+    match error {
+        rusb::Error::Timeout => UsbProbeError::BulkReadTimeout,
+        other => UsbProbeError::UsbBulkTransferFailed(other.to_string()),
     }
 }
 
@@ -1365,11 +1530,22 @@ impl BulkFrame {
     }
 }
 
+/// Default size of the buffer handed to each bulk IN read. It is a multiple
+/// of every USB bulk max packet size, so libusb never overflows mid-packet.
+pub const DEFAULT_BULK_READ_TRANSFER_LEN: usize = 16 * 1024;
+
+const BULK_READ_TRANSFER_GRANULE: usize = 512;
+
+/// libusb treats a zero timeout as infinite, so idle reads need at least 1 ms.
+const MIN_BULK_IDLE_READ_TIMEOUT: Duration = Duration::from_millis(1);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameTransferBudget {
     timeout: Duration,
     max_payload_len: usize,
     max_io_attempts: usize,
+    read_transfer_len: usize,
+    idle_read_timeout: Option<Duration>,
 }
 
 impl FrameTransferBudget {
@@ -1386,11 +1562,48 @@ impl FrameTransferBudget {
             timeout,
             max_payload_len,
             max_io_attempts,
+            read_transfer_len: DEFAULT_BULK_READ_TRANSFER_LEN,
+            idle_read_timeout: None,
         })
+    }
+
+    /// Sets the bulk IN read buffer size; it must be a non-zero multiple of
+    /// 512 bytes so that a whole bulk packet always fits.
+    pub fn with_read_transfer_len(
+        mut self,
+        read_transfer_len: usize,
+    ) -> Result<Self, UsbProbeError> {
+        if read_transfer_len == 0 || !read_transfer_len.is_multiple_of(BULK_READ_TRANSFER_GRANULE) {
+            return Err(UsbProbeError::InvalidBulkReadTransferLen(read_transfer_len));
+        }
+        self.read_transfer_len = read_transfer_len;
+        Ok(self)
+    }
+
+    /// Sets the timeout of the first bulk IN read of a frame while nothing of
+    /// that frame is buffered yet; every other read keeps `timeout()`. It
+    /// must be at least 1 ms because libusb treats zero as infinite.
+    pub fn with_idle_read_timeout(
+        mut self,
+        idle_read_timeout: Duration,
+    ) -> Result<Self, UsbProbeError> {
+        if idle_read_timeout < MIN_BULK_IDLE_READ_TIMEOUT {
+            return Err(UsbProbeError::InvalidBulkIdleReadTimeout(idle_read_timeout));
+        }
+        self.idle_read_timeout = Some(idle_read_timeout);
+        Ok(self)
     }
 
     pub fn timeout(&self) -> Duration {
         self.timeout
+    }
+
+    pub fn idle_read_timeout(&self) -> Option<Duration> {
+        self.idle_read_timeout
+    }
+
+    pub fn read_transfer_len(&self) -> usize {
+        self.read_transfer_len
     }
 
     pub fn max_payload_len(&self) -> usize {
@@ -1496,27 +1709,139 @@ impl UsbBulkIo for RecordingUsbBulkIo {
     }
 }
 
+/// Test double that models how libusb delivers bulk IN transfers: every
+/// queued transfer is returned whole by a single `read_bulk`, and a buffer
+/// smaller than the next transfer fails with the overflow error instead of
+/// splitting it or keeping a residual. Queued errors (for example
+/// `BulkReadTimeout`) are returned by one read each.
+#[derive(Debug, Clone)]
+pub struct TransferExactBulkIo {
+    transfers: VecDeque<Result<Vec<u8>, UsbProbeError>>,
+    read_buffer_lens: Vec<usize>,
+    read_timeouts: Vec<Duration>,
+    write_error: Option<UsbProbeError>,
+    written_bytes: Vec<u8>,
+}
+
+impl TransferExactBulkIo {
+    pub fn with_transfers(transfers: Vec<Vec<u8>>) -> Self {
+        Self::with_reads(transfers.into_iter().map(Ok).collect())
+    }
+
+    pub fn with_reads(reads: Vec<Result<Vec<u8>, UsbProbeError>>) -> Self {
+        Self {
+            transfers: reads.into(),
+            read_buffer_lens: Vec::new(),
+            read_timeouts: Vec::new(),
+            write_error: None,
+            written_bytes: Vec::new(),
+        }
+    }
+
+    /// Makes every later `write_bulk` fail with `error`.
+    pub fn failing_writes_with(mut self, error: UsbProbeError) -> Self {
+        self.write_error = Some(error);
+        self
+    }
+
+    pub fn read_buffer_lens(&self) -> &[usize] {
+        &self.read_buffer_lens
+    }
+
+    pub fn read_timeouts(&self) -> &[Duration] {
+        &self.read_timeouts
+    }
+
+    pub fn pending_transfers(&self) -> usize {
+        self.transfers.len()
+    }
+
+    pub fn written_bytes(&self) -> &[u8] {
+        &self.written_bytes
+    }
+}
+
+impl UsbBulkIo for TransferExactBulkIo {
+    fn read_bulk(&mut self, buffer: &mut [u8], timeout: Duration) -> Result<usize, UsbProbeError> {
+        self.read_buffer_lens.push(buffer.len());
+        self.read_timeouts.push(timeout);
+        match self.transfers.front() {
+            None => return Ok(0),
+            Some(Ok(transfer)) if buffer.len() < transfer.len() => {
+                return Err(UsbProbeError::UsbBulkTransferFailed(
+                    rusb::Error::Overflow.to_string(),
+                ));
+            }
+            Some(_) => {}
+        }
+        let transfer = self.transfers.pop_front().expect("front transfer exists")?;
+        buffer[..transfer.len()].copy_from_slice(&transfer);
+        Ok(transfer.len())
+    }
+
+    fn write_bulk(&mut self, bytes: &[u8], _timeout: Duration) -> Result<usize, UsbProbeError> {
+        if let Some(error) = &self.write_error {
+            return Err(error.clone());
+        }
+        self.written_bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FramedUsbStream<I> {
     io: I,
     budget: FrameTransferBudget,
+    residual: Vec<u8>,
+    transfer_buffer: Vec<u8>,
 }
+
+const BULK_FRAME_HEADER_LEN: usize = 8;
 
 impl<I> FramedUsbStream<I>
 where
     I: UsbBulkIo,
 {
     pub fn new(io: I, budget: FrameTransferBudget) -> Self {
-        Self { io, budget }
+        let transfer_buffer = vec![0; budget.read_transfer_len()];
+        Self {
+            io,
+            budget,
+            residual: Vec::new(),
+            transfer_buffer,
+        }
     }
 
+    /// Sets or clears the idle read timeout after construction, for example
+    /// once a handshake that must keep the full read timeout has finished.
+    pub fn set_idle_read_timeout(
+        &mut self,
+        idle_read_timeout: Option<Duration>,
+    ) -> Result<(), UsbProbeError> {
+        self.budget = match idle_read_timeout {
+            Some(timeout) => self.budget.clone().with_idle_read_timeout(timeout)?,
+            None => FrameTransferBudget {
+                idle_read_timeout: None,
+                ..self.budget.clone()
+            },
+        };
+        Ok(())
+    }
+
+    /// Reads one frame from the residual bytes of earlier bulk transfers,
+    /// pulling whole transfers only while the frame is incomplete. Bytes past
+    /// the frame stay buffered for the next call.
+    ///
+    /// A read timeout while nothing of the frame is buffered returns
+    /// `BulkReadTimeout` and leaves the stream intact; a timeout once part of
+    /// the frame is buffered returns the fatal `BulkFrameStalled`.
     pub fn read_frame(&mut self) -> Result<BulkFrame, UsbProbeError> {
-        let mut header = [0; 8];
-        let header_read = self.read_exact_bounded(&mut header)?;
-        if header_read < header.len() {
+        let mut transfers = 0;
+        if !self.fill_residual(BULK_FRAME_HEADER_LEN, &mut transfers)? {
             return Err(UsbProbeError::BulkFrameHeaderTruncated);
         }
 
+        let header = &self.residual[..BULK_FRAME_HEADER_LEN];
         let stream_id = u32::from_le_bytes(header[0..4].try_into().expect("fixed header slice"));
         let payload_len_u32 =
             u32::from_le_bytes(header[4..8].try_into().expect("fixed header slice"));
@@ -1532,15 +1857,16 @@ where
             });
         }
 
-        let mut payload = vec![0; payload_len];
-        let payload_read = self.read_exact_bounded(&mut payload)?;
-        if payload_read < payload_len {
+        let frame_len = BULK_FRAME_HEADER_LEN + payload_len;
+        if !self.fill_residual(frame_len, &mut transfers)? {
             return Err(UsbProbeError::BulkFramePayloadTruncated {
                 expected: payload_len,
-                actual: payload_read,
+                actual: self.residual.len() - BULK_FRAME_HEADER_LEN,
             });
         }
 
+        let payload = self.residual[BULK_FRAME_HEADER_LEN..frame_len].to_vec();
+        self.residual.drain(..frame_len);
         BulkFrame::new(stream_id, payload)
     }
 
@@ -1586,28 +1912,43 @@ where
         &self.io
     }
 
-    fn read_exact_bounded(&mut self, buffer: &mut [u8]) -> Result<usize, UsbProbeError> {
-        let mut read = 0;
-        for _ in 0..self.budget.max_io_attempts() {
-            if read == buffer.len() {
-                return Ok(read);
+    /// Appends whole bulk transfers to the residual until it holds `target`
+    /// bytes. Returns `false` when the source ends (zero-length read) or the
+    /// per-frame transfer budget is spent first.
+    fn fill_residual(
+        &mut self,
+        target: usize,
+        transfers: &mut usize,
+    ) -> Result<bool, UsbProbeError> {
+        while self.residual.len() < target {
+            if *transfers == self.budget.max_io_attempts() {
+                return Ok(false);
             }
-            let remaining = buffer.len() - read;
-            let count = self
-                .io
-                .read_bulk(&mut buffer[read..], self.budget.timeout())?;
-            if count > remaining {
-                return Err(UsbProbeError::BulkTransferCountExceeded {
-                    count,
-                    limit: remaining,
-                });
+            *transfers += 1;
+            let limit = self.transfer_buffer.len();
+            let frame_started = !self.residual.is_empty();
+            let timeout = match self.budget.idle_read_timeout() {
+                Some(idle_timeout) if !frame_started => idle_timeout,
+                _ => self.budget.timeout(),
+            };
+            let count = match self.io.read_bulk(&mut self.transfer_buffer, timeout) {
+                Err(UsbProbeError::BulkReadTimeout) if frame_started => {
+                    return Err(UsbProbeError::BulkFrameStalled {
+                        consumed: self.residual.len(),
+                    });
+                }
+                result => result?,
+            };
+            if count > limit {
+                return Err(UsbProbeError::BulkTransferCountExceeded { count, limit });
             }
             if count == 0 {
-                return Ok(read);
+                return Ok(false);
             }
-            read += count;
+            self.residual
+                .extend_from_slice(&self.transfer_buffer[..count]);
         }
-        Ok(read)
+        Ok(true)
     }
 }
 

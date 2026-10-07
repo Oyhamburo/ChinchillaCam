@@ -1,15 +1,21 @@
-# Cableado de la sesión al pipeline (dominio)
+# Cableado de la sesión al pipeline (dominio) (Android y desktop)
 
-## 1. Objetivo
+Este documento reúne los registros de las dos ramas, integradas en `main` el 2026-10-07 (`odd/tasks/branch-integration.md`). Cada parte conserva su evidencia original sin cambios.
+
+## Parte Android (rama `feat/t15c-fake-usb-sustained`)
+
+## Cableado de la sesión al pipeline (dominio)
+
+### 1. Objetivo
 
 Conectar el runtime de sesión con los pipelines existentes a nivel de dominio y con fakes: en el teléfono, el video codificado de cámara→encoder sale por el runtime y el fin de sesión detiene la cámara con un aviso visible; en el desktop, los frames recibidos llegan a un decoder (fake por ahora) con frames decodificados, métricas medidas localmente y descarte hasta el próximo keyframe ante saturación.
 
-## 2. Problema
+### 2. Problema
 
 - Android: el controller del servicio se construye sin `encodedVideoSinkFactory` (el video se descarta en memoria) y los fallos de egreso (`failAndStop`) no llegan a `VisibleCameraServiceStatusStore` ni a `stopService`. No existe composición de producción USB → TLS → sesión.
 - Desktop: `VideoDecoder` no tiene tipo de salida ni backend real; `SessionRuntime` sólo expone `sink(&self)`; la saturación del sink se reporta como `ProtocolViolation` y termina la sesión; no hay agregador de métricas.
 
-## 3. Decisión
+### 3. Decisión
 
 Decisiones del usuario del 2026-10-01:
 
@@ -18,7 +24,7 @@ Decisiones del usuario del 2026-10-01:
 3. Decoder real: nativo por plataforma (VideoToolbox primero, luego Media Foundation), sin FFmpeg, como unidad aparte.
 4. UI de pairing no autorizada todavía: esta unidad no agrega UI nueva ni fuente de sesión de producción.
 
-## 4. Contrato
+### 4. Contrato
 
 1. Teléfono: un `SessionEgressBinding` arranca el runtime desde un `Reconnected`, provee la fábrica de sink de video (fragmentador sobre `SessionRuntimeVideoTransport`), y ante `SessionEnd` distinto de `LocalClose` pide la detención del pipeline fuera del hilo del runtime y publica un error tipado por causa. La fábrica de sink no hace E/S.
 2. Teléfono: todo fallo del pipeline o del egreso que detiene la cámara publica `Error` en `VisibleCameraServiceStatusStore` y detiene el servicio; los textos "egreso fake" pasan a textos neutros que no afirman transmisión.
@@ -27,17 +33,17 @@ Decisiones del usuario del 2026-10-01:
 5. Desktop: métricas medidas localmente con reloj inyectado (fps de llegada y decodificado en ventana, descartes, bytes) más los valores reportados por el teléfono, siempre etiquetados como reportados.
 6. Fuera de alcance: UI nueva, fuente de sesión de producción (USB real), reconexión automática, decoder nativo, cámara virtual, emisor de métricas del teléfono, red no loopback y prueba cruzada entre worktrees.
 
-## 5. Riesgos
+### 5. Riesgos
 
 - Interbloqueo entre `onEnd` del runtime y el monitor del controller: el handoff va a otro hilo y se prueba con drenaje concurrente.
 - Descarte hasta keyframe sin keyframes periódicos del encoder: la sesión puede quedar sin video hasta el próximo keyframe; se documenta y se mide.
 - Un decoder lento en el loop de un hilo del desktop retrasa keepalives: el fake mide y los tests acotan; el decoder real tendrá su propio hilo en su unidad.
 
-## 6. Reglas de ejecución
+### 6. Reglas de ejecución
 
 TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecución); desvíos declarados. Commits ≤400 líneas como heurística. Revisión nativa RDD por commit o slice (pendiente mientras siga el incidente del facade del 2026-09-30). Writer delegado acotado por tarea con lectura del orquestador. Push por decisión del usuario.
 
-## 7. Tareas (Android)
+### 7. Tareas (Android)
 
 Runner: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug`. Baseline: 417 tests, 2 omitidos, 0 fallos (HEAD `76fae83`).
 
@@ -48,7 +54,7 @@ Runner: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gra
 
    Hecho el 2026-10-01. Nuevo `SessionEgressBinding` (archivo nuevo): arranca un `SessionRuntime` desde un `Reconnected` (o desde sus partes explícitas: canal, adapter, `sessionId`, próxima secuencia saliente/entrante), expone `videoSinkFactory: () -> EncodedVideoEgressSink` trivial sin E/S (`FragmentingEncodedVideoEgressSink(EncodedVideoFragmentingSessionFrameSink(SessionRuntimeVideoTransport(runtime)))`), y ante el `onEnd` del runtime hace handoff al `endExecutor` (nunca actúa en el hilo del runtime, riesgo §5): `LocalClose` no reporta nada visible; cualquier otra causa llama `onSessionEndedWithError(cause, mensaje)` con un texto neutro en español por causa (`PeerDead`: "Se perdió la conexión con la computadora."; `Backpressure`/`WriteFailed`/`ReadFailed`/`ProtocolViolation` con mensajes honestos y cortos). `close()` es idempotente (guarda `AtomicBoolean`) y delega en `runtime.close()`, que hace join acotado saltando el hilo actual: seguro de llamar desde el hilo del `endExecutor` y desde un hilo de test; en producción no debe llamarse en el hilo principal (documentado). Composición para el service layer sin fuente de sesión de producción (§4.6, decisión 4): `SessionEgressServicePipelineComposition` expone `encodedVideoSinkFactory` (= `binding.videoSinkFactory`) para `VisibleCameraPipelineController` y un `onSessionEndedWithError` que publica `Error` en `VisibleCameraServiceStatusStore` con el mensaje tipado y pide la parada por el mismo camino de fallo que p1 (`requestPipelineFailureStop`, espejo de `onPipelineFailureStop`); la construcción real del servicio queda sin cambios. Tests nuevos (`SessionEgressBindingTest` sobre `RawStreamTlsTestSupport` + par desktop falso, como en `SessionRuntimeVideoTransportTest`): `videoFlowsFromControllerThroughBinding` (un `VisibleCameraPipelineController` con launcher/handle falsos usando `binding.videoSinkFactory`; el par desktop recibe los chunks de video con secuencia +1 estricta y mismo `sessionId`, y los bytes reensamblan la entrada), `peerDeadStopsPipelineWithVisibleError` (peer en silencio → `onSessionEndedWithError(PeerDead, msg)` invocado en el hilo del `endExecutor`, no en el hilo del runtime; el status store muestra `Error` con ese mensaje y la parada se pidió una vez), `localCloseDoesNotReportError` (y `close()` idempotente), y `endDuringConcurrentDrainDoesNotDeadlock` (fin de sesión mientras el controller drena, con `close()` llamado desde el handoff: completa en tiempo acotado sin interbloqueo). RED observado como fallo de compilación (`Unresolved reference: SessionEgressBinding` / `SessionEgressServicePipelineComposition`); GREEN tras implementar. Los 4 tests enfocados corridos 5× seguidos sin fallos; `VisibleCamera*` en verde. Verificación completa: suite `:android:usb-probe:testDebugUnitTest` 425 tests, 2 omitidos, 0 fallos (baseline 421/2/0 + 4 tests nuevos); `assembleDebug` y `lintDebug` OK; `NoNetworkListenerContractTest` en verde (sin red). Sin commit (lo hace el orquestador).
 
-## Progreso
+### Progreso
 
 Plan creado el 2026-10-01.
 
@@ -59,3 +65,93 @@ Corrección del orquestador en la lectura de p1 (2026-10-01): el writer agregó 
 p2 hecho el 2026-10-01 (RED→GREEN, TDD estricto): `SessionEgressBinding` (runtime desde `Reconnected`, `videoSinkFactory` trivial sobre `SessionRuntimeVideoTransport`, fin de sesión con handoff al `endExecutor` y error tipado en español, `close()` idempotente sin deadlock) más `SessionEgressServicePipelineComposition` para el service layer sin fuente de sesión de producción (§4.6). Suite completa 425/2/0 (baseline 421/2/0 + 4 tests nuevos); tests enfocados 5× estables; `assembleDebug` y `lintDebug` OK; `NoNetworkListenerContractTest` en verde. Commits del lado Android: `a95235f` plan, `f81af5e` p1, más este commit de p2 (lo hace el orquestador). Revisión nativa pendiente mientras siga el incidente del facade. Seguimientos: la fuente de sesión de producción necesita la decisión de UI de pairing/connect (T25); emisor de `MetricsSnapshot` del teléfono; auto-reconexión (T19); y la prueba de interoperabilidad entre worktrees.
 
 Nota del orquestador en la lectura de p2 (2026-10-01): `SessionEgressServicePipelineComposition` recibe el binding ya creado, mientras que `SessionEgressBinding.start` necesita de antemano el callback `onSessionEndedWithError` de la composición; hoy se resuelve con un holder. Seguimiento para cuando exista la fuente de sesión de producción: construir composición y binding en un solo paso. Tamaño de p2 ~565 líneas (142 de producción; declarado).
+
+## Parte desktop (rama `feat/desktop-video-sink`)
+
+## Cableado de la sesión al pipeline (dominio)
+
+### 1. Objetivo
+
+Conectar el runtime de sesión con los pipelines existentes a nivel de dominio y con fakes: en el teléfono, el video codificado de cámara→encoder sale por el runtime y el fin de sesión detiene la cámara con un aviso visible; en el desktop, los frames recibidos llegan a un decoder (fake por ahora) con frames decodificados, métricas medidas localmente y descarte hasta el próximo keyframe ante saturación.
+
+### 2. Problema
+
+- Android: el controller del servicio se construye sin `encodedVideoSinkFactory` (el video se descarta en memoria) y los fallos de egreso (`failAndStop`) no llegan a `VisibleCameraServiceStatusStore` ni a `stopService`. No existe composición de producción USB → TLS → sesión.
+- Desktop: `VideoDecoder` no tiene tipo de salida ni backend real; `SessionRuntime` sólo expone `sink(&self)`; la saturación del sink se reporta como `ProtocolViolation` y termina la sesión; no hay agregador de métricas.
+
+### 3. Decisión
+
+Decisiones del usuario del 2026-10-01:
+
+1. Fin de sesión en el teléfono: parar cámara/encoder y avisar en el estado visible y la notificación; el usuario vuelve a iniciar. Reconexión automática queda para T19.
+2. Saturación en el desktop: descartar frames delta hasta el próximo keyframe, contando los descartes; la sesión sigue. Reemplaza el fail-closed del desktop ante saturación de video.
+3. Decoder real: nativo por plataforma (VideoToolbox primero, luego Media Foundation), sin FFmpeg, como unidad aparte.
+4. UI de pairing no autorizada todavía: esta unidad no agrega UI nueva ni fuente de sesión de producción.
+
+### 4. Contrato
+
+1. Teléfono: un `SessionEgressBinding` arranca el runtime desde un `Reconnected`, provee la fábrica de sink de video (fragmentador sobre `SessionRuntimeVideoTransport`), y ante `SessionEnd` distinto de `LocalClose` pide la detención del pipeline fuera del hilo del runtime y publica un error tipado por causa. La fábrica de sink no hace E/S.
+2. Teléfono: todo fallo del pipeline o del egreso que detiene la cámara publica `Error` en `VisibleCameraServiceStatusStore` y detiene el servicio; los textos "egreso fake" pasan a textos neutros que no afirman transmisión.
+3. Desktop: el decoder produce `DecodedVideoFrame` hacia un `DecodedFrameSink`; un fake lo implementa en tests. Un error de decoder o de sink no es `ProtocolViolation`: tiene causa propia.
+4. Desktop: ante saturación (cola o decoder con backpressure), se descartan frames hasta el próximo `Key`; los `CodecConfig` nunca se descartan; se cuentan descartes. Un error de decoder que no es backpressure termina la sesión con causa de decoder.
+5. Desktop: métricas medidas localmente con reloj inyectado (fps de llegada y decodificado en ventana, descartes, bytes) más los valores reportados por el teléfono, siempre etiquetados como reportados.
+6. Fuera de alcance: UI nueva, fuente de sesión de producción (USB real), reconexión automática, decoder nativo, cámara virtual, emisor de métricas del teléfono, red no loopback y prueba cruzada entre worktrees.
+
+### 5. Riesgos
+
+- Interbloqueo entre `onEnd` del runtime y el monitor del controller: el handoff va a otro hilo y se prueba con drenaje concurrente.
+- Descarte hasta keyframe sin keyframes periódicos del encoder: la sesión puede quedar sin video hasta el próximo keyframe; se documenta y se mide.
+- Un decoder lento en el loop de un hilo del desktop retrasa keepalives: el fake mide y los tests acotan; el decoder real tendrá su propio hilo en su unidad.
+
+### 6. Reglas de ejecución
+
+TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecución); desvíos declarados. Commits ≤400 líneas como heurística. Revisión nativa RDD por commit o slice (pendiente mientras siga el incidente del facade del 2026-09-30). Writer delegado acotado por tarea con lectura del orquestador. Push por decisión del usuario.
+
+### 7. Tareas (desktop)
+
+Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test --offline`. Baseline: 243 tests, 0 fallos (HEAD `d78ebeb`).
+
+1. [x] q1 — Frontera de frames decodificados: `DecodedVideoFrame`, `DecodedFrameSink`, decoder fake; `SessionRuntime` da acceso mutable al sink; errores de sink/decoder con causa propia en vez de `ProtocolViolation`. RED: `fake_decoder_emits_frames_in_pts_order`, `decoder_failure_ends_session_with_decoder_cause`. ~300 líneas.
+   - Diseño mínimo: se conservó sin cambios `VideoDecoder::decode_encoded_video`. Se agregó en `src/video_decoder.rs` la frontera `PixelFormat` (`Nv12`/`Bgra`/`Unknown`), `DecodedVideoFrame`, `DecodedFrameSinkError`, el trait `DecodedFrameSink`, un `RecordingDecodedFrameSink` reutilizable y `FakeVideoDecoder<F>` (implementa el `VideoDecoder` existente y es dueño de su `DecodedFrameSink`): emite un `DecodedVideoFrame` por chunk que no sea `CodecConfig` con el pts del chunk, exige `CodecConfig` antes del primer frame (`Failure` si no) y se puede guionar para devolver `Backpressure`/`Failure`. Los tests de decoder existentes (`tests/desktop_video_decoder_test.rs`) siguen pasando sin cambios.
+   - `SessionRuntime::sink_mut(&mut self) -> &mut K` aditivo; se conserva `sink(&self)`.
+   - Nueva causa `SessionEnd::DecoderFailed(String)`: en `dispatch_frame` la rechazo del receptor se discrimina por variante de `DesktopReceiverError`; `SinkRejected(..)` (decoder/sink) termina con `DecoderFailed`, el resto sigue como `ProtocolViolation`. No existía ningún test que afirmara `ProtocolViolation` ante un rechazo de sink en el runtime, así que no hubo tests que actualizar (los asserts de `ProtocolViolation` en `session_runtime_test.rs` cubren secuencia fuera de orden y handshake tardío).
+   - Evidencia TDD: RED observado como fallo de compilación — `unresolved imports FakeVideoDecoder/RecordingDecodedFrameSink/DecodedFrameSink/DecodedVideoFrame/PixelFormat` y `no variant ... DecoderFailed found for enum SessionEnd`. GREEN: `fake_decoder_emits_frames_in_pts_order`, `fake_decoder_requires_codec_config_first`, `fake_decoder_can_be_scripted_to_return_backpressure` y `decoder_failure_ends_session_with_decoder_cause` pasan.
+   - Verificación: `cargo fmt -- --check` limpio; `cargo test --offline` 247/0 (baseline 243 + 4 nuevos). Diff ~353 líneas (por encima del objetivo ~300, por debajo del tope ~450). Sin dependencias nuevas. Sin commit/stage/push.
+2. [x] q2 — Descarte hasta keyframe: ante backpressure se descartan frames delta hasta el próximo `Key`, nunca `CodecConfig`, con contador. RED: `backpressure_drops_until_next_keyframe`, `codec_config_is_never_dropped`, `session_continues_after_saturation`. ~250 líneas.
+   - Diseño mínimo: se agregó `src/keyframe_gated_sink.rs` con el envoltorio `KeyframeGatedSink<K: EncodedVideoSink>` (implementa `EncodedVideoSink`), sin tocar el receptor ni el runtime. Clasifica como backpressure sólo `QueueFull`, `QueueBytesFull` y `Decoder(Backpressure)`; cualquier otro error se propaga tal cual (termina la sesión como `DecoderFailed` vía el mapeo de q1). Ante backpressure: descarta el chunk, cuenta, cierra la compuerta y devuelve `Ok` para que el receptor siga abierto; con la compuerta cerrada descarta cada `Delta` hasta que un `Key` la reabre.
+   - Decisión sobre `CodecConfig` (contrato §4.4): nunca se descarta. Si el sink interno le hace backpressure, se conserva como `pending_config` (el último gana) y se vuelve a empujar antes del próximo `Key`; si el reintento del config sigue con backpressure, se descarta ese `Key` y se mantiene la compuerta cerrada. Por eso un `CodecConfig` saturado suma `saturation_events` pero no `dropped_chunks`.
+   - Contadores expuestos: `dropped_chunks`, `dropped_bytes`, `saturation_events`, más `is_gated()`, `inner()`/`inner_mut()`/`into_inner()`. `saturation_events` cuenta cada rechazo backpressure del sink interno; `dropped_chunks`/`dropped_bytes` sólo cuentan chunks efectivamente descartados.
+   - Reensamblado verificado: el receptor empuja chunks enteros ya reensamblados al sink (`push_encoded_chunk` construye un `EncodedVideoChunk` completo antes de `push_encoded_video`), así que gatear sobre chunks enteros es correcto; el reensamblado de fragmentos vive en el receptor y no cambia.
+   - Evidencia TDD: RED observado como fallo de compilación — `unresolved import usb_probe::KeyframeGatedSink` en `tests/keyframe_gated_sink_test.rs` y `tests/session_runtime_test.rs`. GREEN: `backpressure_drops_until_next_keyframe`, `codec_config_is_never_dropped`, `non_backpressure_failure_is_propagated` y el test de runtime `session_continues_after_saturation` (sobre `InMemoryDuplex`, con `KeyframeGatedSink<DecodingEncodedVideoSink<FakeVideoDecoder<RecordingDecodedFrameSink>>>` guionado a un backpressure: la sesión sigue, 3 frames recibidos, 1 evento de saturación y 2 frames decodificados tras reempujar el config pendiente).
+   - Verificación: `cargo fmt -- --check` limpio; `cargo test --offline` 251/0 (baseline 247 + 4 nuevos). Diff ~453 líneas (objetivo ~250, en el tope ~450 por el peso de los cuatro tests exigidos). Sin dependencias nuevas. Sin commit/stage/push.
+3. q3 — Métricas y pipeline. Se dividió en q3a (agregador de métricas) y q3b (pipeline + e2e de loopback) para acotar el diff y la revisión.
+   - [x] q3a — Agregador de métricas: `DesktopMetricsAggregator` puro (sin hilos, reloj inyectado en cada llamada) que mide fps de llegada y de decodificado en ventana deslizante, acumula contadores de descarte/bytes y guarda los valores reportados por el teléfono siempre etiquetados como reportados y nunca mezclados con lo medido localmente. RED: `aggregator_reports_arrival_and_decoded_fps`, `phone_reported_metrics_are_labelled`. ~250 líneas.
+     - Diseño mínimo: nuevo `src/desktop_metrics.rs` con `DesktopMetricsAggregator`, `DesktopMetricsSnapshot`, `PhoneReportedMetrics` y `DesktopMetricsError`. Ventana configurable (default `DEFAULT_METRICS_WINDOW` = 1 s; `new` rechaza `Duration::ZERO` con `InvalidWindow`). API: `record_chunk_arrived(now, bytes)`, `record_frame_decoded(now)`, `record_chunks_dropped(count, bytes)`, `record_keepalive(now)` (opcional), `record_phone_metrics(now, captured_at_us, dropped_frames, latency_ms, frame_rate)` y `snapshot(now)`.
+     - Decisión sobre descartes: `record_chunks_dropped` recibe **deltas** (p. ej. la diferencia de los contadores absolutos de `KeyframeGatedSink` entre llamadas) y los acumula en totales de vida. Se documenta en el módulo.
+     - fps: se mide como `(muestras - 1) / span`, con `span` entre la primera y la última muestra retenida en la ventana; con menos de 2 muestras (o span nulo) se reporta `None` (desconocido), nunca 0. El `snapshot` poda primero las muestras más viejas que la ventana respecto de `now`. Los contadores de vida (`total_chunks`, `total_bytes`, `dropped_chunks`, `dropped_bytes`) no son de ventana.
+     - Sin latencia punta a punta: no se deriva ninguna "latencia" de los timestamps del teléfono porque los relojes del teléfono y del desktop son independientes y no están sincronizados; los valores del teléfono se guardan verbatim en `phone_reported` y etiquetados como reportados (se documenta en el módulo).
+     - Evidencia TDD: RED observado como fallo de compilación — `unresolved imports usb_probe::DesktopMetricsAggregator / usb_probe::DesktopMetricsError` en `tests/desktop_metrics_test.rs` (quitando temporalmente el `pub use` del módulo). GREEN: `aggregator_reports_arrival_and_decoded_fps`, `phone_reported_metrics_are_labelled`, `fps_is_unknown_with_insufficient_samples`, `dropped_counters_accumulate` y `window_must_be_positive` pasan.
+     - Verificación: `cargo fmt -- --check` limpio; `cargo test --offline` 256/0 (baseline 251 + 5 nuevos). Sin dependencias nuevas. Sin commit/stage/push.
+   - [x] q3b — Pipeline y e2e: `DesktopSessionPipeline` (runtime + receptor + decoder + métricas) con loop y cierre limpio; prueba de punta a punta sobre `LoopbackLanListener`. RED: `pipeline_decodes_over_loopback_and_shuts_down`.
+     - Diseño mínimo: nuevo `src/desktop_session_pipeline.rs` con `DesktopSessionPipeline<S, C, D>` que compone `SessionRuntime<S, C, KeyframeGatedSink<DecodingEncodedVideoSink<D>>>` más `DesktopMetricsAggregator`. `new(session, receiver, decoder, SessionRuntimeConfig, metrics_window, start)` arma el sink gateado internamente y devuelve `DesktopSessionPipelineError::{Runtime, Metrics}` en caso de config inválida. `step(now) -> Result<PipelineStep, SessionEnd>` llama a `runtime.step(now)` y alimenta las métricas desde accesores aditivos sin recomputar lo que el runtime ya tiene.
+     - Accesores aditivos nuevos (mínimos, por deltas de contadores de vida):
+       - `SessionRuntime::last_video_bytes_delivered()` — bytes H.264 del último frame de video entregado; se lee en el mismo step que marca `StepOutcome::received_video` para `record_chunk_arrived(now, bytes)`. Se documentó que un fragmento reporta sólo sus bytes de fragmento (el reensamblado vive en el receptor).
+       - trait `DecodedFrameCounter { frames_emitted(&self) -> u64 }` + contador `frames_emitted` en `FakeVideoDecoder` (incrementa sólo en push exitoso al sink). El pipeline exige `D: VideoDecoder + DecodedFrameCounter` y mide los decodificados por delta del contador, llamando `record_frame_decoded` una vez por frame nuevo. El backend nativo implementará el trait a futuro.
+       - descartes: deltas de `KeyframeGatedSink::{dropped_chunks, dropped_bytes}` hacia `record_chunks_dropped`.
+       - métricas del teléfono: cuando `StepOutcome::received_metrics`, se leen los campos del último `MetricsSnapshot` de `runtime.latest_metrics()` y se pasan a `record_phone_metrics` (verbatim, etiquetados como reportados).
+     - API restante: `metrics(now)`, `decoder()/decoder_mut()` (vía `sink().inner().decoder()`), `run_until(stop, clock)` (loop sobre el reloj inyectado; fin natural devuelve su `SessionEnd`, un stop pedido devuelve `LocalClose` sin cerrar el transporte — el cierre real es `shutdown`), y `shutdown(self) -> (SessionEnd, DesktopMetricsSnapshot)` que toma el snapshot final en el último instante observado y cierra con close_notify.
+     - Decisión sobre `total_chunks`: el `CodecConfig` es un chunk de video que llega (`received_video`) y suma a `total_chunks`/arribos, pero el decoder no emite frame para él; por eso en el camino feliz llegan 5 chunks (config + key + 3 deltas) y se decodifican 4 frames. Se afirma esa relación en el test.
+     - Evidencia TDD: RED observado como fallo de compilación — `unresolved import usb_probe::DesktopSessionPipeline` en `tests/desktop_session_pipeline_test.rs` (quitando temporalmente el `pub use` del módulo), mismo patrón que q1–q3a. GREEN: `pipeline_decodes_over_loopback_and_shuts_down` (sobre `LoopbackLanListener` con timeout de socket 25 ms < poll_slice 30 ms, config poll_slice 30/keepalive 150/dead 600, ventana de métricas 5 s; el teléfono envía CodecConfig + Key + 3 Deltas + un MetricsSnapshot + keepalives; el desktop decodifica 4 frames, `arrival_fps`/`decoded_fps` `Some`, `phone_reported` `Some` con `frame_rate` 30 verbatim, `total_chunks` 5, y `shutdown` → `LocalClose`) y `pipeline_survives_decoder_backpressure` (decoder guionado a dos `Backpressure`: el config y su re-push se saturan, se descarta el Key y los deltas siguientes, `dropped_chunks > 0`, la sesión sigue viva y cierra con `LocalClose`). Test enfocado corrido 5 veces, verde las cinco (sensible al tiempo).
+     - Verificación: `cargo fmt -- --check` limpio; `cargo test --offline` 258/0 (baseline 256 + 2 nuevos). Sin dependencias nuevas; sin bind fuera de loopback. Sin commit/stage/push.
+     - Riesgo declarado: el diff total (~690 líneas, incluido `src/desktop_session_pipeline.rs` ~210 y `tests/desktop_session_pipeline_test.rs` ~457) supera el tope ~500, por la duplicación del arnés de loopback/teléfono (permitida) más el segundo test opcional de backpressure. No se extrajo a `tests/common` para no refactorizar el test de loopback ya verde; queda como decisión del padre acotar (quitar el test opcional o mover el arnés a `tests/common`).
+
+### Progreso
+
+Plan creado el 2026-10-01.
+q1 implementado el 2026-10-01: frontera de frames decodificados (`DecodedVideoFrame`/`DecodedFrameSink`/`FakeVideoDecoder`), `SessionRuntime::sink_mut` y `SessionEnd::DecoderFailed`; `cargo fmt -- --check` limpio y `cargo test --offline` 247/0. Sin commit/push (decisión del usuario).
+q2 implementado el 2026-10-01: `KeyframeGatedSink` absorbe la saturación (descarta delta hasta el próximo `Key`, nunca `CodecConfig`, cuenta descartes) sin tocar receptor ni runtime; `cargo fmt -- --check` limpio y `cargo test --offline` 251/0. Sin commit/push (decisión del usuario).
+q3 dividido en q3a/q3b el 2026-10-01 para acotar diff y revisión. q3a implementado: `DesktopMetricsAggregator` puro con reloj inyectado (fps de llegada/decodificado en ventana deslizante, contadores de descarte por deltas, valores del teléfono etiquetados como reportados, sin latencia punta a punta); `cargo fmt -- --check` limpio y `cargo test --offline` 256/0. q3b implementado el 2026-10-01: `DesktopSessionPipeline` compone runtime + receptor + `KeyframeGatedSink<DecodingEncodedVideoSink<D>>` + `DesktopMetricsAggregator` con loop (`step`/`run_until`) y cierre limpio (`shutdown` devuelve fin + snapshot); accesores aditivos `SessionRuntime::last_video_bytes_delivered` y trait `DecodedFrameCounter`/`FakeVideoDecoder::frames_emitted`; e2e `pipeline_decodes_over_loopback_and_shuts_down` y `pipeline_survives_decoder_backpressure` sobre `LoopbackLanListener`; `cargo fmt -- --check` limpio y `cargo test --offline` 258/0; diff ~690 líneas (sobre el tope por la duplicación del arnés de test, permitida). Sin commit/push (decisión del usuario).
+Linaje de commits del lado desktop: 8ad4e25 (plan), 975a75e (q1), 9f8645d (q2), 03acb12 (q3a) y el commit de q3b que hará el padre; revisión nativa pendiente. Seguimientos: unidad del decoder nativo VideoToolbox, salida de cámara virtual, runtime del desktop sobre USB real.
+Desktop de `session-pipeline-wiring` (q1–q3b) completo salvo commit/push y revisión nativa.
+
+Nota del orquestador en la lectura de q3b (2026-10-01): `arrival_fps` cuenta cada frame de video recibido, incluidos los fragmentos `VIDEO_CHUNK_FRAGMENT_V1`, así que con frames fragmentados mide fragmentos por segundo y no frames por segundo. Seguimiento: contar llegadas sólo por chunk completo reensamblado. Tamaño de q3b ~690 líneas (declarado: harness de loopback duplicado y test opcional de backpressure).

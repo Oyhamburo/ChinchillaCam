@@ -53,23 +53,36 @@ Puertas pendientes:
 
 ### 2.3 macOS 13+ Apple Silicon: paquete desde GitHub y OBS Studio
 
-Flujo previsto:
+Flujo previsto (versión 0.1.0, preliminar: todavía sin pruebas en hardware, M9):
 
 1. instalar OBS Studio desde su sitio oficial si todavía no está instalado;
 2. abrir la página de releases de GitHub de ChinchillaCam;
-3. descargar el paquete gratuito para macOS Apple Silicon;
-4. instalar o abrir la app de escritorio;
-5. aceptar los permisos de macOS que correspondan;
-6. configurar o habilitar el flujo con OBS Studio y su cámara virtual;
-7. emparejar el teléfono por QR;
-8. seleccionar `OBS Virtual Camera` o la fuente OBS documentada en la aplicación de destino; no se promete un dispositivo llamado `ChinchillaCam` en macOS sin validación futura.
+3. descargar `ChinchillaCam-0.1.0-macos-arm64.zip` y `SHA256SUMS-macos.txt`, y comprobar el archivo con `shasum -a 256 -c SHA256SUMS-macos.txt`;
+4. descomprimir y mover `ChinchillaCam.app` a la carpeta Aplicaciones;
+5. la primera vez, abrirla con **clic derecho → Abrir** (o desde **Configuración del Sistema → Privacidad y seguridad → Abrir igualmente**), porque la app no está notarizada;
+6. emparejar el teléfono por QR;
+7. mostrar el video con **Mostrar video para OBS** y seguir la guía de OBS de esta sección;
+8. seleccionar `OBS Virtual Camera` en la aplicación de destino; no se promete un dispositivo llamado `ChinchillaCam` en macOS sin validación futura.
 
 Restricciones importantes:
 
 - el presupuesto inicial de publicación es cero;
-- no se promete firma propia, notarización ni cuenta Apple Developer ID al inicio;
+- la app se firma ad-hoc (sin cuenta Apple Developer ID ni notarización);
 - si el paquete no está firmado o notarizado, macOS puede mostrar advertencias de seguridad o bloquear la apertura hasta que el usuario la autorice manualmente;
 - la automatización de OBS Studio y la experiencia final de cámara virtual son hipótesis no validadas.
+
+### Usar ChinchillaCam como cámara en macOS (OBS)
+
+> Estado: recorrido previsto; pendiente de validar en OBS y con hardware real (M9).
+
+1. Instala OBS Studio y abre ChinchillaCam en la computadora.
+2. Conecta el teléfono, inicia el video y pulsa **Mostrar video para OBS**. Mantén abierta la ventana **ChinchillaCam — Video**.
+3. En OBS, agrega una fuente **Captura de pantalla de macOS**. Elige el método **Captura de ventana** y la ventana **ChinchillaCam — Video**.
+4. Si OBS solicita permiso, concédelo en **Configuración del Sistema → Privacidad y seguridad → Grabación de pantalla** y reinicia OBS.
+5. Ajusta la fuente al lienzo de OBS y pulsa **Iniciar cámara virtual**.
+6. En la aplicación de videollamada o video, elige **OBS Virtual Camera** como cámara.
+
+No minimices la ventana de video (puede quedar detrás de otras ventanas); la ventana principal de ChinchillaCam sí puede minimizarse. La calidad de la captura depende del tamaño de la ventana de video. Este flujo no transmite audio y todavía no se ha validado con hardware real (M9).
 
 ## 3. Emparejamiento por QR
 
@@ -207,7 +220,7 @@ La experiencia prevista debe permitir, cuando el dispositivo y el sistema lo per
 
 El modo automático debe priorizar fluidez y baja latencia con la mejor calidad posible. Los controles disponibles desde escritorio son una hipótesis hasta validar las APIs, permisos y comportamiento de cada teléfono.
 
-Estado actual (T26, pendiente de validar con hardware en M9): la pantalla de conexión del teléfono permite elegir la cámara, la resolución (1920 × 1080, 1280 × 720, 960 × 540 o 640 × 480) y los FPS (30, 24 o 15), o dejar el modo **Automático** (1280 × 720 a 30 FPS si la cámara lo admite). Las opciones que la cámara no admite aparecen deshabilitadas con el motivo. Si la sesión está activa, el cambio se aplica en vivo: el video se corta unos segundos mientras se reinicia la cámara, sin reconectar. El control desde la computadora todavía no existe.
+Estado actual (T26, pendiente de validar con hardware en M9): la pantalla de conexión del teléfono permite elegir la cámara, la resolución (1920 × 1080, 1280 × 720, 960 × 540 o 640 × 480) y los FPS (30, 24 o 15), o dejar el modo **Automático** (1280 × 720 a 30 FPS si la cámara lo admite). Las opciones que la cámara no admite aparecen deshabilitadas con el motivo. Si la sesión está activa, el cambio se aplica en vivo: el video se corta unos segundos mientras se reinicia la cámara, sin reconectar.
 
 Control desde la computadora (pendiente de validar con hardware en M9): con el teléfono conectado, la ventana de ChinchillaCam en la computadora muestra la sección **Cámara y calidad** con las mismas opciones que el teléfono (las no admitidas aparecen deshabilitadas con el motivo al pasar el mouse). Teléfono y computadora editan una sola preferencia: gana el último cambio, se aplica en vivo y los dos muestran el mismo estado. Con una versión vieja del teléfono que no anuncia esta función, la sección no aparece.
 
@@ -258,6 +271,18 @@ Permisos que pide y por qué:
 - **Servicio en primer plano de cámara**: para que la transmisión siga mientras la notificación visible está activa.
 
 No pide permisos de Internet, red, Wi‑Fi, micrófono ni almacenamiento. Su única dependencia externa es la biblioteca de lectura de QR (ZXing), que funciona sin red.
+
+### 8.2 Datos en la computadora
+
+Estado actual (T28, macOS), protegido por tests (`privacy_contract_test`, `trusted_phone_store_test`, `desktop_tls_identity_test`):
+
+| Dato | Dónde se guarda | Cómo borrarlo |
+| --- | --- | --- |
+| Identidad segura de la computadora (clave privada y certificado) | `~/Library/Application Support/ChinchillaCam/identity/` (carpeta 0700, archivo 0600) | Borrar la carpeta `ChinchillaCam`; la próxima vez se crea una identidad nueva y hay que volver a vincular los teléfonos |
+| Teléfonos vinculados (identificador, nombre y huella de su identidad) | `~/Library/Application Support/ChinchillaCam/trusted-phones.txt` (0600) | **Olvidar** en la lista de teléfonos, o borrar el archivo |
+
+La app de escritorio no guarda video, fotos ni audio, no tiene cuentas, no envía telemetría ni busca actualizaciones por Internet, y no abre puertos de red: hoy sólo se comunica con el teléfono por USB. El test de contrato rechaza dependencias de HTTP, telemetría, actualización automática o TLS del sistema, y limita las APIs de red a los módulos de prueba en `127.0.0.1`.
+
 
 ## 9. Fallos y recuperación
 
@@ -316,6 +341,26 @@ Estado actual (T27, pendiente de validar con hardware en M9). El teléfono muest
 | No se pudo abrir la cámara o preparar el video durante la transmisión | **Reintentar cámara** reinicia sólo la cámara, sin desconectar. Cerrá otras apps que usen la cámara. |
 | Falta el permiso de cámara | **Abrir ajustes**, permití la cámara y volvé a la app. |
 | El QR venció, no es válido o falló la vinculación | **Vincular una computadora** y escaneá un QR nuevo. |
+
+### 9.7 Mensajes de la app de escritorio y qué hacer
+
+Estado actual (T27, pendiente de validar con hardware en M9). La app de escritorio muestra en rojo qué pasó y debajo una sugerencia. Un mismo aviso que se repite (por ejemplo, mientras no hay teléfono conectado) no parpadea ni se reinicia. La app sigue buscando el teléfono por USB sola; no hace falta reiniciarla.
+
+| Mensaje | Qué hacer |
+| --- | --- |
+| No encontramos el teléfono. | Conectá el teléfono con el cable y abrí ChinchillaCam en el teléfono. |
+| No se pudo preparar el teléfono para la conexión. | Desbloqueá el teléfono y aceptá el aviso de USB. |
+| Otra app está usando el teléfono por USB. | Cerrá la otra app o permití el acceso al teléfono e intentá de nuevo. |
+| No se pudo buscar el teléfono. | Revisá el cable y el puerto e intentá de nuevo. |
+| No se pudo abrir la conexión con el teléfono. | Probá con otro cable o puerto e intentá de nuevo. |
+| No se pudo comprobar la identidad del teléfono. | Si no está vinculado, vinculalo con el QR. |
+| Se perdió la conexión con el teléfono. | Revisá el cable y desbloqueá el teléfono. |
+| Se interrumpió la conexión con el teléfono. | Revisá el cable y volvé a conectarlo. |
+| La conexión está saturada. | Cerrá otras apps y volvé a conectar el teléfono. |
+| Las versiones no coinciden. | Actualizá ChinchillaCam en los dos dispositivos. |
+| No llega video del teléfono. (aparece si hay conexión pero pasan 5 segundos sin video) | Revisá que la cámara esté transmitiendo en el teléfono (desbloqueado y con ChinchillaCam abierta). |
+| No se pudo mostrar el video. | Si falló el decodificador: «Volvé a conectar el teléfono e intentá de nuevo.». Si no se pudo iniciar la salida de video: «Cerrá y volvé a abrir ChinchillaCam.». |
+
 
 ## 10. Criterio para declarar soporte real
 

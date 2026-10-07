@@ -1,0 +1,69 @@
+use usb_probe::{PairingQrPayload, PairingQrProducer};
+
+const FIXTURE_SPKI_DER_P256: &[u8] = &[
+    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
+    0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04, 0x10, 0x3f, 0xe2, 0x11, 0xa7,
+    0x91, 0x44, 0x2a, 0x8d, 0x8d, 0x4e, 0x0a, 0x46, 0x87, 0x65, 0x7f, 0x0f, 0x1b, 0xc3, 0x9d, 0x8a,
+    0x7a, 0x9c, 0x72, 0x33, 0x18, 0x31, 0x7b, 0xf6, 0x58, 0xce, 0x2d, 0x54, 0x1d, 0xf1, 0x44, 0x5c,
+    0x81, 0x2a, 0xd1, 0x61, 0x90, 0x64, 0xd8, 0xc2, 0x33, 0xae, 0x48, 0xaa, 0x31, 0x89, 0xb9, 0x12,
+    0x99, 0x56, 0xc0, 0x5d, 0x5d, 0xb2, 0x78, 0xe1, 0x7a, 0x42, 0x17,
+];
+
+#[test]
+fn qr_payload_v1_matches_android_full_golden_wire() {
+    let payload = PairingQrPayload::new(
+        "desktop-01",
+        "Studio Desktop",
+        1_700_000_600,
+        vec![0x10, 0x20, 0x30, 0x40],
+        vec![0x01, 0x23, 0x45, 0x67],
+    )
+    .expect("valid fixture payload");
+
+    let wire = PairingQrProducer::encode_v1(&payload).expect("canonical QR wire");
+
+    assert_eq!(
+        std::str::from_utf8(&wire).expect("qr wire is utf-8"),
+        "CHINCHILLACAM-PAIR:v1:desktopId=desktop-01&desktopName=Studio%20Desktop&expiresAt=1700000600&nonce=ECAwQA&trustMaterial=ASNFZw&checksum=05ba0a34a583a6cd156dfe2a675fa0c2"
+    );
+}
+
+#[test]
+fn qr_payload_uses_java_urlencoder_percent_encoding_parity() {
+    let payload = PairingQrPayload::new(
+        "desktop-01",
+        "Studio*~Desktop",
+        1_700_000_600,
+        vec![0x10],
+        vec![0x01],
+    )
+    .expect("valid fixture payload");
+
+    let wire = String::from_utf8(PairingQrProducer::encode_v1(&payload).unwrap()).unwrap();
+
+    assert!(wire.contains("desktopName=Studio*%7EDesktop"));
+}
+
+#[test]
+fn qr_payload_accepts_future_spki_as_opaque_android_trust_material() {
+    let payload = PairingQrPayload::new(
+        "desktop-01",
+        "Studio Desktop",
+        1_700_000_600,
+        vec![0x10, 0x20, 0x30, 0x40],
+        FIXTURE_SPKI_DER_P256.to_vec(),
+    )
+    .expect("SPKI is opaque trust material for QR v1");
+
+    let wire = String::from_utf8(PairingQrProducer::encode_v1(&payload).unwrap()).unwrap();
+
+    assert!(wire.starts_with("CHINCHILLACAM-PAIR:v1:desktopId=desktop-01&desktopName=Studio%20Desktop&expiresAt=1700000600&nonce=ECAwQA&trustMaterial="));
+    assert!(wire.contains("&checksum="));
+}
+
+#[test]
+fn qr_payload_rejects_expired_or_empty_security_material() {
+    assert!(PairingQrPayload::new("desktop-01", "Desk", 0, vec![0x41], vec![0x01]).is_err());
+    assert!(PairingQrPayload::new("desktop-01", "Desk", 1, Vec::new(), vec![0x01]).is_err());
+    assert!(PairingQrPayload::new("desktop-01", "Desk", 1, vec![0x41], Vec::new()).is_err());
+}

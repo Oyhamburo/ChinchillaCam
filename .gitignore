@@ -10,6 +10,9 @@ build/
 target/
 **/target/
 
+# Packaged releases
+dist/
+
 # Local IDE files
 .idea/
 *.iml

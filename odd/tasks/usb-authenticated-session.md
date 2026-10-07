@@ -1,18 +1,24 @@
-# Sesión USB autenticada
+# Sesión USB autenticada (Android y desktop)
 
-## 1. Objetivo
+Este documento reúne los registros de las dos ramas, integradas en `main` el 2026-10-07 (`odd/tasks/branch-integration.md`). Cada parte conserva su evidencia original sin cambios.
+
+## Parte Android (rama `feat/t15c-fake-usb-sustained`)
+
+## Sesión USB autenticada
+
+### 1. Objetivo
 
 Componer de punta a punta, a nivel de aplicación/dominio y sin UI ni LAN, el pairing USB y la reconexión confiable sobre el canal TLS mutuo, y llevar `SessionFrame` dentro de ese canal: cierra M3 de punta a punta y abre los transportes autenticados de M4 por USB.
 
-## 2. Problema
+### 2. Problema
 
 Las piezas existen pero nadie las compone: en Android `PendingPairingCoordinator` no tiene instancias de producción y su verificador (`PairingProofVerifier.verify(challenge, proofBytes)`) no transporta canal, mientras `UsbTlsPairingProofVerifier.verify(challenge, session)` sí devuelve el canal vivo; no existe reconexión (T19). En el desktop no hay capa que elija por conexión entre `complete_handshake_and_pairing_proof` y `complete_trusted_phone_handshake`, ni nada que llame a `PairedPhoneCandidate::confirm`. El video sigue en claro sobre el stream AOA `0x01020304`.
 
-## 3. Decisión
+### 3. Decisión
 
 Continuación del plan maestro tras `phone-mtls-identity` (ver `odd/tasks/complete-webcam-product.md`, "Próxima unidad autorizada"). Sin decisión de producto nueva: las decisiones técnicas quedan en §4.
 
-## 4. Contrato compartido Android ↔ desktop
+### 4. Contrato compartido Android ↔ desktop
 
 1. Modo por conexión: el teléfono inicia pairing (tras escanear un QR) o reconexión (desktop ya confiable en su store). El desktop elige la política por conexión según su propio estado: ventana de pairing abierta (QR visible) → `complete_handshake_and_pairing_proof`; si no → `complete_trusted_phone_handshake`. Un desacuerdo de modo falla cerrado (CCP1 inválido o certificado no confiable) sin persistir nada.
 2. Tras un pairing exitoso, el canal TLS vivo se conserva hasta la confirmación explícita de cada lado; rechazo, cancelación o vencimiento cierran el canal. La confirmación del teléfono persiste la confianza (store C6) y activa vía `ActiveDesktopAuthority`; la del desktop usa `PairedPhoneCandidate::confirm` (atómica, rechaza revocados).
@@ -21,25 +27,25 @@ Continuación del plan maestro tras `phone-mtls-identity` (ver `odd/tasks/comple
 5. Después de un pairing confirmado en ambos lados, el mismo canal vivo puede iniciar la sesión con `HANDSHAKE_HELLO`/`HANDSHAKE_ACCEPT`.
 6. Fuera de alcance: UI/Activity, LAN/listener, hardware, reemplazar el receptor de video de producción del desktop (el camino TLS se agrega en paralelo), one-active-phone en el desktop (pregunta de producto para T16/T17), marcador durable de regeneración y acción "restablecer identidad" (seguimientos de `phone-mtls-identity` para la etapa de wiring).
 
-## 5. Riesgos
+### 5. Riesgos
 
 - Canal vivo retenido durante una confirmación lenta: requiere vencimiento y cierre explícitos.
 - Framing incorrecto entre lenguajes: se mitiga con el contrato §4.3 y una prueba cruzada posterior (requiere autorización fresca del usuario).
 - Asimetría TLS 1.3: cubierta por §4.4.
 
-## 6. Reglas de ejecución
+### 6. Reglas de ejecución
 
 TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecución); desvíos declarados. Commits locales ≤400 líneas como heurística; sin push, PR ni merge. Revisión nativa RDD por commit o slice con `gentle-ai review assess`. Ruta: writer delegado acotado por tarea. Cualquier runtime entre worktrees requiere autorización fresca del usuario.
 
-## 7. Tareas
+### 7. Tareas
 
 Runner: `ANDROID_HOME=$HOME/Library/Android/sdk "$HOME/.gradle/wrapper/dists/gradle-8.0.1-all/aro4hu1c3oeioove7l0i4i14o/gradle-8.0.1/bin/gradle" :android:usb-probe:testDebugUnitTest --rerun-tasks :android:usb-probe:assembleDebug :android:usb-probe:lintDebug`. Último límite revisado: `08c905e`.
 
-### [x] s1 — Flujo de pairing USB con canal vivo
+#### [x] s1 — Flujo de pairing USB con canal vivo
 
 Servicio de aplicación que compone las reglas de `PendingPairingCoordinator` (sin duplicarlas; refactor mínimo, p. ej. un verificador con canal) con `UsbTlsPairingProofVerifier` sobre `AccessoryIoSession` y `PhoneTlsIdentity`; el pendiente retiene el canal; confirmar persiste y activa y entrega el canal; rechazo/cancelación/vencimiento lo cierran. RED: `usbPairingKeepsLiveChannelUntilConfirm`, `usbPairingRejectClosesChannel`, `usbPairingExpiryClosesChannel`, `usbPairingConfirmPersistsTrustAndActivates`. ~350 líneas.
 
-#### Evidencia s1
+##### Evidencia s1
 
 - **Corrección sobre los "verified facts" del encargo**: el harness JSSE con `needClientAuth = true` que exige certificado de cliente vive en `SslEngineUsbTlsChannelTest.kt` (tests de m1); el que responde el protocolo CCP1 (`readApplicationFrame`/`writeApplicationFrame`, status 0) vive en `UsbTlsPairingProofVerifierTest.kt`. Ninguno de los dos combina ambos rasgos por sí solo — `UsbTlsPairingProofVerifierTest.kt` no fija `needClientAuth`. El "fake desktop" de s1 combina ambos patrones en un harness nuevo dentro de `UsbPairingFlowTest.kt`.
 - **RED observado** (falla de compilación, no de ejecución, porque `UsbPairingFlow` y `ChannelPairingProofVerifier` todavía no existían): al agregar sólo `UsbPairingFlowTest.kt` (sin tocar producción), `:android:usb-probe:compileDebugUnitTestKotlin` falló con, entre otras:
@@ -65,7 +71,7 @@ Servicio de aplicación que compone las reglas de `PendingPairingCoordinator` (s
 - **Líneas cambiadas**: 622 (98+19 en `PendingPairingCoordinator.kt`; 112 nuevas en `UsbPairingFlow.kt`; 393 nuevas en `UsbPairingFlowTest.kt`). Excede la heurística de ~400: sin recorte artificial ni "golfing". La producción real (`PendingPairingCoordinator.kt` + `UsbPairingFlow.kt`) son 229 líneas, cerca de la estimación original; el resto (393) es infraestructura de test SSLEngine/ByteBuffer de bajo nivel, del mismo estilo ya establecido en este módulo. No se dividió en dos commits: el único archivo de test permitido para el coordinador, `PendingPairingCoordinatorTest.kt`, sólo podía tocarse "si una prueba existente debe adaptarse" (no fue el caso — las 22 pasaron sin cambios), así que no había forma autorizada de dar cobertura directa e independiente al nuevo overload del coordinador separada de `UsbPairingFlow`; ambos viajan en un solo commit con su cobertura real.
 - **Commit**: `feat(android): keep live TLS channel through USB pairing`.
 
-#### Evidencia s1b
+##### Evidencia s1b
 
 - **Defecto encontrado en readback del orquestador** (sobre commit `b3a52cc`, tras completarse s1): `UsbPairingFlow.start` reemplazaba `held` incondicionalmente en cada llamada — `held = if (summary != null) HeldChannel(...) else null` —, así que un segundo `start()` mientras el primer pendiente seguía vigente (`Rejected.AlreadyPending`, sin canal propio) perdía la referencia al canal vivo del primero sin cerrarlo (fuga). Un `confirm(primerPendingId, ...)` posterior obtenía `Activated` del coordinador (confianza ya persistida, activación ya hecha), y el `requireNotNull(ours)` posterior lanzaba excepción sin devolver nunca el canal — es decir, después de esos efectos de lado, no antes.
 - **RED observado** (`secondStartWhilePendingKeepsFirstChannelForConfirm`, contra el código anterior al fix): `IllegalArgumentException: an activated pairing must have a retained live channel` en `UsbPairingFlow.kt:76`, disparada desde el `flow.confirm(...)` del test (`UsbPairingFlowTest.kt:242`). El resto del focused run (26 tests: 4 de `UsbPairingFlowTest` + 22 de `PendingPairingCoordinatorTest`) siguió en verde — la falla estuvo acotada al escenario nuevo.
@@ -76,7 +82,7 @@ Servicio de aplicación que compone las reglas de `PendingPairingCoordinator` (s
 - **Líneas cambiadas**: 102 (37+11 en `UsbPairingFlow.kt`; 54 nuevas en `UsbPairingFlowTest.kt`).
 - **Commit**: `fix(android): keep pending USB pairing channel on rejected restart`.
 
-#### Revisión nativa s1
+##### Revisión nativa s1
 
 Revisión nativa de 4 lentes sobre s1+s1b (lineage `review-4e11b7ee8e01c0ee`): **APROBADA** y confirmada (acknowledged). Advisories no bloqueantes registrados aquí sin cambios de código en s1 por ninguno de ellos (seguimientos para etapas posteriores):
 
@@ -85,11 +91,11 @@ Revisión nativa de 4 lentes sobre s1+s1b (lineage `review-4e11b7ee8e01c0ee`): *
 - **WARNING R3-confirm-after-expiry-close-untested**: sin prueba directa de `confirm()` cerrando canal tras vencimiento.
 - **SUGGESTION R2-kdoc-links-private-startCore**, **R2-defect-history-in-code-comments**, **R2-repeated-null-channel-wrapping**, **R2-misleading-queue-challenge-source-name**, **R3-post-verify-close-untested**: mejoras menores de legibilidad/documentación, no bloqueantes.
 
-### [x] s2 — SessionFrame sobre TLS
+#### [x] s2 — SessionFrame sobre TLS
 
 `TlsSessionFrameIoAdapter` sobre `SslEngineUsbTlsEstablishedChannel` con el framing de §4.3. RED: `roundTripsSessionFrameOverTls`, `rejectsOversizedLengthBeforeAllocating`, `rejectsZeroLength`, `truncatedFrameClosesChannel`. ~250 líneas.
 
-#### Evidencia s2
+##### Evidencia s2
 
 - **RED observado** (falla de compilación, no de ejecución): al agregar sólo `TlsSessionFrameIoAdapterTest.kt` (sin tocar producción), `:android:usb-probe:compileDebugUnitTestKotlin` falló con `Unresolved reference: TlsSessionFrameIoAdapter` / `TLS_SESSION_FRAME_MAX_BYTES` / `TlsSessionFrameIoException` (8 ocurrencias). Un intento anterior de este mismo RED reveló primero dos errores propios del test (argumentos posicionales de `SessionFrame` en vez de nombrados, ya que `version` tiene default) — corregidos antes de tomar el RED de arriba como válido.
 - **Diseño**: `TlsSessionFrameIoAdapter.write/read` sobre `SslEngineUsbTlsEstablishedChannel`: prefijo de 4 bytes big-endian (`SessionFrameCodec.encode(frame).size`) + bytes codificados; `read()` valida la longitud declarada contra `maxFrameBytes` (1..=1048576) *antes* de reservar el buffer del payload (`readExactly` sólo se invoca con la longitud ya validada), generalizando el patrón acotado que ya usa el lector CCP1 privado de `UsbTlsPairingProofVerifier` a cualquier `SessionFrameType`. Toda falla (longitud cero/excesiva, canal truncado/cerrado, timeout, frame inválido) cierra el canal y lanza `TlsSessionFrameIoException` — un único tipo, igual que el lector privado de `UsbTlsPairingProofVerifier` no distingue subtipos; el canal nunca debe reusarse después.
@@ -103,11 +109,11 @@ Revisión nativa de 4 lentes sobre s1+s1b (lineage `review-4e11b7ee8e01c0ee`): *
 - **Líneas cambiadas**: 453 (113 en `TlsSessionFrameIoAdapter.kt` nuevo; 340 en `TlsSessionFrameIoAdapterTest.kt` nuevo). Excede la heurística de ~250 estimada y la de ~400 por commit: sin recorte artificial ni "golfing". La producción (113 líneas) es razonable para el alcance; el resto es infraestructura de test SSLEngine/ByteBuffer de bajo nivel, mismo estilo ya establecido en el módulo.
 - **Commit**: `feat(android): frame session frames over USB TLS` (`fcd38e9`).
 
-### [x] s3 — Reconexión confiable
+#### [x] s3 — Reconexión confiable
 
 `UsbTrustedReconnect` con SPKI pinneado del store, certificado de cliente, `HANDSHAKE_HELLO` → `HANDSHAKE_ACCEPT` y activación. RED: `reconnectsToTrustedDesktopAfterAccept`, `reconnectRejectedByDesktopFailsClosed`, `reconnectTimesOutWithoutAccept`, `revokedDesktopIsNotReconnected`. ~350 líneas.
 
-#### Evidencia s3
+##### Evidencia s3
 
 - **Desviación arquitectónica detectada y resuelta (declarada)**: el contrato §4.4 dice "pinneando el SPKI del desktop desde su store", pero `TrustedDesktopStore`/`TrustedDesktopRecord.trustMaterialFingerprint` sólo persiste el fingerprint SHA-256 (`PairingTrustFingerprint`, 32 bytes) del SPKI, nunca el SPKI crudo (confirmado leyendo `PendingPairingCoordinator.confirm()` y `PinnedDesktopTlsTrustManager.checkServerTrusted`, que compara bytes crudos exactos) — y un hash no se puede revertir al SPKI original. Como el propio `TrustedDesktopStore.evaluate(desktopId, presentedTrustMaterialFingerprint, now)` ya recibe un fingerprint como "material presentado" (no un SPKI), pinnear por fingerprint en la reconexión es la lectura consistente del diseño existente, no una desviación de éste. Se agregó `PinnedDesktopFingerprintTrustManager` (compara el fingerprint SHA-256 del SPKI presentado contra el fingerprint pinneado, reusando `PairingTrustFingerprint.fromTrustMaterial`) y un overload `SslEngineUsbTlsChannel.handshakeWithPinnedFingerprint`, extrayendo un núcleo privado compartido `handshakeCore` (mismo patrón que el `startCore` de s1) para no duplicar la máquina de estados del handshake; `handshake()` público no cambió de firma ni de comportamiento (los tests existentes de `SslEngineUsbTlsChannelTest`, `PinnedDesktopTlsTrustManagerTest`, `UsbPairingFlowTest` y `UsbTlsPairingProofVerifierTest` se re-corrieron explícitamente tras el refactor y siguen en verde). No se agregó un test unitario dedicado para `PinnedDesktopFingerprintTrustManager` (su camino de aceptación queda probado end-to-end por `reconnectsToTrustedDesktopAfterAccept`; su camino de rechazo por fingerprint distinto no está entre los 4 RED pedidos y no se inventó un quinto test) — seguimiento no bloqueante razonable: `R-fingerprint-trust-manager-sin-test-unitario-dedicado`.
 - **Adenda de contrato incorporada a mitad de tarea** (pedido del orquestador durante s3, antes de completar el RED, en base a la revisión nativa del lado desktop): `HANDSHAKE_HELLO.deviceId` es el `phone_id` = hex SHA-256 en minúscula del SPKI del teléfono (mismo dígest que `PairingTrustFingerprint`, vía `PairingTrustFingerprint.fromTrustMaterial(phoneTlsIdentity.subjectPublicKeyInfoDer).hex`); el desktop autentica ese valor contra el certificado de cliente TLS que vio en el handshake, no contra el valor que el frame autodeclara. Incorporado a `UsbTrustedReconnect` y afirmado en `reconnectsToTrustedDesktopAfterAccept` (el fake desktop calcula el fingerprint esperado desde `engine.session.peerCertificates` -- el certificado que efectivamente vio por TLS -- y lo compara con `deviceId`). Oración agregada al final del punto 4 de "Contrato compartido Android ↔ desktop" (§4.4), igual a la que recibe el documento del desktop.
@@ -124,19 +130,19 @@ Revisión nativa de 4 lentes sobre s1+s1b (lineage `review-4e11b7ee8e01c0ee`): *
 - **Líneas cambiadas**: 639 (165 en `UsbTrustedReconnect.kt` nuevo; 44 en `PinnedDesktopTlsTrustManager.kt`; 34 en `SslEngineUsbTlsChannel.kt`; 400 en `UsbTrustedReconnectTest.kt` nuevo). Excede la heurística de ~350 estimada y la de ~400 por commit: sin recorte artificial. La producción real (165+44+34 = 243 líneas) incluye la desviación arquitectónica necesaria de arriba, no contemplada en la estimación original; el resto (400) es infraestructura de test SSLEngine/ByteBuffer, mismo estilo ya establecido.
 - **Commit**: `feat(android): reconnect to trusted desktops over USB TLS` (`c8e0a75`).
 
-### [ ] s4 — Prueba cruzada de la sesión completa (pospuesta por decisión del usuario, 2026-09-29)
+#### [ ] s4 — Prueba cruzada de la sesión completa (pospuesta por decisión del usuario, 2026-09-29)
 
 Requiere autorización fresca del usuario: pairing + confirmación + reconexión + hello contra el helper desktop. ~150 líneas.
 
 Criterios: ningún camino entrega un canal sin confirmación o aceptación; todo rechazo cierra el canal; framing acotado y fail closed; tests existentes verdes.
 
-## Revisiones nativas finales
+### Revisiones nativas finales
 
 - **Slice `56dedca..fcd38e9` (s2)**: lineage `review-dd87c18f278d97a0`, 4 lentes, aprobada sin corrección, autoridad `burned`. Hallazgos no bloqueantes: `R4-idle-deadline-teardown` (WARNING: el deadline de `read()` empieza antes de que llegue el prefijo y cubre la espera del próximo frame, por lo que una sesión ociosa se cierra), `R2-001` (WARNING: `TlsSessionFrameIoException` extiende `IllegalStateException` pese a su nombre), `R2-003`, `R3-oversize-test-not-discriminating`, `R3-zero-length-test-not-discriminating` (WARNING: tests de longitud no discriminan), `R3-untested-failure-paths` (WARNING); SUGGESTION: `R4-interrupt-swallowed`, `R2-002`, `R3-readexactly-progress-assumption`.
 - **Slice `fcd38e9..b13a0b9` (s3 + docs)**: lineage `review-053271eec0593e0a`, 4 lentes, aprobada sin corrección, autoridad `burned`. Hallazgos: `R3-fingerprint-mismatch-rejection-unproved` (WARNING: ningún test prueba que `PinnedDesktopFingerprintTrustManager`, única barrera de autenticación en la reconexión, rechace un fingerprint distinto), `R3-activation-rejected-close-unproved` (WARNING), `R2-tlsrejected-overloaded-for-hello-failures` (WARNING), `R2-contract-text-still-says-spki-pinning` (WARNING; corregido en este commit de docs); SUGGESTION: `R1-fingerprint-mismatch-rejection-untested`, `R4-activation-exception-leaks-channel`, `R4-timeout-test-elapsed-includes-handshake`, `R2-dead-sanity-assertion`, `R2-duplicated-jsse-test-harness`, `R3-hello-close-and-unexpected-frame-unproved`, `R3-unknown-expired-gate-unproved`, `R3-stale-now-for-activation`, `R3-kept-active-prior-channel-ownership`.
 - Último límite revisado: `b13a0b9`.
 
-## Seguimientos prioritarios
+### Seguimientos prioritarios
 
 1. Test de rechazo por fingerprint distinto en `PinnedDesktopFingerprintTrustManager`.
 2. Semántica de lectura de sesión tolerante a inactividad + keepalive (`R4-idle-deadline-teardown`).
@@ -145,11 +151,11 @@ Criterios: ningún camino entrega un canal sin confirmación o aceptación; todo
 5. Tests de longitud discriminantes y rutas de fallo sin cubrir.
 6. Nombres/tipos de error (`TlsSessionFrameIoException`, `TlsRejected` sobrecargado).
 
-## Cierre del feature
+### Cierre del feature
 
 Tareas s1, s1b, s2 y s3 completadas y revisadas nativamente (ver "Revisiones nativas finales" y "Revisión nativa s1"). La prueba cruzada de la sesión completa (Android s4 / desktop s3) quedó pospuesta por decisión del usuario el 2026-09-29 y no se ejecutó; la tarea sigue registrada como `[ ] s4` en §7, con la nota correspondiente. Seguimientos pendientes en "Seguimientos prioritarios".
 
-## Progreso
+### Progreso
 
 Plan creado el 2026-09-28. s1 completada el 2026-09-28 (ver Evidencia s1): `UsbPairingFlow` compone `PendingPairingCoordinator` (refactor mínimo y aditivo: núcleo `startCore` compartido + overload `start(qrPayload, session, channelVerifier)` + `ChannelPairingProofVerifier`/`ChannelPairingStartResult` nuevos) con `UsbTlsPairingProofVerifier`; canal vivo retenido hasta confirmar, cerrado en rechazo/cancelación/vencimiento (explícito o en la siguiente interacción), entregado al llamador sólo en `Activated`. Los 22 tests existentes de `PendingPairingCoordinatorTest` (camino por bytes) siguen verdes sin modificarse. Corrección s1b el 2026-09-28 (ver Evidencia s1b, defecto hallado en readback del orquestador sobre `b3a52cc`): un segundo `start()` con un pendiente vigente ya no descarta el canal retenido del primero (antes se perdía sin cerrarse); `confirm()` ya no puede lanzar `IllegalArgumentException` tras persistir confianza y activar — degrada a canal `null` si la invariante de ownership exclusivo se violara. Revisión nativa de s1+s1b el 2026-09-28/29 (ver Revisión nativa s1, lineage `review-4e11b7ee8e01c0ee`): **APROBADA**, con advisories no bloqueantes registrados como seguimiento (ninguno bloqueó s1).
 
@@ -160,3 +166,128 @@ s3 completada el 2026-09-29 (ver Evidencia s3): `UsbTrustedReconnect` reconecta 
 Pendiente: s4 (prueba cruzada de la sesión completa, requiere autorización fresca del usuario).
 
 Cierre del feature el 2026-09-29: s1, s1b, s2 y s3 completadas y aprobadas en revisión nativa de 4 lentes cada slice (ver "Revisiones nativas finales"). s4 (prueba cruzada de la sesión completa) queda pospuesta por decisión del usuario y no se ejecutó. Seguimientos registrados en "Seguimientos prioritarios".
+
+## Parte desktop (rama `feat/desktop-video-sink`)
+
+## Sesión USB autenticada
+
+### 1. Objetivo
+
+Componer de punta a punta, a nivel de aplicación/dominio y sin UI ni LAN, el pairing USB y la reconexión confiable sobre el canal TLS mutuo, y llevar `SessionFrame` dentro de ese canal: cierra M3 de punta a punta y abre los transportes autenticados de M4 por USB.
+
+### 2. Problema
+
+Las piezas existen pero nadie las compone: en Android `PendingPairingCoordinator` no tiene instancias de producción y su verificador (`PairingProofVerifier.verify(challenge, proofBytes)`) no transporta canal, mientras `UsbTlsPairingProofVerifier.verify(challenge, session)` sí devuelve el canal vivo; no existe reconexión (T19). En el desktop no hay capa que elija por conexión entre `complete_handshake_and_pairing_proof` y `complete_trusted_phone_handshake`, ni nada que llame a `PairedPhoneCandidate::confirm`. El video sigue en claro sobre el stream AOA `0x01020304`.
+
+### 3. Decisión
+
+Continuación del plan maestro tras `phone-mtls-identity` (ver `odd/tasks/complete-webcam-product.md`, "Próxima unidad autorizada"). Sin decisión de producto nueva: las decisiones técnicas quedan en §4.
+
+### 4. Contrato compartido Android ↔ desktop
+
+1. Modo por conexión: el teléfono inicia pairing (tras escanear un QR) o reconexión (desktop ya confiable en su store). El desktop elige la política por conexión según su propio estado: ventana de pairing abierta (QR visible) → `complete_handshake_and_pairing_proof`; si no → `complete_trusted_phone_handshake`. Un desacuerdo de modo falla cerrado (CCP1 inválido o certificado no confiable) sin persistir nada.
+2. Tras un pairing exitoso, el canal TLS vivo se conserva hasta la confirmación explícita de cada lado; rechazo, cancelación o vencimiento cierran el canal. La confirmación del teléfono persiste la confianza (store C6) y activa vía `ActiveDesktopAuthority`; la del desktop usa `PairedPhoneCandidate::confirm` (atómica, rechaza revocados).
+3. `SessionFrame` sobre TLS: cada frame de aplicación es un prefijo u32 big-endian con la longitud (1..=1048576) seguido de exactamente un `SessionFrame` CCSF v1 codificado; lecturas acotadas con deadline absoluto; longitud cero, excesiva o frame inválido cierran el canal (fail closed). El tráfico de sesión autenticado viaja sólo dentro de TLS (stream AOA `0x01020305`); `0x01020304` en claro queda como legacy/test.
+4. Reconexión: el teléfono abre TLS pinneando el fingerprint SHA-256 del SPKI del desktop guardado en su store (el store de Android guarda sólo el fingerprint, no el SPKI completo), verificado por `PinnedDesktopFingerprintTrustManager`, y presentando su certificado de cliente. Como en TLS 1.3 el cliente no ve el rechazo del desktop hasta leer, la sesión sólo se considera activa cuando el teléfono envía `HANDSHAKE_HELLO` y recibe `HANDSHAKE_ACCEPT`; `HANDSHAKE_REJECT`, cierre o deadline → rechazo tipado y cierre. La activación pasa por `ActiveDesktopAuthority`. El `device_id` de `HANDSHAKE_HELLO` es el `phone_id` (SHA-256 hex en minúscula del SPKI del teléfono); el desktop rechaza con `HANDSHAKE_REJECT` un `device_id` distinto del `phone_id` autenticado por TLS.
+5. Después de un pairing confirmado en ambos lados, el mismo canal vivo puede iniciar la sesión con `HANDSHAKE_HELLO`/`HANDSHAKE_ACCEPT`.
+6. Fuera de alcance: UI/Activity, LAN/listener, hardware, reemplazar el receptor de video de producción del desktop (el camino TLS se agrega en paralelo), one-active-phone en el desktop (pregunta de producto para T16/T17), marcador durable de regeneración y acción "restablecer identidad" (seguimientos de `phone-mtls-identity` para la etapa de wiring).
+
+### 5. Riesgos
+
+- Canal vivo retenido durante una confirmación lenta: requiere vencimiento y cierre explícitos.
+- Framing incorrecto entre lenguajes: se mitiga con el contrato §4.3 y una prueba cruzada posterior (requiere autorización fresca del usuario).
+- Asimetría TLS 1.3: cubierta por §4.4.
+
+### 6. Reglas de ejecución
+
+TDD estricto (fuente: `odd/tasks/complete-webcam-product.md`, Reglas de ejecución); desvíos declarados. Commits locales ≤400 líneas como heurística; sin push, PR ni merge. Revisión nativa RDD por commit o slice con `gentle-ai review assess`. Ruta: writer delegado acotado por tarea. Cualquier runtime entre worktrees requiere autorización fresca del usuario.
+
+### 7. Tareas
+
+Runner: `cd desktop/usb-probe && PATH=$HOME/.cargo/bin:$PATH cargo fmt -- --check && PATH=$HOME/.cargo/bin:$PATH cargo test --offline`. Último límite revisado: `9c0d94a`.
+
+1. [x] s1 — SessionFrame sobre TLS: lectura/escritura de `SessionFrame` sobre `StreamOwned<ServerConnection, _>` con el framing de §4.3. RED: `round_trips_session_frame_over_tls`, `rejects_oversized_length_before_allocating`, `rejects_zero_length`, `truncated_frame_fails_closed`. ~250 líneas.
+2. [x] s2 — Conexión de teléfono por modo: API con modo explícito (`Pairing { issuer }` → pendiente con canal vivo hasta `confirm(label, store)` o `reject()` que cierra; `Reconnect { lookup }` → handshake confiable, lee `HANDSHAKE_HELLO`, responde `HANDSHAKE_ACCEPT`, entrega sesión autenticada con `phone_id`; hello inválido → `HANDSHAKE_REJECT` y cierre). RED: `pairing_mode_holds_channel_until_confirm`, `pairing_reject_closes_channel`, `reconnect_mode_accepts_trusted_phone_hello`, `reconnect_mode_rejects_invalid_hello`. ~350 líneas.
+3. [ ] s3 — Helper para la prueba cruzada (con la s4 Android, requiere autorización fresca): modo del helper que ejecuta pairing, confirmación y reconexión con hello. ~150 líneas. (pospuesta por decisión del usuario, 2026-09-29)
+
+Criterios: nada se persiste sin confirmación; reconexión sólo con teléfonos confiables; framing acotado y fail closed; `cargo fmt -- --check` y `cargo test` verdes.
+
+### Evidencia s1
+
+- RED observado (`cargo test --offline --test tls_session_frame_test` contra `write_session_frame`/`read_session_frame` reemplazados por `todo!()`): 5 tests fallaron por panic, no por error de compilación -- `round_trips_session_frame_over_tls` panicó en `write_session_frame` (`not yet implemented: RED: task s1 write_session_frame not yet implemented`, `src/tls_session_frame.rs:78`); las otras 4 (`rejects_oversized_length_before_allocating`, `rejects_zero_length`, `truncated_frame_fails_closed`, `read_times_out_when_deadline_already_passed`) panicaron en `read_session_frame` (`not yet implemented: RED: task s1 read_session_frame not yet implemented`, `src/tls_session_frame.rs:92`); `test result: FAILED. 0 passed; 5 failed`.
+- GREEN: `cargo test --offline --test tls_session_frame_test` PASS, 5/5.
+- Full: `cargo fmt -- --check && cargo test --offline` PASS; 206 tests pasando (baseline 201 + 5 nuevos), 0 fallidos.
+- Alcance: sólo framing (prefijo u32 BE `1..=1_048_576` + `SessionFrameCodec` v1 vía `decode_with_limit`/`encode`); deadline absoluto sólo en lectura, reutilizando el patrón de `read_exact_before`/`ensure_before_deadline` de `usb_tls_pairing_proof.rs`; longitud cero o excesiva rechazada ANTES de asignar el buffer del payload; error tipado `TlsSessionFrameError`, fail-closed (el módulo documenta que el llamador no debe reusar el stream tras un error). No incluye selección de modo por conexión ni `HANDSHAKE_*` (queda para s2).
+- Desvíos: (1) tamaño ~433 líneas de autoría (170 en `tls_session_frame.rs` + 261 en `tls_session_frame_test.rs` + 2 en `lib.rs`) por encima de la heurística de ~250 líneas de la tarea; la mayor parte es infraestructura de prueba TLS/`CrossedBulkIo` duplicada a propósito, siguiendo la convención ya existente en `usb_tls_pairing_proof_test.rs`/`usb_tls_trusted_session_test.rs` (cada archivo de test mantiene su propia copia en vez de una compartida); no se recortó cobertura para encajar en la heurística. (2) No se tocó `src/usb_tls_pairing_proof.rs`: su helper de deadline devuelve `UsbTlsPairingProofError`, un dominio de error distinto, y la tarea sólo autorizaba un cambio de visibilidad, no de firma; se reimplementó el mismo patrón (~15 líneas) localmente en `tls_session_frame.rs`. (3) No se agregó una prueba dedicada para "encoding debe rechazar frames que exceden el límite": ya queda garantizado transitivamente por `SessionFrameCodec::encode` (cubierto en `session_frame_test.rs`) y no figuraba en la lista RED obligatoria de la tarea.
+- Commit: `feat(desktop): frame session frames over TLS`.
+
+### Revisión nativa s1
+
+Lineage `review-a6f229d306a8aefc`, 1 lente (reliability/R3), **aprobada sin corrección**, autoridad `burned` (acknowledged). Hallazgos no bloqueantes (advisory), los tres atendidos por el commit 1 de esta unidad (s1b):
+
+- **R3-soft-deadline** (el deadline sólo se chequea entre lecturas; una lectura bloqueante puede excederlo por el timeout propio del transporte): atendido documentando el límite como *soft*, no *hard*, en el doc del módulo (`tls_session_frame.rs`) -- no se cambió el mecanismo de chequeo (sigue siendo entre `read()`s), porque un límite duro requeriría una lectura no bloqueante/cancelable que el transporte actual no ofrece.
+- **R3-error-kind-mapping** (`WouldBlock` se mapeaba a `Timeout` antes de que venciera el deadline; `Interrupted` no se reintentaba, a diferencia de `read_exact`): corregido en código -- ver Evidencia s1b.
+- **R3-missing-boundary-coverage** (sin prueba para un largo-prefijo truncado ni para el límite superior inclusivo `1_048_576`): cerrado con dos pruebas nuevas -- ver Evidencia s1b.
+
+### Evidencia s1b
+
+- RED observado (`cargo test --offline --test tls_session_frame_test` con los 5 tests nuevos agregados pero sin tocar todavía `src/tls_session_frame.rs`): 2 de 10 tests fallaron -- `retries_interrupted_read_like_read_exact` (`left: Err(Io("simulated interrupt")), right: Ok(SessionFrame{...})`) y `retries_would_block_before_the_deadline_instead_of_timing_out_immediately` (`left: Err(Timeout), right: Ok(SessionFrame{...})`); `test result: FAILED. 8 passed; 2 failed`. Los otros 3 tests nuevos (`truncated_length_prefix_fails_closed`, `accepts_frame_at_exact_max_length_boundary`, `would_block_past_the_deadline_still_times_out`) ya pasaban contra el código sin cambios: no son RED de comportamiento -- los dos primeros cierran cobertura de un comportamiento ya correcto (R3-missing-boundary-coverage), y el tercero es una prueba de regresión/red de seguridad (mismo resultado externo `Err(Timeout)` antes y después del fix, por razones distintas) más que una prueba que demuestre el cambio. Precisión TDD: no es test-first estricto para esos 3 -- se escribieron junto con los 2 RED reales y se corrieron todos juntos contra el código viejo para observar honestamente cuáles fallaban.
+- GREEN: `cargo test --offline --test tls_session_frame_test` PASS, 10/10.
+- Full: `cargo fmt -- --check && cargo test --offline` PASS; 211 tests pasando (baseline 206 + 5 nuevos), 0 fallidos.
+- Alcance: `read_exact_before_deadline` reintenta `Interrupted` (igual que `read_exact`) y reintenta `WouldBlock`/`TimedOut` hasta que el deadline realmente venza (en vez de mapear a `Timeout` en la primera ocurrencia); ambos reintentos vuelven a pasar por el mismo chequeo de deadline en la próxima iteración, así que no hay espera indefinida ante una señal o un `WouldBlock` sostenido más allá del deadline. Se eliminó `map_read_error` (quedó sin uso). Se documentó R3-soft-deadline en el doc del módulo. Dos pruebas de límite nuevas (prefijo de longitud truncado, límite superior inclusivo exacto de 1_048_576 bytes).
+- Desvíos: (1) no se tocó `usb_tls_pairing_proof.rs` (`read_exact_before`/`map_read_error`, mismo patrón pero dominio de error distinto): la tarea acotó el commit 1 a `tls_session_frame.rs`; queda una asimetría documentada entre ambos módulos (éste reintenta `Interrupted`/`WouldBlock` hasta el deadline, aquél sigue mapeando `WouldBlock` a `Timeout` de inmediato), fuera de alcance de esta unidad. (2) `accepts_frame_at_exact_max_length_boundary` usa 16 entradas `CameraControlCommand` (no un solo campo) porque cada campo string/bytes tiene prefijo de longitud `u16` (máx 65_535 bytes) y ningún campo aislado puede alcanzar el límite de 1_048_576 bytes por sí solo; la aritmética se autoverifica con un `assert_eq!` sobre `SessionFrameCodec::encode(...).len()` antes del round-trip, en vez de confiar ciegamente en el cálculo a mano.
+- Commit: `fix(desktop): retry interrupted TLS session frame reads`.
+
+### Evidencia s2
+
+- RED observado (`cargo test --offline --test phone_connection_test` contra `src/phone_connection.rs` con las 4 funciones nuevas -- `accept_phone_pairing_connection`, `accept_phone_reconnect_connection`, `PendingPairedPhoneSession::confirm`, `PendingPairedPhoneSession::reject` -- reemplazadas por `todo!()`, mismo patrón que s1): los 4 tests fallaron -- cada hilo servidor panicó en su propio `todo!()` (`src/phone_connection.rs:134` para `accept_phone_pairing_connection`, `src/phone_connection.rs:152` para `accept_phone_reconnect_connection`, mensajes `not yet implemented: RED: task s2 ... not yet implemented`); el hilo "teléfono" de cada test luego también panicó al agotarse el timeout de 1500ms de `CrossedBulkIo` esperando una respuesta que nunca llegó (`UsbBulkTransferFailed("crossed read failed: bulk read timed out")`), consistente con que el servidor murió antes de responder. `test result: FAILED. 0 passed; 4 failed`. Precisión TDD: igual que s1, no es test-first estricto -- las firmas/tipos ya estaban escritos (diseño), sólo los cuerpos eran `todo!()`.
+- GREEN: `cargo test --offline --test phone_connection_test` PASS, 4/4.
+- Full: `cargo fmt -- --check && cargo test --offline` PASS; 215 tests pasando (211 + 4 nuevos), 0 fallidos, 0 warnings.
+- API resultante (`src/phone_connection.rs`, re-exportada desde `lib.rs`):
+  - `accept_phone_pairing_connection<I, R>(stream, identity, issuer: &mut PairingQrIssuer<R>, timeout) -> Result<PendingPairedPhoneSession<I>, PhoneConnectionError>`: delega en `UsbTlsPairingProofServer::new(identity)?.complete_handshake_and_pairing_proof(...)`.
+  - `accept_phone_reconnect_connection<I>(stream, identity, lookup: Arc<dyn TrustedPhoneLookup + Send + Sync>, timeout) -> Result<AuthenticatedPhoneSession<I>, PhoneConnectionError>`: delega en `complete_trusted_phone_handshake`, luego exige exactamente un `SessionFrame` `HandshakeHello` (con un deadline propio de `timeout`, contado desde que termina el handshake -- no desde antes -- para no comerse el presupuesto con un handshake lento) y responde `HandshakeAccept` (o `HandshakeReject`/cierre si no es `HandshakeHello`).
+  - `PendingPairedPhoneSession<I>{ pub tls, pub candidate }` -- `.confirm(label, &store) -> Result<AuthenticatedPhoneSession<I>, PairedPhoneCandidateConfirmError>` (usa `PairedPhoneCandidate::confirm`; en error cierra el canal) y `.reject(self)` (siempre cierra).
+  - `AuthenticatedPhoneSession<I>{ pub tls, pub phone_id }`: tipo de retorno compartido por ambos caminos de éxito (pairing confirmado y reconexión con HELLO/ACCEPT ya resuelto).
+  - `PhoneConnectionError`: `Pairing`/`Reconnect` (envuelven `UsbTlsPairingProofError`), `UnexpectedFirstFrame` (frame decodificado pero no `HandshakeHello`), `InvalidHello` (error de framing/decode o deadline leyendo el primer frame), `AcceptWriteFailed` (el `HandshakeHello` era válido pero escribir el `HandshakeAccept` falló -- por contrato §4.4 esto NO cuenta como sesión activa, aunque el handshake TLS y la lectura del hello sí funcionaron).
+- Campos que fija el `HandshakeAccept`/`HandshakeReject` de reconexión (no especificados por el contrato, elegidos y documentados en el código): `sequence` = `hello.sequence().saturating_add(1)`; `session_id` = el mismo que trajo el hello; `desktop_id` = `phone_id_for_spki(identity.spki_der_p256())` (mismo derivador estable que ya se usa para `phone_id`, para no necesitar un parámetro nuevo sólo para este campo, dado que este camino no tiene `PairingQrIssuer` del que sacar un desktop_id); `message` = texto fijo descriptivo.
+- Regla "HandshakeReject sólo si el canal sigue usable": si `read_session_frame` devuelve `Err(...)` (framing/decode/deadline), NO se intenta escribir un `HandshakeReject` -- por el propio contrato fail-closed de `tls_session_frame.rs` ("el llamador no debe reusar el stream tras un error"); sólo se cierra. Si en cambio el frame se decodificó bien pero no era `HandshakeHello`, el canal SÍ sigue usable y se intenta un `HandshakeReject` best-effort antes de cerrar.
+- Desvíos: (1) **Diseño**: se reemplazó el `accept_phone_connection(stream, identity, mode, timeout)` de un solo enum (`Pairing{issuer}` / `Reconnect{lookup}`) sugerido por la tarea por DOS funciones (`accept_phone_pairing_connection` / `accept_phone_reconnect_connection`). Motivo (probado, no sólo preferencia de estilo): `Pairing` necesita `&mut PairingQrIssuer<R>` genérico sobre `R: PairingQrNonceGenerator` (necesario para que los tests usen `TestRng`, no `OsPairingQrNonceGenerator`); en un enum compartido, `R` queda sin ninguna evidencia que lo determine en un valor `Reconnect{...}` (esa variante nunca lo usa), así que cualquier sitio que construya un `Reconnect{...}` no compila ("type annotations needed") salvo que agregue un turbofish arbitrario y no usado. Se documentó el razonamiento completo en el doc del módulo (`phone_connection.rs`). La tarea autorizaba nombres a discreción; el "modo por conexión" del contrato §4.1 se preserva igual: quién llama sigue eligiendo explícitamente, por conexión y según su propio estado, cuál de las dos funciones invocar -- de hecho es más fiel a como el propio §4.1 ya describe la elección (entre `complete_handshake_and_pairing_proof` y `complete_trusted_phone_handshake`, dos funciones, no un enum). (2) **Tamaño**: ~743 líneas de autoría (240 en `phone_connection.rs` + 498 en `phone_connection_test.rs` + 5 en `lib.rs`) muy por encima de la heurística de ~350 de la tarea y de la heurística general de ~400/commit. Motivos: (a) el doc del módulo explicando la desviación de diseño anterior (~20 líneas); (b) 5 variantes de error distintas y documentadas en vez de menos/más vagas, porque el contrato es preciso sobre cuándo una sesión cuenta como activa (§4.4) y `AcceptWriteFailed` en particular existe para no confundir "el HELLO era válido" con "la sesión quedó activa"; (c) el archivo de test duplica otra vez (tercera vez en el crate) el harness TLS/`CrossedBulkIo`/`BulkPipe`, siguiendo la convención ya establecida y justificada en Evidencia s1 (cada archivo mantiene su propia copia); (d) los 4 tests exigidos son de integración real (handshake TLS + CCP1 completos sobre `thread::scope`), no unitarios, porque no hay una costura más chica para probar "confirm() retiene el canal" o "reject() lo cierra" de otra forma. No se recortó cobertura para encajar en la heurística. (3) No se agregó un test dedicado para el camino de error `AcceptWriteFailed` (falla al escribir el ACCEPT): no estaba en la lista RED obligatoria de la tarea y forzarlo requeriría un transporte que falle sólo en la segunda escritura, agregando otra pieza de infraestructura de test; el camino en sí reutiliza `write_session_frame`, ya cubierto por sus propios tests en `tls_session_frame_test.rs`.
+- Commit: `feat(desktop): accept phone connections by explicit mode`.
+
+### Revisión nativa s1b+s2
+
+Lineage `review-500bf63256c01962`, 1 lente (reliability/R3), **aprobada sin corrección**, autoridad `burned` (acknowledged). Hallazgos no bloqueantes (advisory):
+
+- **WARNING R3-reject-not-asserted** (`reconnect_mode_rejects_invalid_hello` aceptaba cualquier error de lectura del lado del teléfono, así que pasaba incluso si no se escribía ningún `HandshakeReject`): atendido en s2b -- ver Evidencia s2b.
+- **WARNING R3-hello-device-id-unchecked** (la rama de reconexión aceptaba cualquier `HandshakeHello` sin comparar `device_id` con el `phone_id` autenticado por el certificado de cliente TLS): atendido en s2b -- ver Evidencia s2b y el contrato §4.4 ampliado.
+- **WARNING R3-timedout-retry-desync** (`WouldBlock`/`TimedOut` se reintentaba hasta el deadline sin sleep/backoff, produciendo un busy-spin sobre un transporte no bloqueante): atendido en s2b con un backoff acotado -- ver Evidencia s2b.
+- **SUGGESTION R3-error-paths-uncovered** (`InvalidHello`, `AcceptWriteFailed` y el cierre de canal por fallo de `confirm` no tenían pruebas): atendido PARCIALMENTE en s2b -- se agregó una prueba para `InvalidHello`; `AcceptWriteFailed` y el fallo de `confirm` siguen sin prueba dedicada (mismo motivo que en Evidencia s2: requieren infraestructura de prueba nueva -- un transporte que falle sólo en la segunda escritura, o un store que falle -- no justificada todavía por el costo).
+
+### Evidencia s2b
+
+- RED observado (`cargo test --offline --test phone_connection_test` con las 3 pruebas nuevas/tocadas agregadas pero sin tocar todavía la comparación de `device_id` en `src/phone_connection.rs`): 1 de 6 tests falló -- `reconnect_mode_rejects_hello_with_foreign_device_id` (`panicked at tests/phone_connection_test.rs:283:26: expected HandshakeReject, got SessionFrame { version: 1, sequence: 2, session_id: "session-01", payload: HandshakeAccept { desktop_id: "d54c30550080e54627fdc4ba7fff0d97e685b63edd3927770ef4cf172e6009f7", message: "trusted phone reconnected" } }`); `test result: FAILED. 5 passed; 1 failed`. Las otras 2 pruebas nuevas/tocadas ya pasaban contra el código sin cambios: no son RED de comportamiento, igual que en Evidencia s1b -- `reconnect_mode_rejects_invalid_hello` (aserción endurecida) y `reconnect_mode_rejects_unparseable_first_frame_as_invalid_hello` (cobertura nueva de `InvalidHello`) cierran cobertura de un comportamiento ya correcto. Precisión TDD: no es test-first estricto para esas 2 -- se escribieron junto con la RED real y se corrieron todas juntas contra el código viejo para observar honestamente cuáles fallaban.
+- GREEN: `cargo test --offline --test phone_connection_test` PASS, 6/6; `cargo test --offline --test tls_session_frame_test` PASS, 10/10.
+- Full: `cargo fmt -- --check && cargo test --offline` PASS; 217 tests pasando (215 + 2 nuevos), 0 fallidos, 0 warnings.
+- Alcance: (1) `accept_phone_reconnect_connection` ahora exige `HandshakeHello.device_id == handshake.phone_id` (el `phone_id` re-derivado de ESTA conexión por `complete_trusted_phone_handshake`, no un valor confiado del llamador); un mismatch responde `HandshakeReject` (`reason_code` `"device_id_mismatch"`, best-effort, mismo criterio de "canal todavía usable" que ya regía `UnexpectedFirstFrame`) y cierra, devolviendo el nuevo `PhoneConnectionError::HelloDeviceIdMismatch`. (2) `reconnect_mode_rejects_invalid_hello` ahora exige que el teléfono reciba un `HandshakeReject` decodificable (antes toleraba cualquier error de lectura). (3) `read_exact_before_deadline` en `tls_session_frame.rs` duerme un backoff acotado (`WOULD_BLOCK_RETRY_BACKOFF` = 2ms, recortado por el tiempo que realmente queda hasta `deadline`) antes de reintentar `WouldBlock`/`TimedOut`, documentado en el módulo; `Interrupted` sigue sin backoff (mismo criterio que `read_exact`). (4) Prueba nueva para `InvalidHello` vía un largo-prefijo inválido (`0xFFFFFFFF`) como primer frame, que además confirma el cierre del canal sin intento de `HandshakeReject` (contrato fail-closed de `tls_session_frame`).
+- Desvíos: (1) Sin prueba de comportamiento dedicada para el backoff (la tarea lo permite explícitamente): un `sleep` de pocos milisegundos no se puede aserear de forma determinística sin acoplar el test al reloj; las pruebas de límite existentes (`would_block_past_the_deadline_still_times_out`, `retries_would_block_before_the_deadline_instead_of_timing_out_immediately`) ya cubren el comportamiento de reintento/timeout en sí y siguen pasando (10/10, 0.04s en total), lo que descarta una regresión de tiempo grosera, pero no ejercitan el sleep en sí. (2) No se agregaron pruebas para `AcceptWriteFailed` ni para el cierre de canal por fallo de `confirm` (SUGGESTION R3-error-paths-uncovered, atendida sólo parcialmente): mismo motivo que en Evidencia s2, requieren infraestructura de prueba nueva no justificada todavía por el costo. (3) Ninguna prueba existente de `HandshakeHello` necesitó actualizarse para usar `phone_id`: la única prueba de `accept_phone_reconnect_connection` que construye un `HandshakeHello` (`reconnect_mode_accepts_trusted_phone_hello`) ya usaba `device_id: phone_id.clone()` desde s2.
+- Commit: `fix(desktop): bind reconnect hello to the TLS phone identity`.
+
+### Revisión nativa s2b
+
+Slice `040339e..4b92f5c` (s2b), lineage `review-347ed5029ebb26d7`, 1 lente (reliability/R3), **aprobada sin corrección**, autoridad `burned` (acknowledged). Sugerencias no bloqueantes: `R3-mismatch-reason-code-unasserted`, `R3-backoff-unproved`. Último límite revisado: `4b92f5c`.
+
+### Seguimientos prioritarios
+
+1. Semántica de lectura de sesión tolerante a inactividad + keepalive, simétrica con Android.
+2. Tests de `AcceptWriteFailed` y de cierre del canal cuando `confirm` falla.
+3. Aserción del `reason_code` `device_id_mismatch`.
+
+### Cierre del feature
+
+Tareas s1, s1b, s2 y s2b completadas y revisadas nativamente (ver "Revisión nativa s1", "Revisión nativa s1b+s2" y "Revisión nativa s2b"). La prueba cruzada de la sesión completa (Android s4 / desktop s3) quedó pospuesta por decisión del usuario el 2026-09-29 y no se ejecutó; la tarea sigue registrada como `[ ] s3` en la lista de tareas, con la nota correspondiente. Seguimientos pendientes en "Seguimientos prioritarios".
+
+### Progreso
+
+Plan creado el 2026-09-28; s1 completada el 2026-09-28 (ver Evidencia s1); s2 completada el 2026-09-28 (ver Evidencia s2, incluye seguimientos de revisión s1b); s2b completada el 2026-09-29 (ver Evidencia s2b, seguimientos de la revisión nativa s1b+s2). s3 sin iniciar (requiere autorización fresca del usuario para la prueba cruzada con Android).
+
+Cierre del feature el 2026-09-29: s1, s1b, s2 y s2b completadas y aprobadas en revisión nativa (ver "Revisión nativa s2b"). s3 (helper de prueba cruzada) queda pospuesta por decisión del usuario y no se ejecutó. Seguimientos registrados en "Seguimientos prioritarios".

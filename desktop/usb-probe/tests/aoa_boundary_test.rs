@@ -350,12 +350,12 @@ fn live_host_control_runner_opens_only_the_explicit_selected_device() {
     let selected = DeviceIdentifier::parse_vid_pid("18d1:4ee7").unwrap();
     let physical_location = UsbPhysicalLocation::new(3, vec![1, 4]).unwrap();
     let registry = RecordingUsbDeviceRegistry::with_device_at_location(
-        selected.clone(),
+        selected,
         physical_location.clone(),
         [0x02, 0x00],
     );
     let options = HostAoaControlOptions::new(
-        selected.clone(),
+        selected,
         Duration::from_millis(250),
         ReenumerationWait::bounded(Duration::from_millis(500)),
     );
@@ -440,7 +440,7 @@ fn live_host_control_runner_fails_without_fallback_when_selected_device_is_absen
     let selected = DeviceIdentifier::parse_vid_pid("18d1:4ee7").unwrap();
     let registry = RecordingUsbDeviceRegistry::without_devices();
     let options = HostAoaControlOptions::new(
-        selected.clone(),
+        selected,
         Duration::from_millis(250),
         ReenumerationWait::bounded(Duration::from_millis(500)),
     );
@@ -513,12 +513,12 @@ fn live_host_control_runner_polls_for_aoa_reenumeration_after_start_accessory() 
     let selected = DeviceIdentifier::parse_vid_pid("18d1:4ee7").unwrap();
     let physical_location = UsbPhysicalLocation::new(3, vec![1, 4]).unwrap();
     let registry = RecordingUsbDeviceRegistry::with_device_at_location(
-        selected.clone(),
+        selected,
         physical_location.clone(),
         [0x02, 0x00],
     );
     let options = HostAoaControlOptions::new(
-        selected.clone(),
+        selected,
         Duration::from_millis(250),
         ReenumerationWait::bounded(Duration::from_millis(500)),
     );
@@ -628,7 +628,7 @@ fn live_runner_fails_closed_when_pre_start_physical_identity_is_unavailable() {
         "prototype-t5c1b",
     );
     let selected = DeviceIdentifier::parse_vid_pid("18d1:4ee7").unwrap();
-    let registry = RecordingUsbDeviceRegistry::with_device(selected.clone(), [0x02, 0x00]);
+    let registry = RecordingUsbDeviceRegistry::with_device(selected, [0x02, 0x00]);
     let options = HostAoaControlOptions::new(
         selected,
         Duration::from_millis(250),
@@ -904,8 +904,9 @@ fn framed_usb_stream_preserves_coalesced_read_residual_for_next_frame() {
 
 #[test]
 fn framed_usb_stream_rejects_backend_read_count_larger_than_buffer_without_panic() {
+    let limit = usb_probe::DEFAULT_BULK_READ_TRANSFER_LEN;
     let io = ContractViolatingBulkIo {
-        read_count: 9,
+        read_count: limit + 1,
         write_count: 0,
     };
     let budget = FrameTransferBudget::new(Duration::from_millis(250), 16, 8).unwrap();
@@ -913,7 +914,10 @@ fn framed_usb_stream_rejects_backend_read_count_larger_than_buffer_without_panic
 
     assert_eq!(
         stream.read_frame().unwrap_err(),
-        usb_probe::UsbProbeError::BulkTransferCountExceeded { count: 9, limit: 8 }
+        usb_probe::UsbProbeError::BulkTransferCountExceeded {
+            count: limit + 1,
+            limit
+        }
     );
 }
 
@@ -1249,7 +1253,7 @@ fn claimed_bulk_interface_selects_alt_zero_then_exchanges_fixed_frame() {
     );
     assert_eq!(
         stream.io().claim_state().read_timeouts(),
-        &[Duration::from_millis(123), Duration::from_millis(123)]
+        &[Duration::from_millis(123)]
     );
     assert_eq!(stream.io().claim_state().endpoints().in_endpoint(), 0x81);
     assert_eq!(stream.io().claim_state().endpoints().out_endpoint(), 0x02);

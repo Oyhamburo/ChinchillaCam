@@ -1,0 +1,415 @@
+use crate::messages::{connection_failure_notice, session_end_notice, UserNotice};
+use crate::video_watchdog::{VideoWarning, VideoWatchdog};
+use std::time::Instant;
+use usb_probe::{
+    quality_control::{CameraSelection, QualityError, QualityMode, QualityState},
+    DesktopEvent, DesktopMetricsSnapshot, TrustedPhoneSummary,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppAction {
+    StartPairing,
+    CancelPairing,
+    ConfirmPairing,
+    RejectPairing,
+    Disconnect,
+}
+
+impl AppAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::StartPairing => "Vincular un teléfono",
+            Self::CancelPairing => "Cancelar",
+            Self::ConfirmPairing => "Coincide",
+            Self::RejectPairing => "No coincide",
+            Self::Disconnect => "Desconectar",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhoneRow {
+    pub phone_id: String,
+    pub label: String,
+    pub revoked: bool,
+    pub can_forget: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricsView {
+    pub fps: String,
+    pub decoded_fps: String,
+    pub received: String,
+    pub dropped: String,
+}
+
+impl From<DesktopMetricsSnapshot> for MetricsView {
+    fn from(snapshot: DesktopMetricsSnapshot) -> Self {
+        fn rate(fps: Option<f64>) -> String {
+            fps.filter(|fps| fps.is_finite())
+                .map_or_else(|| "—".into(), |fps| format!("{fps:.1}"))
+        }
+        Self {
+            fps: rate(snapshot.arrival_fps),
+            decoded_fps: rate(snapshot.decoded_fps),
+            received: snapshot.total_chunks.to_string(),
+            dropped: snapshot.dropped_chunks.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraChoice {
+    pub selection: CameraSelection,
+    pub label: String,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionChoice {
+    pub width: u32,
+    pub height: u32,
+    pub label: String,
+    pub enabled: bool,
+    pub reason: Option<String>,
+    pub applied: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FpsChoice {
+    pub fps: u32,
+    pub label: String,
+    pub enabled: bool,
+    pub reason: Option<String>,
+    pub applied: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualityView {
+    pub summary: String,
+    pub cameras: Vec<CameraChoice>,
+    pub resolutions: Vec<ResolutionChoice>,
+    pub frame_rates: Vec<FpsChoice>,
+    pub automatic: bool,
+    pub error: Option<String>,
+    pub pending: bool,
+}
+
+impl QualityView {
+    fn from_state(state: &QualityState, pending: bool) -> Self {
+        Self {
+            summary: state.summary.clone(),
+            cameras: std::iter::once(CameraChoice {
+                selection: CameraSelection::Auto,
+                label: "Automático".into(),
+                selected: state.selected_camera == CameraSelection::Auto,
+            })
+            .chain(state.cameras.iter().map(|camera| CameraChoice {
+                selection: CameraSelection::Id(camera.id.clone()),
+                label: camera.label.clone(),
+                selected: state.selected_camera == CameraSelection::Id(camera.id.clone()),
+            }))
+            .collect(),
+            resolutions: state
+                .resolutions
+                .iter()
+                .map(|resolution| ResolutionChoice {
+                    width: resolution.width,
+                    height: resolution.height,
+                    label: format!("{} × {}", resolution.width, resolution.height),
+                    enabled: resolution.enabled,
+                    reason: resolution.reason.clone(),
+                    applied: (resolution.width, resolution.height)
+                        == (state.applied_width, state.applied_height),
+                })
+                .collect(),
+            frame_rates: state
+                .frame_rates
+                .iter()
+                .map(|fps| FpsChoice {
+                    fps: fps.fps,
+                    label: format!("{} FPS", fps.fps),
+                    enabled: fps.enabled,
+                    reason: fps.reason.clone(),
+                    applied: fps.fps == state.applied_fps,
+                })
+                .collect(),
+            automatic: state.mode == QualityMode::Auto,
+            error: state.error.map(|error| {
+                match error {
+                    QualityError::Unsupported => "El teléfono no admite esa opción.",
+                    QualityError::Unavailable => "Esa cámara no está disponible.",
+                    QualityError::Invalid => "El teléfono no pudo aplicar el cambio.",
+                }
+                .into()
+            }),
+            pending,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppView {
+    pub status: String,
+    pub notice: Option<String>,
+    pub hint: Option<String>,
+    pub qr_text: Option<String>,
+    pub qr_seconds_left: Option<u64>,
+    pub confirm_code: Option<String>,
+    pub actions: Vec<AppAction>,
+    pub phones: Vec<PhoneRow>,
+    pub empty_phones_text: String,
+    pub metrics: Option<MetricsView>,
+    pub quality: Option<QualityView>,
+}
+
+#[derive(Debug, Clone)]
+enum Phase {
+    Waiting,
+    PairingQr { text: String, expires_at: u64 },
+    ConfirmCode { code: String },
+    Connecting,
+    Connected { label: Option<String> },
+}
+
+#[derive(Debug, Clone)]
+pub struct AppState {
+    phase: Phase,
+    notice: Option<UserNotice>,
+    video_watchdog: VideoWatchdog,
+    video_warning: Option<VideoWarning>,
+    presenter_failed: bool,
+    phones: Vec<TrustedPhoneSummary>,
+    metrics: Option<DesktopMetricsSnapshot>,
+    quality: Option<QualityState>,
+    quality_pending: bool,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            phase: Phase::Waiting,
+            notice: None,
+            video_watchdog: VideoWatchdog::default(),
+            video_warning: None,
+            presenter_failed: false,
+            phones: Vec::new(),
+            metrics: None,
+            quality: None,
+            quality_pending: false,
+        }
+    }
+}
+
+impl AppState {
+    pub fn quality_state(&self) -> Option<&QualityState> {
+        if matches!(self.phase, Phase::Connected { .. }) {
+            self.quality.as_ref()
+        } else {
+            None
+        }
+    }
+
+    pub fn mark_quality_pending(&mut self) {
+        if self.quality_state().is_some() {
+            self.quality_pending = true;
+        }
+    }
+
+    fn clear_quality(&mut self) {
+        self.quality = None;
+        self.quality_pending = false;
+    }
+
+    pub fn confirm_label(&self) -> &'static str {
+        "Teléfono"
+    }
+
+    pub fn observe_video(&mut self, now: Instant, frames_published: u64, presenter_failed: bool) {
+        let connected = matches!(self.phase, Phase::Connected { .. });
+        self.video_warning = self
+            .video_watchdog
+            .observe(now, connected, frames_published);
+        self.presenter_failed = connected && presenter_failed;
+    }
+
+    pub fn apply(&mut self, event: DesktopEvent) {
+        match event {
+            DesktopEvent::TrustedPhones(phones) => self.phones = phones,
+            DesktopEvent::WaitingForPhone => {
+                self.phase = Phase::Waiting;
+                self.metrics = None;
+                self.clear_quality();
+            }
+            DesktopEvent::PairingQr {
+                text,
+                expires_at_epoch_seconds,
+            } => {
+                self.phase = Phase::PairingQr {
+                    text,
+                    expires_at: expires_at_epoch_seconds,
+                };
+                self.notice = None;
+            }
+            DesktopEvent::PairingCancelled => {
+                self.phase = Phase::Waiting;
+                self.notice = None;
+            }
+            DesktopEvent::ConfirmCode { code, .. } => {
+                self.phase = Phase::ConfirmCode {
+                    code: code.display(),
+                };
+                self.notice = None;
+            }
+            DesktopEvent::Connecting => {
+                self.phase = Phase::Connecting;
+                self.notice = None;
+            }
+            DesktopEvent::Connected { label, .. } => {
+                self.video_watchdog = VideoWatchdog::default();
+                self.video_warning = None;
+                self.presenter_failed = false;
+                self.phase = Phase::Connected { label };
+                self.metrics = None;
+                self.clear_quality();
+                self.notice = None;
+            }
+            DesktopEvent::Metrics(metrics) => self.metrics = Some(metrics),
+            DesktopEvent::QualityState(quality) => {
+                if matches!(self.phase, Phase::Connected { .. }) {
+                    self.quality = Some(quality);
+                    self.quality_pending = false;
+                }
+            }
+            DesktopEvent::SessionEnded(reason) => {
+                self.phase = Phase::Waiting;
+                self.metrics = None;
+                self.clear_quality();
+                self.notice = Some(session_end_notice(&reason));
+            }
+            DesktopEvent::ConnectionFailed(failure) => {
+                // The worker stays in pairing mode after link errors and failed pairing
+                // attempts, so a shown QR stays usable; pending flows end.
+                if !matches!(self.phase, Phase::PairingQr { .. }) {
+                    self.phase = Phase::Waiting;
+                }
+                self.metrics = None;
+                self.clear_quality();
+                let notice = connection_failure_notice(&failure);
+                if self.notice != Some(notice) {
+                    self.notice = Some(notice);
+                }
+            }
+        }
+    }
+
+    pub fn view(&self, now_epoch_seconds: u64) -> AppView {
+        let (status, qr_text, qr_seconds_left, confirm_code, actions) = match &self.phase {
+            Phase::Waiting => (
+                "Esperando el teléfono por USB.".into(),
+                None,
+                None,
+                None,
+                vec![AppAction::StartPairing],
+            ),
+            Phase::PairingQr { text, expires_at } => (
+                "Escaneá este código con ChinchillaCam en el teléfono.".into(),
+                Some(text.clone()),
+                Some(expires_at.saturating_sub(now_epoch_seconds)),
+                None,
+                vec![AppAction::CancelPairing],
+            ),
+            Phase::ConfirmCode { code } => (
+                "¿El código coincide con el del teléfono?".into(),
+                None,
+                None,
+                Some(code.clone()),
+                vec![AppAction::ConfirmPairing, AppAction::RejectPairing],
+            ),
+            Phase::Connecting => ("Conectando…".into(), None, None, None, vec![]),
+            Phase::Connected { label } => (
+                format!(
+                    "Conectado a «{}».",
+                    label
+                        .as_deref()
+                        .filter(|label| !label.trim().is_empty())
+                        .unwrap_or("el teléfono")
+                ),
+                None,
+                None,
+                None,
+                vec![AppAction::Disconnect],
+            ),
+        };
+        let video_notice = if matches!(self.phase, Phase::Connected { .. }) {
+            if self.presenter_failed {
+                Some(UserNotice {
+                    message: "No se pudo mostrar el video.",
+                    hint: Some("Cerrá y volvé a abrir ChinchillaCam."),
+                })
+            } else {
+                self.video_warning.map(|warning| match warning {
+                    VideoWarning::NoFrames => UserNotice {
+                        message: "No llega video del teléfono.",
+                        hint: Some("Revisá que la cámara esté transmitiendo en el teléfono (desbloqueado y con ChinchillaCam abierta)."),
+                    },
+                })
+            }
+        } else {
+            None
+        };
+        let notice = self.notice.or(video_notice);
+        AppView {
+            status,
+            notice: notice.map(|notice| notice.message.into()),
+            hint: notice.and_then(|notice| notice.hint.map(Into::into)),
+            qr_text,
+            qr_seconds_left,
+            confirm_code,
+            actions,
+            phones: self
+                .phones
+                .iter()
+                .map(|phone| PhoneRow {
+                    phone_id: phone.phone_id.clone(),
+                    label: phone.label.clone(),
+                    revoked: phone.revoked,
+                    can_forget: true,
+                })
+                .collect(),
+            empty_phones_text: "Todavía no hay teléfonos vinculados.".into(),
+            metrics: if matches!(self.phase, Phase::Connected { .. }) {
+                self.metrics.map(Into::into)
+            } else {
+                None
+            },
+            quality: self
+                .quality_state()
+                .map(|quality| QualityView::from_state(quality, self.quality_pending)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn connected_failure_notice_beats_both_video_notices() {
+        let mut state = AppState::default();
+        state.apply(DesktopEvent::Connected {
+            phone_id: "id".into(),
+            label: None,
+        });
+        state.notice = Some(UserNotice {
+            message: "Falla específica.",
+            hint: Some("Acción específica."),
+        });
+        let now = Instant::now();
+        state.observe_video(now, 0, false);
+        state.observe_video(now + Duration::from_secs(5), 0, true);
+        assert_eq!(state.view(0).notice.as_deref(), Some("Falla específica."));
+        assert_eq!(state.view(0).hint.as_deref(), Some("Acción específica."));
+    }
+}
