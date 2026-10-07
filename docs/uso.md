@@ -364,7 +364,7 @@ Estado actual (T27, pendiente de validar con hardware en M9). La app de escritor
 
 ## 10. Criterio para declarar soporte real
 
-Un flujo deja de ser hipótesis y pasa a soporte real solo cuando existe evidencia reproducible. Como mínimo, deben validarse:
+Un flujo deja de ser hipótesis y pasa a soporte real solo cuando existe evidencia reproducible. La checklist de pruebas físicas para macOS y Samsung está en `docs/pruebas-fisicas-m9.md`. Como mínimo, deben validarse:
 
 - APK instalado y ejecutado en los Samsung de referencia;
 - video por USB en Windows 11;
