@@ -39,6 +39,11 @@ Runner app: `export PATH=$HOME/.cargo/bin:$PATH && cd desktop/app && cargo fmt -
 
 1. [x] m1 — versión 0.1.0 visible, `Info.plist` + test de coherencia, `scripts/package-macos.sh` y ejecución real (bundle firmado ad-hoc, zip y checksum). RED: `info_plist_matches_cargo_version_and_bundle_id`. ~200 líneas.
    - Evidencia m1: RED por ausencia de `Info.plist`; GREEN 52 pruebas, 0 fallos; fmt y clippy sin errores. Script ejecutado: firma ad-hoc verificada, ZIP arm64 y SHA-256 generados; `plutil -lint` correcto. No se inició la interfaz.
-2. [ ] m2 — `docs/release.md` y `docs/uso.md` §2.3 actualizados; cierre y push.
+2. [x] m2 — `docs/release.md` y `docs/uso.md` §2.3 actualizados; cierre y push.
+   - Evidencia m2: `docs/release.md` (pasos reproducibles, verificación, Gatekeeper y checklist previa a publicar) y `docs/uso.md` §2.3 con el artefacto real. El script ahora borra el bundle y el zip anteriores antes de armar los nuevos (ajuste del orquestador tras la lectura).
 
 ## 8. Evidencia
+
+- Commits: `69556f0` (m1) y el commit de m2/cierre.
+- Verificación final (en línea, porque el verificador delegado se colgó): `usb-probe` 349/0 y `desktop/app` 52/0, fmt y clippy limpios; `scripts/package-macos.sh` ejecutado dos veces seguidas desde cero: `Identifier=io.github.oyhamburo.chinchillacam.desktop`, `Signature=adhoc`, `TeamIdentifier=not set`, `plutil -lint` OK, checksum verificado (`b71ed4be6c17e60066250e9458e264f6d1debb58efbe8b21fbb9c7b2d1c08052  ChinchillaCam-0.1.0-macos-arm64.zip`), y `dist/` no aparece en `git status`.
+- Sin ejecutar: abrir la app empaquetada en otra Mac (Gatekeeper) y con hardware (M9).

@@ -53,21 +53,21 @@ Puertas pendientes:
 
 ### 2.3 macOS 13+ Apple Silicon: paquete desde GitHub y OBS Studio
 
-Flujo previsto:
+Flujo previsto (versión 0.1.0, preliminar: todavía sin pruebas en hardware, M9):
 
 1. instalar OBS Studio desde su sitio oficial si todavía no está instalado;
 2. abrir la página de releases de GitHub de ChinchillaCam;
-3. descargar el paquete gratuito para macOS Apple Silicon;
-4. instalar o abrir la app de escritorio;
-5. aceptar los permisos de macOS que correspondan;
-6. configurar o habilitar el flujo con OBS Studio y su cámara virtual;
-7. emparejar el teléfono por QR;
-8. seleccionar `OBS Virtual Camera` o la fuente OBS documentada en la aplicación de destino; no se promete un dispositivo llamado `ChinchillaCam` en macOS sin validación futura.
+3. descargar `ChinchillaCam-0.1.0-macos-arm64.zip` y `SHA256SUMS-macos.txt`, y comprobar el archivo con `shasum -a 256 -c SHA256SUMS-macos.txt`;
+4. descomprimir y mover `ChinchillaCam.app` a la carpeta Aplicaciones;
+5. la primera vez, abrirla con **clic derecho → Abrir** (o desde **Configuración del Sistema → Privacidad y seguridad → Abrir igualmente**), porque la app no está notarizada;
+6. emparejar el teléfono por QR;
+7. mostrar el video con **Mostrar video para OBS** y seguir la guía de OBS de esta sección;
+8. seleccionar `OBS Virtual Camera` en la aplicación de destino; no se promete un dispositivo llamado `ChinchillaCam` en macOS sin validación futura.
 
 Restricciones importantes:
 
 - el presupuesto inicial de publicación es cero;
-- no se promete firma propia, notarización ni cuenta Apple Developer ID al inicio;
+- la app se firma ad-hoc (sin cuenta Apple Developer ID ni notarización);
 - si el paquete no está firmado o notarizado, macOS puede mostrar advertencias de seguridad o bloquear la apertura hasta que el usuario la autorice manualmente;
 - la automatización de OBS Studio y la experiencia final de cámara virtual son hipótesis no validadas.
 
