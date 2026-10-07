@@ -20,13 +20,13 @@ No se promete soporte para Windows 10, Mac Intel, otros teléfonos, audio, graba
 
 ### 2.1 Android: APK desde GitHub
 
-Flujo previsto:
+Flujo previsto (versión 0.1.0, preliminar: todavía sin pruebas en hardware, M9):
 
 1. abrir la página de releases de GitHub del proyecto;
-2. descargar el APK de ChinchillaCam para Android;
+2. descargar `ChinchillaCam-0.1.0-android.apk` y `SHA256SUMS-android.txt`, y comprobar el archivo (por ejemplo con `shasum -a 256 -c SHA256SUMS-android.txt` en una computadora);
 3. permitir la instalación desde el navegador o gestor de archivos usado;
 4. instalar la app;
-5. abrir ChinchillaCam y conceder permisos de cámara y red local cuando Android los pida.
+5. abrir ChinchillaCam y conceder los permisos que Android pida: cámara y, en Android 13 o posterior, notificaciones (la app no pide permisos de red).
 
 Riesgos pendientes:
 

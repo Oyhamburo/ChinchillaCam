@@ -39,6 +39,11 @@ Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Andro
 
 1. [x] k1 — identificador, versión, etiqueta y firma release por variables de entorno, con test de configuración. RED: `release_build_uses_public_identity_and_version`. ~150 líneas.
    - Evidencia k1: RED de contrato observado; pruebas unitarias, `assembleDebug` y `lintDebug` correctos; `assembleRelease` sin variables falla con el mensaje previsto y con variables produce un APK firmado cuyo certificado SHA-256 es `b31c0838b6b48b1f40fe7fdb5062b7b494977f5d409fa4f28cc41b67d367240c`; paquete público y versión `0.1.0` verificados con `aapt2`.
-2. [ ] k2 — `scripts/release-android.sh` + `docs/release.md` + ejecución real del script (APK firmado y checksum); cierre y push.
+2. [x] k2 — `scripts/release-android.sh` + `docs/release.md` + ejecución real del script (APK firmado y checksum); cierre y push.
+   - Evidencia k2: `scripts/release-android.sh` ejecutado de punta a punta: sin variables falla con «Falta CHINCHILLACAM_KEYSTORE…» (salida 1); con variables y `EXPECTED_CERT_SHA256` produce `dist/ChinchillaCam-0.1.0-android.apk` (1,1 MB) firmado con el certificado `b31c0838…240c`, paquete `io.github.oyhamburo.chinchillacam` 0.1.0, y `SHA256SUMS-android.txt` (`8845e6e0b62e1eea12a98a955c757acd2905e8725b6e494f1b6b36cd822ec538`, verificado con `shasum -c`). `docs/release.md` (pasos, verificación, respaldo obligatorio de la clave y checklist) y `docs/uso.md` §2.1 con el artefacto real y sin permisos de red. Desvío: el writer delegado se colgó tras escribir el script; el orquestador completó permisos, `.gitignore`, documentación y la ejecución en línea.
 
 ## 8. Evidencia
+
+- Commits: `bf2d330` (k1) y el commit de k2/cierre.
+- Incidente: dos subagentes (writer de k2 y verificador de macOS) quedaron colgados 4 minutos y el harness los cortó; no dejaron cambios a medias más allá del script completo.
+- Sin ejecutar: instalación del APK en un teléfono (M9).
