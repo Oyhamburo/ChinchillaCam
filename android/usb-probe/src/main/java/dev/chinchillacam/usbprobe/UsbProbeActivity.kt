@@ -216,6 +216,8 @@ class UsbProbeActivity : Activity() {
                 val snapshot = currentCameraCatalogSnapshot()
                 cameraSelectionPreference.saveSelection(snapshot, row.cameraId)
                 selectedCameraId = row.cameraId
+                runCatching { PhoneConnectionRuntime.applyCameraQuality(this@UsbProbeActivity, row.cameraId) }
+                runCatching { PhoneConnectionRuntime.notifyLocalQualityChange(this@UsbProbeActivity) }
                 renderCameraCatalog(snapshot)
             }
         }

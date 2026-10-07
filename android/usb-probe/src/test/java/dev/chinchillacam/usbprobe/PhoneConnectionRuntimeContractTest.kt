@@ -43,6 +43,12 @@ class PhoneConnectionRuntimeContractTest {
         val activity = File("src/main/java/dev/chinchillacam/usbprobe/ConnectionActivity.kt").readText()
         assertTrue(Regex("""selectedCameraId = id\s+applyQuality\(id\)\s+PhoneConnectionRuntime\.notifyLocalQualityChange\(this\)""").containsMatchIn(activity))
         assertTrue(Regex("""qualityPreference = preference\s+applyQuality\(selectedCameraId\)\s+PhoneConnectionRuntime\.notifyLocalQualityChange\(this\)""").containsMatchIn(activity))
+        val diagnosticActivity = File("src/main/java/dev/chinchillacam/usbprobe/UsbProbeActivity.kt").readText()
+        assertTrue(
+            "diagnostic camera selection must apply live and notify the subscribed desktop even if applying fails",
+            Regex("""cameraSelectionPreference\.saveSelection\(snapshot, row\.cameraId\)\s+selectedCameraId = row\.cameraId\s+runCatching \{ PhoneConnectionRuntime\.applyCameraQuality\(this@UsbProbeActivity, row\.cameraId\) \}\s+runCatching \{ PhoneConnectionRuntime\.notifyLocalQualityChange\(this@UsbProbeActivity\) \}""")
+                .containsMatchIn(diagnosticActivity),
+        )
     }
 
     @Test

@@ -52,3 +52,5 @@ Runner: `env -u CHINCHILLA_PAIRING_PROOF_HELPER ANDROID_HOME=$HOME/Library/Andro
 3. [ ] a3 — cierre: verificación, docs, plan general, push.
 
 ## 8. Evidencia
+
+- La selección de cámara en la pantalla diagnóstica aplica la preferencia a la sesión activa y notifica al desktop suscrito; ambas llamadas toleran fallos sin cerrar la pantalla.
