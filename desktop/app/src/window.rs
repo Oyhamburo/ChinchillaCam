@@ -1,11 +1,13 @@
 use crate::{
     bootstrap::start_production_worker,
-    commands::{command_for, forget_command},
+    commands::{
+        choose_automatic, choose_camera, choose_fps, choose_resolution, command_for, forget_command,
+    },
     paths::AppPaths,
     qr_image::qr_rgba,
     video_output::LatestVideoFrame,
     video_view::{fit_size, initial_size},
-    view_model::AppState,
+    view_model::{AppState, QualityView},
 };
 use eframe::egui;
 use std::{
@@ -16,7 +18,7 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use usb_probe::{DesktopEvent, DesktopWorkerHandle};
+use usb_probe::{DesktopCommand, DesktopEvent, DesktopWorkerHandle};
 
 static VIDEO_VIEWPORT_ID: LazyLock<egui::ViewportId> =
     LazyLock::new(|| egui::ViewportId::from_hash_of("chinchillacam-video"));
@@ -195,6 +197,84 @@ impl ChinchillaCamWindow {
         }
     }
 
+    fn render_quality(&mut self, ui: &mut egui::Ui, quality: &QualityView) {
+        let Some(state) = self.state.quality_state() else {
+            return;
+        };
+        ui.separator();
+        ui.heading("Cámara y calidad");
+        ui.label(&quality.summary);
+        if let Some(error) = &quality.error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+        if quality.pending {
+            ui.label("Aplicando…");
+        }
+        let mut command: Option<DesktopCommand> = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Cámara:");
+            for camera in &quality.cameras {
+                if ui
+                    .selectable_label(camera.selected, &camera.label)
+                    .clicked()
+                {
+                    command = Some(choose_camera(state, camera.selection.clone()));
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Calidad:");
+            if ui
+                .selectable_label(quality.automatic, "Automático")
+                .clicked()
+            {
+                command = Some(choose_automatic(state));
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Resolución:");
+            for resolution in &quality.resolutions {
+                let response = ui.add_enabled(
+                    resolution.enabled,
+                    egui::Button::selectable(resolution.applied, &resolution.label),
+                );
+                if !resolution.enabled {
+                    if let Some(reason) = &resolution.reason {
+                        response.clone().on_disabled_hover_text(reason);
+                    }
+                }
+                if response.clicked() {
+                    command = Some(choose_resolution(
+                        state,
+                        resolution.width,
+                        resolution.height,
+                    ));
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("FPS:");
+            for fps in &quality.frame_rates {
+                let response = ui.add_enabled(
+                    fps.enabled,
+                    egui::Button::selectable(fps.applied, &fps.label),
+                );
+                if !fps.enabled {
+                    if let Some(reason) = &fps.reason {
+                        response.clone().on_disabled_hover_text(reason);
+                    }
+                }
+                if response.clicked() {
+                    command = Some(choose_fps(state, fps.fps));
+                }
+            }
+        });
+        if let (Some(command), Some(handle)) = (command, &self.handle) {
+            handle.send(command);
+            self.state.mark_quality_pending();
+        }
+    }
+
     fn stop_worker(&mut self) {
         if let Some(handle) = self.handle.take() {
             let _ = handle.shutdown();
@@ -224,6 +304,9 @@ impl eframe::App for ChinchillaCamWindow {
         ui.heading("ChinchillaCam");
         ui.separator();
         ui.label(&view.status);
+        if let Some(quality) = &view.quality {
+            self.render_quality(ui, quality);
+        }
         if ui
             .button(if self.show_video {
                 "Ocultar video"
